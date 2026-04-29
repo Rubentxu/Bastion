@@ -1,0 +1,15 @@
+[package]
+name = "bastion-domain"
+description = "Core domain types, traits, entities and value objects for Bastion sandbox gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }

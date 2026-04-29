@@ -1,0 +1,14 @@
+[package]
+name = "bastion-application"
+description = "Application use cases for Bastion sandbox gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bastion-domain = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

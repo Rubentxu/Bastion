@@ -1,0 +1,21 @@
+# Bastion MCP Gateway Configuration
+
+[server]
+transport = "stdio"
+http_addr = "0.0.0.0:8080"
+
+default_provider = "podman"
+
+[providers.podman]
+type = "podman"
+socket_path = "/run/podman/podman.sock"
+default_image = "debian:bookworm-slim"
+network_mode = "bridge"
+rootless = true
+hot_pool_size = 3
+
+[pool]
+min_hot_per_provider = 1
+max_hot_per_provider = 10
+idle_timeout_ms = 300_000
+cleanup_interval_ms = 60_000

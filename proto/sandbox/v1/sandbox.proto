@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package sandbox.v1;
+
+// SandboxWorker service — runs inside each sandbox.
+// The gateway connects as a gRPC client.
+service SandboxWorker {
+  // Execute a command with streaming output
+  rpc CallTool (CallToolRequest) returns (stream CallToolResponse);
+
+  // File operations
+  rpc ReadFile (ReadFileRequest) returns (ReadFileResponse);
+  rpc WriteFile (WriteFileRequest) returns (WriteFileResponse);
+  rpc ListFiles (ListFilesRequest) returns (ListFilesResponse);
+}
+
+message CallToolRequest {
+  string sandbox_id = 1;
+  string tool_name = 2;
+  string arguments = 3;       // JSON-encoded arguments
+  int64 timeout_ms = 4;
+  string progress_token = 5;
+}
+
+message CallToolResponse {
+  ContentType type = 1;
+  bytes data = 2;
+  bool is_final = 3;
+
+  enum ContentType {
+    CONTENT_TYPE_UNSPECIFIED = 0;
+    STDOUT = 1;
+    STDERR = 2;
+    EXIT_CODE = 3;
+    RESULT = 4;
+    ERROR = 5;
+    PROGRESS = 6;
+  }
+}
+
+message ReadFileRequest {
+  string sandbox_id = 1;
+  string path = 2;
+}
+
+message ReadFileResponse {
+  bytes content = 1;
+  string encoding = 2;
+}
+
+message WriteFileRequest {
+  string sandbox_id = 1;
+  string path = 2;
+  bytes content = 3;
+}
+
+message WriteFileResponse {
+  int64 bytes_written = 1;
+}
+
+message ListFilesRequest {
+  string sandbox_id = 1;
+  string directory = 2;
+  bool recursive = 3;
+}
+
+message ListFilesResponse {
+  repeated FileEntry entries = 1;
+}
+
+message FileEntry {
+  string path = 1;
+  bool is_directory = 2;
+  int64 size_bytes = 3;
+  string permissions = 4;
+}

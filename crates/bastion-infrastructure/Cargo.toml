@@ -1,0 +1,24 @@
+[package]
+name = "bastion-infrastructure"
+description = "Infrastructure adapters for Bastion sandbox gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bastion-domain = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+toml = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
