@@ -16,6 +16,7 @@ use bastion_domain::execution::command::CommandSpec;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::shared::id::SandboxId;
+use bastion_infrastructure::pool::SandboxPoolManager;
 
 /// Bastion MCP Gateway server.
 ///
@@ -24,11 +25,20 @@ use bastion_domain::shared::id::SandboxId;
 pub struct BastionGateway {
     provider: Arc<dyn SandboxProvider>,
     repository: Arc<dyn SandboxRepository>,
+    pool_manager: Option<Arc<SandboxPoolManager>>,
 }
 
 impl BastionGateway {
-    pub fn new(provider: Arc<dyn SandboxProvider>, repository: Arc<dyn SandboxRepository>) -> Self {
-        Self { provider, repository }
+    pub fn new(
+        provider: Arc<dyn SandboxProvider>,
+        repository: Arc<dyn SandboxRepository>,
+        pool_manager: Option<Arc<SandboxPoolManager>>,
+    ) -> Self {
+        Self {
+            provider,
+            repository,
+            pool_manager,
+        }
     }
 }
 
@@ -91,6 +101,30 @@ impl BastionGateway {
     ) -> String {
         tracing::info!(template = %params.template, "Creating sandbox");
 
+        // Try pool checkout first if pool is available
+        if let Some(ref pool) = self.pool_manager {
+            match pool.checkout(&params.template, params.timeout_ms).await {
+                Ok(sandbox) => {
+                    tracing::debug!(
+                        sandbox_id = %sandbox.id,
+                        template = %params.template,
+                        "Sandbox created via pool checkout"
+                    );
+                    return serde_json::json!({
+                        "sandbox_id": sandbox.id.to_string(),
+                        "status": sandbox.status.to_string(),
+                        "template": sandbox.template_id.to_string(),
+                        "from_pool": true
+                    }).to_string();
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Pool checkout failed, falling back to direct creation");
+                    // Fall through to direct creation
+                }
+            }
+        }
+
+        // Direct creation (fallback or when pool is disabled)
         let use_case = CreateSandboxUseCase::new(
             self.repository.clone(),
             bastion_domain::shared::id::ProviderId::new("podman"),
@@ -109,7 +143,8 @@ impl BastionGateway {
             Ok(sandbox) => serde_json::json!({
                 "sandbox_id": sandbox.id.to_string(),
                 "status": sandbox.status.to_string(),
-                "template": sandbox.template_id.to_string()
+                "template": sandbox.template_id.to_string(),
+                "from_pool": false
             }).to_string(),
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
@@ -216,6 +251,23 @@ impl BastionGateway {
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
 
+        // Try to return to pool first if pool is available
+        if let Some(ref pool) = self.pool_manager {
+            match pool.checkin(&sandbox_id).await {
+                Ok(()) => {
+                    tracing::debug!(sandbox_id = %params.sandbox_id, "Sandbox returned to pool");
+                    return serde_json::json!({
+                        "status": "pooled",
+                        "sandbox_id": params.sandbox_id
+                    }).to_string();
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Pool checkin failed, terminating directly");
+                    // Fall through to direct termination
+                }
+            }
+        }
+
         let use_case = TerminateSandboxUseCase::new(self.repository.clone());
 
         match use_case.execute(&sandbox_id, self.provider.as_ref()).await {
@@ -271,6 +323,36 @@ impl BastionGateway {
                 }).to_string()
             }
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    #[tool(description = "Get sandbox pool statistics")]
+    async fn sandbox_pool_stats(
+        &self,
+    ) -> String {
+        tracing::debug!("Getting pool statistics");
+
+        if let Some(ref pool) = self.pool_manager {
+            let stats = pool.stats().await;
+            serde_json::json!({
+                "enabled": true,
+                "active": stats.active,
+                "idle": stats.idle,
+                "total": stats.total,
+                "templates": stats.templates.iter().map(|t| {
+                    serde_json::json!({
+                        "template": t.template,
+                        "idle": t.idle,
+                        "min_idle": t.min_idle,
+                        "max_idle": t.max_idle
+                    })
+                }).collect::<Vec<_>>()
+            }).to_string()
+        } else {
+            serde_json::json!({
+                "enabled": false,
+                "message": "Pool is not enabled"
+            }).to_string()
         }
     }
 }

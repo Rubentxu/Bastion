@@ -1,6 +1,6 @@
 //! Value objects for the Sandbox bounded context.
 //!
-/// Value objects are immutable and compared by value, not identity.
+//! Value objects are immutable and compared by value, not identity.
 
 use serde::{Deserialize, Serialize};
 

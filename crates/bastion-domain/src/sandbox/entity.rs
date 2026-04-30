@@ -1,7 +1,7 @@
 //! Sandbox aggregate root.
 //!
-/// The Sandbox entity encapsulates the lifecycle and invariants of an isolated
-/// execution environment.
+//! The Sandbox entity encapsulates the lifecycle and invariants of an isolated
+//! execution environment.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

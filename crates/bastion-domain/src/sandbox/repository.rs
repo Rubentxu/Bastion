@@ -1,6 +1,6 @@
 //! Sandbox repository port (interface).
 //!
-/// This is a DOMAIN port — the infrastructure layer provides the implementation.
+//! This is a DOMAIN port — the infrastructure layer provides the implementation.
 
 use async_trait::async_trait;
 
