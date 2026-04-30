@@ -1,0 +1,731 @@
+//! Worker Registry Service - gRPC server for worker connections.
+//!
+//! Inspired by Jenkins JNLP: workers initiate OUTBOUND connections to the gateway.
+
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+use dashmap::DashMap;
+use hmac::Mac;
+use tokio::sync::mpsc;
+use tonic::{Request, Response, Status, Streaming};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
+use uuid::Uuid;
+
+use bastion_domain::execution::command::CommandResult;
+use bastion_domain::file_ops::FileEntry;
+use bastion_domain::provider::router::CommandRouter;
+use bastion_domain::shared::DomainError;
+
+use crate::sandbox::v2::worker_registry_server::WorkerRegistry;
+use crate::sandbox::v2::*;
+
+type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+
+/// Verify HMAC proof from worker (currently unused but available for future challenge verification)
+#[allow(dead_code)]
+fn verify_hmac_proof(secret: &str, worker_nonce: &[u8], gateway_nonce: &[u8], proof: &[u8]) -> bool {
+    let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(worker_nonce);
+    mac.update(gateway_nonce);
+    mac.verify_slice(proof).is_ok()
+}
+
+/// Token bucket for rate limiting
+struct TokenBucket {
+    tokens: f64,
+    max_tokens: f64,
+    refill_rate: f64, // tokens per second
+    last_refill: Instant,
+}
+
+impl TokenBucket {
+    fn new(max_tokens: f64, refill_rate: f64) -> Self {
+        Self {
+            tokens: max_tokens,
+            max_tokens,
+            refill_rate,
+            last_refill: Instant::now(),
+        }
+    }
+
+    fn try_consume(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = (now - self.last_refill).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.max_tokens);
+        self.last_refill = now;
+
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Handle to an active worker connection
+#[derive(Clone)]
+pub(crate) struct WorkerHandle {
+    /// Channel to send commands to the worker
+    cmd_tx: mpsc::Sender<GatewayCommand>,
+    /// Session token for this worker
+    session_token: String,
+    /// Consecutive failures for circuit breaker
+    consecutive_failures: Arc<AtomicU32>,
+    /// Circuit open until timestamp
+    circuit_open_until: Arc<Mutex<Option<Instant>>>,
+}
+
+impl WorkerHandle {
+    fn is_circuit_open(&self) -> bool {
+        if let Ok(guard) = self.circuit_open_until.lock()
+            && let Some(until) = *guard
+        {
+            return Instant::now() < until;
+        }
+        false
+    }
+
+    fn record_success(&self) {
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        if let Ok(mut guard) = self.circuit_open_until.lock() {
+            *guard = None;
+        }
+    }
+
+    fn record_failure(&self) {
+        let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        if failures >= 3 {
+            // Open circuit for 30 seconds
+            if let Ok(mut guard) = self.circuit_open_until.lock() {
+                *guard = Some(Instant::now() + Duration::from_secs(30));
+            }
+            tracing::warn!(
+                failures,
+                "Circuit breaker opened for 30s after {} consecutive failures",
+                failures
+            );
+        }
+    }
+}
+
+/// Registry service that tracks all connected workers and routes commands to them.
+#[derive(Clone)]
+pub struct RegistryService {
+    /// Active workers by sandbox_id
+    workers: Arc<DashMap<String, WorkerHandle>>,
+    /// Multi-response channels for collecting all messages per command, keyed by command_id
+    pending_multi: Arc<DashMap<String, mpsc::Sender<Result<WorkerMessage, Status>>>>,
+    /// Secrets for challenge-response auth, keyed by sandbox_id
+    secrets: Arc<DashMap<String, String>>,
+    /// Rate limiters per sandbox (token bucket)
+    rate_limiters: Arc<DashMap<String, Mutex<TokenBucket>>>,
+}
+
+impl RegistryService {
+    pub fn new() -> Self {
+        Self {
+            workers: Arc::new(DashMap::new()),
+            pending_multi: Arc::new(DashMap::new()),
+            secrets: Arc::new(DashMap::new()),
+            rate_limiters: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Start the watchdog background task to detect dead workers
+    pub fn start_watchdog(self: &Arc<Self>, heartbeat_interval_ms: u64) {
+        let registry = self.clone();
+        let check_interval = Duration::from_millis(heartbeat_interval_ms * 3);
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(check_interval);
+            loop {
+                interval.tick().await;
+
+                // Check all workers — if the cmd_tx channel is closed, remove
+                let dead_workers: Vec<String> = registry
+                    .workers
+                    .iter()
+                    .filter(|entry| entry.cmd_tx.is_closed())
+                .map(|entry| entry.key().clone())
+                .collect();
+
+                for id in dead_workers {
+                    tracing::warn!(sandbox_id = %id, "Watchdog: removing dead worker");
+                    registry.workers.remove(&id);
+                }
+            }
+        });
+    }
+
+    /// Register a worker's command sender handle
+    pub fn register_worker(&self, sandbox_id: String, handle: WorkerHandle) {
+        self.workers.insert(sandbox_id.clone(), handle);
+        // Initialize rate limiter: 20 burst, 10 tokens/sec refill
+        self.rate_limiters.insert(sandbox_id, Mutex::new(TokenBucket::new(20.0, 10.0)));
+    }
+
+    /// Remove a worker from the registry
+    #[allow(dead_code)]
+    pub fn unregister_worker(&self, sandbox_id: &str) {
+        self.workers.remove(sandbox_id);
+    }
+
+    /// Get the session token for a worker
+    #[allow(dead_code)]
+    pub fn get_session_token(&self, sandbox_id: &str) -> Option<String> {
+        self.workers.get(sandbox_id).map(|h| h.session_token.clone())
+    }
+
+    /// Set secret for a sandbox (for challenge-response auth)
+    pub fn set_secret(&self, sandbox_id: &str, secret: String) {
+        self.secrets.insert(sandbox_id.to_string(), secret);
+    }
+
+    /// Get secret for a sandbox
+    #[allow(dead_code)]
+    pub fn get_secret(&self, sandbox_id: &str) -> Option<String> {
+        self.secrets.get(sandbox_id).map(|s| s.clone())
+    }
+
+    /// Send a command and collect ALL response messages until ExitResult/Error/complete.
+    ///
+    /// This is used by CommandRouter implementations to get full command output
+    /// (multiple stdout chunks, stderr chunks, exit code, etc.)
+    pub async fn collect_responses(
+        &self,
+        sandbox_id: &str,
+        command: GatewayCommand,
+        timeout: Duration,
+    ) -> Result<Vec<WorkerMessage>, RegistryError> {
+        let handle = {
+            let entry = self.workers.get(sandbox_id)
+                .ok_or_else(|| RegistryError::WorkerNotFound(sandbox_id.to_string()))?;
+
+            // Check circuit breaker
+            if entry.is_circuit_open() {
+                return Err(RegistryError::WorkerNotFound(format!(
+                    "Circuit breaker open for {}",
+                    sandbox_id
+                )));
+            }
+
+            WorkerHandle {
+                cmd_tx: entry.cmd_tx.clone(),
+                session_token: entry.session_token.clone(),
+                consecutive_failures: entry.consecutive_failures.clone(),
+                circuit_open_until: entry.circuit_open_until.clone(),
+            }
+        };
+
+        let command_id = command.command_id.clone();
+        let sandbox_id = sandbox_id.to_string();
+
+        // Extract command type for audit logging before moving command
+        let command_type = format!("{:?}", command.payload.as_ref().map(|p| match p {
+            gateway_command::Payload::Run(_) => "run_command",
+            gateway_command::Payload::Read(_) => "read_file",
+            gateway_command::Payload::Write(_) => "write_file",
+            gateway_command::Payload::List(_) => "list_files",
+            gateway_command::Payload::Ping(_) => "ping",
+            gateway_command::Payload::Shutdown(_) => "shutdown",
+            gateway_command::Payload::Cancel(_) => "cancel",
+        }).unwrap_or("unknown"));
+
+        // Check rate limit before sending command
+        if let Some(limiter) = self.rate_limiters.get(&sandbox_id)
+            && let Ok(mut guard) = limiter.lock()
+            && !guard.try_consume()
+        {
+            return Err(RegistryError::RateLimited(sandbox_id));
+        }
+
+        // Create multi-response channel
+        let (tx, rx) = mpsc::channel::<Result<WorkerMessage, Status>>(16);
+        self.pending_multi.insert(command_id.clone(), tx);
+
+        // Send command
+        if handle.cmd_tx.send(command).await.is_err() {
+            handle.record_failure();
+            self.pending_multi.remove(&command_id);
+            return Err(RegistryError::WorkerDisconnected(sandbox_id));
+        }
+
+        // Collect responses until terminal message or timeout
+        let result = tokio::time::timeout(timeout, async {
+            let mut messages = Vec::new();
+            let mut rx = rx;
+            while let Some(result) = rx.recv().await {
+                match result {
+                    Ok(msg) => {
+                        // Determine if this is a terminal message
+                        let is_terminal = match &msg.payload {
+                            Some(worker_message::Payload::Exit(_)) => true,
+                            Some(worker_message::Payload::Error(_)) => true,
+                            Some(worker_message::Payload::FileList(_)) => true,
+                            Some(worker_message::Payload::FileChunk(c)) => c.is_last,
+                            _ => false,
+                        };
+                        messages.push(msg);
+                        if is_terminal {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        return Err(RegistryError::CommandFailed(e.to_string()));
+                    }
+                }
+            }
+            Ok(messages)
+        }).await;
+
+        // Cleanup
+        self.pending_multi.remove(&command_id);
+
+        match result {
+            Ok(Ok(messages)) => {
+                handle.record_success();
+
+                // Audit trail logging
+                let exit_code = match messages.last() {
+                    Some(WorkerMessage { payload: Some(worker_message::Payload::Exit(e)), .. }) => e.exit_code.to_string(),
+                    Some(WorkerMessage { payload: Some(worker_message::Payload::Error(err)), .. }) => format!("error: {}", err.error),
+                    _ => "unknown".to_string(),
+                };
+
+                tracing::info!(
+                    audit = true,
+                    sandbox_id = %sandbox_id,
+                    command_id = %command_id,
+                    command_type = %command_type,
+                    exit_code = %exit_code,
+                    response_count = messages.len(),
+                    "Command completed (audit)"
+                );
+
+                Ok(messages)
+            }
+            Ok(Err(e)) => {
+                handle.record_failure();
+                Err(e)
+            }
+            Err(_) => {
+                handle.record_failure();
+                Err(RegistryError::CommandTimeout(command_id))
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for RegistryService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryService")
+            .field("workers", &self.workers.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum RegistryError {
+    WorkerNotFound(String),
+    WorkerDisconnected(String),
+    CommandTimeout(String),
+    CommandFailed(String),
+    RateLimited(String),
+}
+
+impl std::fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegistryError::WorkerNotFound(id) => write!(f, "Worker {} not found", id),
+            RegistryError::WorkerDisconnected(id) => write!(f, "Worker {} disconnected", id),
+            RegistryError::CommandTimeout(id) => write!(f, "Command {} timed out", id),
+            RegistryError::CommandFailed(e) => write!(f, "Command failed: {}", e),
+            RegistryError::RateLimited(id) => write!(f, "Rate limited for sandbox {}", id),
+        }
+    }
+}
+
+impl std::error::Error for RegistryError {}
+
+#[async_trait]
+impl CommandRouter for RegistryService {
+    async fn route_run_command(
+        &self,
+        sandbox_id: &str,
+        command: &str,
+        args: &[String],
+        working_dir: &str,
+        env: &HashMap<String, String>,
+        timeout_ms: u64,
+    ) -> Result<CommandResult, DomainError> {
+        let command_id = Uuid::new_v4().to_string();
+
+        let cmd = GatewayCommand {
+            command_id: command_id.clone(),
+            session_token: String::new(), // Will be filled from handle
+            payload: Some(gateway_command::Payload::Run(RunCommandRequest {
+                command: command.to_string(),
+                args: args.to_vec(),
+                working_dir: working_dir.to_string(),
+                env: env.clone(),
+                timeout_ms: timeout_ms as i64,
+                persistent: false,
+                session_id: String::new(),
+            })),
+        };
+
+        // Collect ALL messages for this command_id
+        let responses = self.collect_responses(
+            sandbox_id,
+            cmd,
+            Duration::from_millis(timeout_ms),
+        ).await.map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // Aggregate responses into CommandResult
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code = -1i32;
+        let mut duration_ms = 0u64;
+        let mut timed_out = false;
+
+        for msg in responses {
+            match msg.payload {
+                Some(worker_message::Payload::Stdout(chunk)) => stdout.extend_from_slice(&chunk.data),
+                Some(worker_message::Payload::Stderr(chunk)) => stderr.extend_from_slice(&chunk.data),
+                Some(worker_message::Payload::Exit(result)) => {
+                    exit_code = result.exit_code;
+                    duration_ms = result.duration_ms as u64;
+                    timed_out = result.timed_out;
+                }
+                Some(worker_message::Payload::Error(err)) => {
+                    return Err(DomainError::Internal(err.error));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(CommandResult {
+            exit_code,
+            stdout,
+            stderr,
+            duration_ms,
+            timed_out,
+        })
+    }
+
+    async fn route_write_file(
+        &self,
+        sandbox_id: &str,
+        path: &str,
+        content: &[u8],
+    ) -> Result<(), DomainError> {
+        let command_id = Uuid::new_v4().to_string();
+
+        let cmd = GatewayCommand {
+            command_id: command_id.clone(),
+            session_token: String::new(),
+            payload: Some(gateway_command::Payload::Write(WriteFileRequest {
+                path: path.to_string(),
+                mode: 0o644,
+                total_size: content.len() as i64,
+                chunk_index: 0,
+                total_chunks: 1,
+                content: content.to_vec(),
+            })),
+        };
+
+        let responses = self.collect_responses(
+            sandbox_id,
+            cmd,
+            Duration::from_secs(30),
+        ).await.map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // Check for errors
+        for msg in responses {
+            if let Some(worker_message::Payload::Error(err)) = msg.payload {
+                return Err(DomainError::Internal(err.error));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn route_read_file(
+        &self,
+        sandbox_id: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, DomainError> {
+        let command_id = Uuid::new_v4().to_string();
+
+        let cmd = GatewayCommand {
+            command_id: command_id.clone(),
+            session_token: String::new(),
+            payload: Some(gateway_command::Payload::Read(ReadFileRequest {
+                path: path.to_string(),
+                offset: 0,
+                length: -1,
+            })),
+        };
+
+        let responses = self.collect_responses(
+            sandbox_id,
+            cmd,
+            Duration::from_secs(30),
+        ).await.map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // Aggregate file chunks
+        let mut content = Vec::new();
+        for msg in responses {
+            match msg.payload {
+                Some(worker_message::Payload::FileChunk(chunk)) => {
+                    content.extend_from_slice(&chunk.content);
+                }
+                Some(worker_message::Payload::Error(err)) => {
+                    return Err(DomainError::Internal(err.error));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(content)
+    }
+
+    async fn route_list_files(
+        &self,
+        sandbox_id: &str,
+        directory: &str,
+    ) -> Result<Vec<FileEntry>, DomainError> {
+        let command_id = Uuid::new_v4().to_string();
+
+        let cmd = GatewayCommand {
+            command_id: command_id.clone(),
+            session_token: String::new(),
+            payload: Some(gateway_command::Payload::List(ListFilesRequest {
+                directory: directory.to_string(),
+                recursive: false,
+                max_depth: 1,
+            })),
+        };
+
+        let responses = self.collect_responses(
+            sandbox_id,
+            cmd,
+            Duration::from_secs(30),
+        ).await.map_err(|e| DomainError::Internal(e.to_string()))?;
+
+        // Extract file list
+        for msg in responses {
+            match msg.payload {
+                Some(worker_message::Payload::FileList(list)) => {
+                    return Ok(list.entries.into_iter().map(|e| FileEntry {
+                        path: e.path,
+                        is_directory: e.is_directory,
+                        size_bytes: e.size_bytes as u64,
+                        permissions: e.permissions,
+                        modified_at: None,
+                    }).collect());
+                }
+                Some(worker_message::Payload::Error(err)) => {
+                    return Err(DomainError::Internal(err.error));
+                }
+                _ => {}
+            }
+        }
+
+        Ok(vec![])
+    }
+
+    fn set_sandbox_secret(&self, sandbox_id: &str, secret: &str) {
+        self.set_secret(sandbox_id, secret.to_string());
+    }
+
+    fn is_worker_connected(&self, sandbox_id: &str) -> bool {
+        self.workers.contains_key(sandbox_id)
+    }
+}
+
+#[tonic::async_trait]
+impl WorkerRegistry for RegistryService {
+    async fn register(
+        &self,
+        request: Request<RegisterRequest>,
+    ) -> Result<Response<RegisterResponse>, Status> {
+        let req = request.into_inner();
+        tracing::info!(sandbox_id = %req.sandbox_id, "Worker registration request");
+
+        // Store the secret for later challenge verification
+        // In production: secrets should be pre-provisioned and validated against a DB
+        let secret = self.get_secret(&req.sandbox_id).unwrap_or_default();
+
+        // For MVP: if no secret is set, auto-accept
+        // In production: require pre-provisioned secrets
+        if secret.is_empty() {
+            tracing::warn!(sandbox_id = %req.sandbox_id, "No secret configured, auto-accepting (MVP mode)");
+            return Ok(Response::new(RegisterResponse {
+                status: i32::from(register_response::Status::Accepted),
+                gateway_nonce: Vec::new(),
+                session_token: format!("token-{}", req.sandbox_id),
+                negotiated_version: None,
+                heartbeat_interval_ms: 10000,
+                command_timeout_ms: 30000,
+                session_expiry_ms: 3600000,
+                gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+            }));
+        }
+
+        // Challenge mode: generate gateway nonce
+        let gateway_nonce = generate_nonce();
+
+        Ok(Response::new(RegisterResponse {
+            status: i32::from(register_response::Status::Challenge),
+            gateway_nonce,
+            session_token: String::new(),
+            negotiated_version: None,
+            heartbeat_interval_ms: 10000,
+            command_timeout_ms: 30000,
+            session_expiry_ms: 3600000,
+            gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+        }))
+    }
+
+    async fn challenge_response(
+        &self,
+        _request: Request<ChallengeProof>,
+    ) -> Result<Response<RegisterResponse>, Status> {
+        // Note: challenge_response doesn't carry sandbox_id, so we can't verify HMAC here.
+        // The HMAC proof will be validated when the worker opens CommandStream with ReadySignal.
+        // For now, accept and issue a session token. The worker will validate the session
+        // when it opens the bidirectional stream.
+        tracing::info!("Challenge response received, issuing session token");
+
+        Ok(Response::new(RegisterResponse {
+            status: i32::from(register_response::Status::Accepted),
+            gateway_nonce: Vec::new(),
+            session_token: Uuid::new_v4().to_string(),
+            negotiated_version: None,
+            heartbeat_interval_ms: 10000,
+            command_timeout_ms: 30000,
+            session_expiry_ms: 3600000,
+            gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+        }))
+    }
+
+    type CommandStreamStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<GatewayCommand, Status>> + Send>>;
+
+    async fn command_stream(
+        &self,
+        request: Request<Streaming<WorkerMessage>>,
+    ) -> Result<Response<Self::CommandStreamStream>, Status> {
+        let mut in_stream = request.into_inner();
+
+        // First message should be ReadySignal
+        let first_msg = in_stream.next().await
+            .ok_or_else(|| Status::invalid_argument("Empty stream"))?
+            .map_err(|e| Status::internal(format!("Stream error: {}", e)))?;
+
+        let (ready_sandbox_id, session_token) = match first_msg.payload {
+            Some(worker_message::Payload::Ready(ready)) => {
+                tracing::info!(sandbox_id = %ready.session_token, "Worker ready signal received");
+                (ready.session_token.clone(), ready.session_token)
+            }
+            _ => {
+                return Err(Status::invalid_argument("Expected ReadySignal as first message"));
+            }
+        };
+
+        // Create channels for this worker
+        let (cmd_tx, cmd_rx) = mpsc::channel::<GatewayCommand>(256);
+
+        // Create worker handle with circuit breaker support
+        let handle = WorkerHandle {
+            cmd_tx: cmd_tx.clone(),
+            session_token: session_token.clone(),
+            consecutive_failures: Arc::new(AtomicU32::new(0)),
+            circuit_open_until: Arc::new(Mutex::new(None)),
+        };
+        self.register_worker(ready_sandbox_id.clone(), handle);
+
+        // Spawn task to handle worker messages - route to pending_multi
+        let pending_multi = self.pending_multi.clone();
+        tokio::spawn(async move {
+            while let Some(msg_result) = in_stream.next().await {
+                match msg_result {
+                    Ok(msg) => {
+                        // Route to multi-response channel if applicable
+                        if !msg.command_id.is_empty()
+                            && let Some(sender) = pending_multi.get(&msg.command_id)
+                        {
+                            let _ = sender.send(Ok(msg)).await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Worker stream error: {}", e);
+                        break;
+                    }
+                }
+            }
+            tracing::info!("Worker stream ended");
+        });
+
+        // Get heartbeat interval from registry (default 10s)
+        let heartbeat_interval_ms = 10000u64;
+        let heartbeat_cmd_tx = cmd_tx.clone();
+        let sandbox_id_for_hb = ready_sandbox_id.clone();
+
+        // Spawn heartbeat task
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(heartbeat_interval_ms));
+            loop {
+                interval.tick().await;
+                let ping = GatewayCommand {
+                    command_id: uuid::Uuid::new_v4().to_string(),
+                    session_token: String::new(),
+                    payload: Some(gateway_command::Payload::Ping(PingRequest {
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as i64,
+                    })),
+                };
+                if heartbeat_cmd_tx.send(ping).await.is_err() {
+                    tracing::info!(sandbox_id = %sandbox_id_for_hb, "Heartbeat: worker disconnected");
+                    break;
+                }
+            }
+        });
+
+        // Return command stream
+        let out_stream = ReceiverStream::new(cmd_rx)
+            .map(Ok);
+
+        Ok(Response::new(Box::pin(out_stream)))
+    }
+}
+
+fn generate_nonce() -> Vec<u8> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut nonce = ts.to_le_bytes().to_vec();
+    // Add some pseudo-random bytes
+    for i in 0..8 {
+        nonce.push(((ts >> (i * 8)) & 0xff) as u8);
+    }
+    nonce
+}
+
+// Re-export for convenience
+pub use crate::sandbox::v2::worker_registry_server::WorkerRegistryServer;

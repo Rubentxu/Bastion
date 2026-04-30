@@ -1,58 +1,238 @@
 syntax = "proto3";
-package sandbox.v1;
+package bastion.worker.v2;
 
-// WorkerAgent runs inside each sandbox (container, VM, etc.)
-// The Bastion Gateway connects as a gRPC client.
-service WorkerAgent {
-  rpc RunCommand (RunCommandRequest) returns (stream RunCommandResponse);
-  rpc ReadFile (ReadFileRequest) returns (ReadFileResponse);
-  rpc WriteFile (WriteFileRequest) returns (WriteFileResponse);
-  rpc ListFiles (ListFilesRequest) returns (ListFilesResponse);
-  rpc Health (HealthRequest) returns (HealthResponse);
+// ═══════════════════════════════════════════════════════════════
+// Bastion Worker Protocol v2
+// Inspired by Jenkins Remoting, improved with modern Rust/gRPC
+// ═══════════════════════════════════════════════════════════════
+
+service WorkerRegistry {
+  // Step 1: Register with challenge-response auth
+  rpc Register (RegisterRequest) returns (RegisterResponse);
+
+  // Step 1b: Respond to challenge (if Status = CHALLENGE)
+  rpc ChallengeResponse (ChallengeProof) returns (RegisterResponse);
+
+  // Step 2: Bidirectional command stream (multiplexed over HTTP/2)
+  rpc CommandStream (stream WorkerMessage) returns (stream GatewayCommand);
+}
+
+// ═══ Registration & Auth ═══
+
+message ProtocolVersion {
+  int32 major = 1;
+  int32 minor = 2;
+  int32 patch = 3;
+}
+
+message WorkerCapabilities {
+  repeated string supported_operations = 1;
+  int32 max_concurrent_commands = 2;       // Default: 4
+  int64 max_output_bytes = 3;              // Default: 10MB
+  int64 max_file_size_bytes = 4;           // Default: 100MB
+  bool supports_streaming = 5;
+  bool supports_compression = 6;
+  string os = 7;                           // "linux", "darwin", "windows"
+  string arch = 8;                         // "x86_64", "aarch64"
+}
+
+message RegisterRequest {
+  string sandbox_id = 1;
+  ProtocolVersion protocol_version = 2;
+  WorkerCapabilities capabilities = 3;
+  bytes worker_nonce = 4;                  // 32 bytes random
+  string worker_version = 5;
+}
+
+message RegisterResponse {
+  enum Status {
+    ACCEPTED = 0;        // Auth OK, here's your token
+    CHALLENGE = 1;       // Prove you have the secret
+    REJECTED = 2;        // Go away
+    VERSION_MISMATCH = 3;// Protocol version incompatible
+  }
+  Status status = 1;
+  bytes gateway_nonce = 2;                 // 32 bytes (if CHALLENGE)
+  string session_token = 3;                // JWT (if ACCEPTED)
+  ProtocolVersion negotiated_version = 4;  // Agreed version
+  int64 heartbeat_interval_ms = 5;         // Default: 10000
+  int64 command_timeout_ms = 6;            // Default: 30000
+  int64 session_expiry_ms = 7;             // Default: 3600000 (1h)
+  string gateway_version = 8;
+}
+
+message ChallengeProof {
+  bytes proof = 1;                         // HMAC-SHA256(secret, worker_nonce || gateway_nonce)
+}
+
+// ═══ Gateway → Worker (Commands) ═══
+
+message GatewayCommand {
+  string command_id = 1;                   // UUID
+  string session_token = 2;                // Must match registered token
+  oneof payload {
+    RunCommandRequest run = 10;
+    ReadFileRequest read = 11;
+    WriteFileRequest write = 12;
+    ListFilesRequest list = 13;
+    PingRequest ping = 14;
+    ShutdownRequest shutdown = 15;
+    CancelRequest cancel = 16;
+  }
 }
 
 message RunCommandRequest {
   string command = 1;
   repeated string args = 2;
-  int64 timeout_ms = 3;
+  string working_dir = 3;
+  map<string, string> env = 4;
+  int64 timeout_ms = 5;
+  bool persistent = 6;                     // Process survives between commands
+  string session_id = 7;                   // Group commands in same process
 }
 
-message RunCommandResponse {
-  OutputType type = 1;
-  bytes data = 2;
-
-  enum OutputType {
-    STDOUT = 0;
-    STDERR = 1;
-    EXIT_CODE = 2;
-  }
+message ReadFileRequest {
+  string path = 1;
+  int64 offset = 2;                        // For seek/resume
+  int64 length = 3;                        // -1 = entire file
 }
-
-message ReadFileRequest { string path = 1; }
-message ReadFileResponse { bytes content = 1; }
 
 message WriteFileRequest {
   string path = 1;
-  bytes content = 2;
+  int32 mode = 2;                          // Unix permissions
+  int64 total_size = 3;
+  int32 chunk_index = 4;
+  int32 total_chunks = 5;                  // -1 = streaming
+  bytes content = 6;                       // Max 4MB per chunk
 }
-message WriteFileResponse { int64 bytes_written = 1; }
 
 message ListFilesRequest {
   string directory = 1;
   bool recursive = 2;
+  int32 max_depth = 3;                     // Limit recursion depth
 }
-message ListFilesResponse {
+
+message PingRequest {
+  int64 timestamp = 1;
+}
+
+message ShutdownRequest {
+  enum GraceLevel {
+    GRACEFUL = 0;     // Wait for in-flight commands
+    DRAINING = 1;     // No new commands, wait for current
+    FORCEFUL = 2;     // Kill immediately
+  }
+  GraceLevel grace_level = 1;
+  int64 timeout_ms = 2;
+  string reason = 3;
+}
+
+message CancelRequest {
+  string target_command_id = 1;            // Cancel a running command
+  string reason = 2;
+}
+
+// ═══ Worker → Gateway (Responses) ═══
+
+message WorkerMessage {
+  string command_id = 1;
+  oneof payload {
+    ReadySignal ready = 10;
+    CommandAck ack = 11;
+    StdoutChunk stdout = 12;
+    StderrChunk stderr = 13;
+    ExitResult exit = 14;
+    FileChunk file_chunk = 15;             // Chunked file content
+    FileList file_list = 16;
+    ErrorResult error = 17;
+    PongResponse pong = 18;
+    ShutdownAck shutdown_ack = 19;
+    HealthReport health = 20;
+    CancelAck cancel_ack = 21;
+  }
+}
+
+message ReadySignal {
+  string session_token = 1;
+  string working_dir = 2;
+}
+
+message CommandAck {
+  enum State {
+    RECEIVED = 0;
+    EXECUTING = 1;
+    QUEUED = 2;
+  }
+  State state = 1;
+}
+
+message StdoutChunk {
+  bytes data = 1;
+  int64 sequence = 2;
+}
+
+message StderrChunk {
+  bytes data = 1;
+  int64 sequence = 2;
+}
+
+message ExitResult {
+  int32 exit_code = 1;
+  int64 duration_ms = 2;
+  bool timed_out = 3;
+  string signal = 4;                       // "SIGKILL", "SIGTERM", etc.
+}
+
+message FileChunk {
+  bytes content = 1;
+  int64 offset = 2;
+  bool is_last = 3;
+  int32 chunk_index = 4;
+  int32 total_chunks = 5;
+}
+
+message FileList {
   repeated FileEntry entries = 1;
 }
+
 message FileEntry {
   string path = 1;
   bool is_directory = 2;
   int64 size_bytes = 3;
   string permissions = 4;
+  int64 modified_epoch_ms = 5;
+  string file_type = 6;                    // "file", "dir", "symlink", "other"
 }
 
-message HealthRequest {}
-message HealthResponse {
-  string status = 1;
-  string version = 2;
+message ErrorResult {
+  string error = 1;
+  string error_kind = 2;                   // "timeout", "not_found", "permission", "internal", "cancelled"
+  int32 errno = 3;                         // System errno if available
+}
+
+message PongResponse {
+  int64 ping_timestamp = 1;
+  int64 worker_timestamp = 2;
+  HealthReport health = 3;                 // Piggyback health on pong
+}
+
+message ShutdownAck {
+  int32 pending_commands = 1;
+  bool will_drain = 2;
+}
+
+message CancelAck {
+  bool cancelled = 1;
+  string error = 2;                        // If cancellation failed
+}
+
+message HealthReport {
+  double cpu_usage_percent = 1;
+  int64 memory_used_bytes = 2;
+  int64 memory_total_bytes = 3;
+  int64 disk_free_bytes = 4;
+  int64 uptime_seconds = 5;
+  int32 active_commands = 6;
+  int32 pending_commands = 7;
+  double load_average_1m = 8;
 }

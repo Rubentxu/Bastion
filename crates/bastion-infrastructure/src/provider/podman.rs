@@ -1,43 +1,40 @@
 //! Podman provider adapter using bollard Docker API client.
 //!
-//! Creates containers with `sleep infinity`, injects worker binary,
-//! and communicates via gRPC.
+//! Creates containers with `sleep infinity`, injects worker binary via bind mount,
+//! and communicates with workers via exec (MVP) or future registry-based routing.
 
 use async_trait::async_trait;
-use bollard::body_full;
-use bollard::query_parameters::UploadToContainerOptionsBuilder;
+use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::Docker;
-use bollard::exec::StartExecResults;
 use bollard::container::LogOutput;
-use prost::bytes::Bytes;
-use dashmap::DashMap;
 use futures::StreamExt;
-use crate::sandbox::v1::worker_agent_client::WorkerAgentClient;
-use crate::sandbox::v1::{RunCommandRequest, ListFilesRequest, ReadFileRequest, WriteFileRequest};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
-use tonic::transport::Channel;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
+use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
 
 /// Podman-based sandbox provider using bollard Docker API client.
-/// Communicates with containers via gRPC WorkerAgent.
+/// Communicates with containers via bollard exec (MVP) or registry-based routing.
 pub struct PodmanProvider {
     docker: Docker,
     default_image: String,
-    /// Path to the worker binary to inject into containers
+    /// Path to the worker binary to inject into containers via bind mount
     worker_binary: PathBuf,
-    /// gRPC clients per container
-    clients: DashMap<String, WorkerAgentClient<Channel>>,
+    /// Optional command router for registry-based command execution
+    command_router: Option<Arc<dyn CommandRouter>>,
 }
 
 // Manual Debug impl because Docker doesn't derive Debug
@@ -46,6 +43,7 @@ impl std::fmt::Debug for PodmanProvider {
         f.debug_struct("PodmanProvider")
             .field("default_image", &self.default_image)
             .field("worker_binary", &self.worker_binary)
+            .field("command_router", &self.command_router.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -60,8 +58,14 @@ impl PodmanProvider {
             docker,
             default_image: default_image.to_string(),
             worker_binary,
-            clients: DashMap::new(),
+            command_router: None,
         })
+    }
+
+    /// Set the command router for registry-based command execution.
+    /// When set, commands will be routed through the worker registry instead of exec.
+    pub fn set_command_router(&mut self, router: Arc<dyn CommandRouter>) {
+        self.command_router = Some(router);
     }
 
     /// Ping the Podman daemon to verify connectivity.
@@ -73,60 +77,7 @@ impl PodmanProvider {
             .map(|pong| format!("{pong:?}"))
     }
 
-    /// Inject the worker binary into the container and connect via gRPC.
-    async fn inject_and_start_worker(&self, container_name: &str, grpc_addr: &str) -> Result<(), DomainError> {
-        // Read the worker binary
-        let worker_bin = tokio::fs::read(&self.worker_binary)
-            .await
-            .map_err(|e| DomainError::Internal(format!("Cannot read worker binary: {e}")))?;
-
-        // Create a tar archive containing the worker binary
-        let mut tar_bytes = Vec::new();
-        {
-            let mut tar = tar::Builder::new(&mut tar_bytes);
-            let mut header = tar::Header::new_gnu();
-            header.set_size(worker_bin.len() as u64);
-            header.set_mode(0o755);
-            header.set_path("usr/local/bin/bastion-worker").unwrap();
-            tar.append_data(&mut header, "usr/local/bin/bastion-worker", &worker_bin[..])
-                .unwrap();
-            tar.finish().unwrap();
-        }
-
-        // Copy to container using upload_to_container
-        let options = UploadToContainerOptionsBuilder::default()
-            .path("/")
-            .build();
-        self.docker
-            .start_exec(&exec.id, Some(bollard::exec::StartExecOptions {
-                detach: true,
-                ..Default::default()
-            }))
-            .await
-            .map_err(|e| DomainError::Internal(format!("Failed to start worker: {e}")))?;
-
-        tracing::debug!(container = %container_name, "Worker process started");
-
-        // Wait for worker to start
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-        // Connect to worker via mapped host port
-        let channel = Channel::from_shared(grpc_addr.to_string())
-            .map_err(|e| DomainError::Internal(format!("Invalid gRPC address: {e}")))?
-            .connect()
-            .await
-            .map_err(|e| DomainError::Internal(format!("Cannot connect to worker at {}: {e}", grpc_addr)))?;
-
-        let client = WorkerAgentClient::new(channel);
-
-        // Store the client
-        self.clients.insert(container_name.to_string(), client);
-
-        tracing::info!(container = %container_name, addr = %grpc_addr, "Worker gRPC client connected");
-        Ok(())
-    }
-
-    /// Execute a command inside a container and collect output via bollard exec (fallback).
+    /// Execute a command inside a container and collect output via bollard exec.
     async fn exec_in_container(
         &self,
         container_name: &str,
@@ -184,26 +135,47 @@ impl PodmanProvider {
         Ok((stdout, stderr, exit_code))
     }
 
-    /// Get the host port mapped to container port 50051.
-    async fn get_mapped_port(&self, container_name: &str) -> Result<u16, DomainError> {
-        let info = self
+    /// Start the bastion-worker process in the container via exec.
+    /// The worker will connect OUTBOUND to the gateway (JNLP pattern).
+    async fn start_worker_in_container(
+        &self,
+        container_name: &str,
+        sandbox_id: &str,
+        secret: &str,
+    ) -> Result<(), DomainError> {
+        let exec_config = CreateExecOptions {
+            cmd: Some(vec![
+                "/usr/local/bin/bastion-worker".to_string(),
+                "--gateway-addr".to_string(),
+                "http://host.containers.internal:50052".to_string(),
+                "--sandbox-id".to_string(),
+                sandbox_id.to_string(),
+                "--secret".to_string(),
+                secret.to_string(),
+                "--workdir".to_string(),
+                "/workspace".to_string(),
+            ]),
+            ..Default::default()
+        };
+
+        let exec = self
             .docker
-            .inspect_container(container_name, None)
+            .create_exec(container_name, exec_config)
             .await
-            .map_err(|e| DomainError::Internal(format!("Failed to inspect container: {e}")))?;
+            .map_err(|e| DomainError::Internal(format!("Failed to create exec for worker: {e}")))?;
 
-        let port = info
-            .network_settings
-            .as_ref()
-            .and_then(|ns| ns.ports.as_ref())
-            .and_then(|ports| ports.get("50051/tcp"))
-            .and_then(|bindings| bindings.as_ref())
-            .and_then(|bindings| bindings.first())
-            .and_then(|binding| binding.host_port.as_ref())
-            .and_then(|port_str| port_str.parse::<u16>().ok())
-            .unwrap_or(50051);
+        // Use StartExecOptions with detach: true
+        let start_opts = StartExecOptions {
+            detach: true,
+            ..Default::default()
+        };
+        self.docker
+            .start_exec(&exec.id, Some(start_opts))
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to start worker: {e}")))?;
 
-        Ok(port)
+        tracing::debug!(container = %container_name, "Worker process started");
+        Ok(())
     }
 }
 
@@ -224,22 +196,14 @@ impl SandboxProvider for PodmanProvider {
             template.to_string()
         };
         let container_name = id.to_string();
+        let generated_secret = format!("secret-{}", uuid::Uuid::new_v4());
 
         tracing::info!(sandbox_id = %id, image = %image, "Creating Podman container");
 
         // Build env vars as "KEY=VALUE" strings
         let env: Vec<String> = env_vars.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
-        // Create container with port mapping for worker gRPC
-        let mut port_bindings = std::collections::HashMap::new();
-        port_bindings.insert(
-            "50051/tcp".to_string(),
-            Some(vec![bollard::models::PortBinding {
-                host_ip: Some("127.0.0.1".to_string()),
-                host_port: Some("0".to_string()), // Random port
-            }]),
-        );
-
+        // Create container with bind-mounted worker binary
         let container_config = bollard::models::ContainerCreateBody {
             image: Some(image),
             cmd: Some(vec!["sleep".to_string(), "infinity".to_string()]),
@@ -248,7 +212,10 @@ impl SandboxProvider for PodmanProvider {
             attach_stdout: Some(false),
             attach_stderr: Some(false),
             host_config: Some(bollard::models::HostConfig {
-                port_bindings: Some(port_bindings),
+                binds: Some(vec![format!(
+                    "{}:/usr/local/bin/bastion-worker:ro",
+                    self.worker_binary.display()
+                )]),
                 ..Default::default()
             }),
             ..Default::default()
@@ -274,12 +241,8 @@ impl SandboxProvider for PodmanProvider {
 
         tracing::info!(sandbox_id = %id, "Container started successfully");
 
-        // Get mapped host port for worker gRPC
-        let grpc_port = self.get_mapped_port(&container_name).await?;
-        let grpc_addr = format!("http://127.0.0.1:{}", grpc_port);
-
-        // Inject worker binary and start gRPC service
-        self.inject_and_start_worker(&container_name, &grpc_addr).await?;
+        // Start the bastion-worker process in the container
+        self.start_worker_in_container(&container_name, id.as_str(), &generated_secret).await?;
 
         // Build domain entity
         let mut sandbox = Sandbox::new(
@@ -299,9 +262,6 @@ impl SandboxProvider for PodmanProvider {
         let container_name = id.to_string();
 
         tracing::info!(sandbox_id = %id, "Terminating Podman container");
-
-        // Remove the gRPC client
-        self.clients.remove(&container_name);
 
         // Stop the container (best-effort — may already be stopped)
         let stop_options = bollard::query_parameters::StopContainerOptionsBuilder::default()
@@ -356,57 +316,46 @@ impl SandboxProvider for PodmanProvider {
         id: &SandboxId,
         command: &CommandSpec,
     ) -> Result<CommandResult, DomainError> {
+        // Try registry-based routing first
+        if let Some(ref router) = self.command_router
+            && router.is_worker_connected(id.as_str())
+        {
+            tracing::info!(sandbox_id = %id, "Routing command via worker registry");
+            let timeout_ms = command.timeout_ms.unwrap_or(30000);
+            return router.route_run_command(
+                id.as_str(),
+                &command.command,
+                &command.args,
+                command.working_dir.as_deref().unwrap_or("/workspace"),
+                &command.env_vars,
+                timeout_ms,
+            ).await;
+        }
+
+        // Fallback to exec
         let container_name = id.to_string();
         let start = Instant::now();
 
         tracing::info!(
             sandbox_id = %id,
             command = %command.command,
-            "Running command via WorkerAgent gRPC"
+            "Running command via exec (fallback)"
         );
 
-        // Get gRPC client
-        let mut client = self
-            .clients
-            .get(&container_name)
-            .ok_or_else(|| DomainError::NotFound(container_name.clone()))?
-            .value()
-            .clone();
-
-        let req = RunCommandRequest {
-            command: command.command.clone(),
-            args: command.args.clone(),
-            timeout_ms: 30000,
+        // Use exec_in_container for MVP
+        let shell_cmd = if command.args.is_empty() {
+            command.command.clone()
+        } else {
+            format!("{} {}",
+                command.command,
+                command.args.iter()
+                    .map(|a| if a.contains(' ') { format!("\"{}\"", a) } else { a.clone() })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
         };
 
-        let mut stream = client
-            .run_command(req)
-            .await
-            .map_err(|e| DomainError::Internal(format!("gRPC error: {e}")))?
-            .into_inner();
-
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let mut exit_code = -1;
-
-        while let Some(chunk) = stream
-            .message()
-            .await
-            .map_err(|e| DomainError::Internal(format!("Stream error: {e}")))?
-        {
-            match chunk.r#type {
-                0 => stdout.extend_from_slice(&chunk.data), // STDOUT
-                1 => stderr.extend_from_slice(&chunk.data), // STDERR
-                2 => {
-                    // EXIT_CODE
-                    if chunk.data.len() >= 4 {
-                        exit_code = i32::from_le_bytes(chunk.data[..4].try_into().unwrap());
-                    }
-                }
-                _ => {}
-            }
-        }
-
+        let (stdout, stderr, exit_code) = self.exec_in_container(&container_name, &shell_cmd).await?;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         tracing::info!(
@@ -435,51 +384,44 @@ impl SandboxProvider for PodmanProvider {
         tracing::info!(
             sandbox_id = %id,
             command = %command.command,
-            "Starting streaming command via WorkerAgent gRPC"
+            "Starting streaming command via exec"
         );
 
-        // Get gRPC client
-        let mut client = self
-            .clients
-            .get(&container_name)
-            .ok_or_else(|| DomainError::NotFound(container_name.clone()))?
-            .value()
-            .clone();
-
-        let req = RunCommandRequest {
-            command: command.command.clone(),
-            args: command.args.clone(),
-            timeout_ms: 30000,
+        // For MVP, just run the command and return a stream that yields the result
+        let shell_cmd = if command.args.is_empty() {
+            command.command.clone()
+        } else {
+            format!("{} {}",
+                command.command,
+                command.args.iter()
+                    .map(|a| if a.contains(' ') { format!("\"{}\"", a) } else { a.clone() })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
         };
 
-        let stream = client
-            .run_command(req)
-            .await
-            .map_err(|e| DomainError::Internal(format!("gRPC error: {e}")))?
-            .into_inner();
+        let (stdout, stderr, exit_code) = self.exec_in_container(&container_name, &shell_cmd).await?;
 
-        // Convert gRPC stream to CommandChunk stream
-        let stream = stream.map(|result| {
-            match result {
-                Ok(chunk) => {
-                    match chunk.r#type {
-                        0 => Ok(CommandChunk::stdout(chunk.data)), // STDOUT
-                        1 => Ok(CommandChunk::stderr(chunk.data)), // STDERR
-                        2 => {
-                            // EXIT_CODE
-                            let code = if chunk.data.len() >= 4 {
-                                i32::from_le_bytes(chunk.data[..4].try_into().unwrap())
-                            } else {
-                                -1
-                            };
-                            Ok(CommandChunk::exit_code(code))
-                        }
-                        _ => Ok(CommandChunk::stdout(chunk.data)),
-                    }
-                }
-                Err(e) => Ok(CommandChunk::error(e.to_string())),
+        // Create an mpsc channel-based stream for the result
+        let (tx, rx) = mpsc::channel::<Result<CommandChunk, DomainError>>(4);
+
+        // Spawn a task that sends the chunks
+        tokio::spawn(async move {
+            // Send stdout
+            if !stdout.is_empty() {
+                let _ = tx.send(Ok(CommandChunk::stdout(stdout.clone()))).await;
             }
+            // Send stderr
+            if !stderr.is_empty() {
+                let _ = tx.send(Ok(CommandChunk::stderr(stderr.clone()))).await;
+            }
+            // Send exit code
+            let _ = tx.send(Ok(CommandChunk::exit_code(exit_code))).await;
         });
+
+        // Convert mpsc to Stream
+        let stream = ReceiverStream::new(rx)
+            .map(|r| r.map_err(|e| DomainError::Internal(e.to_string())));
 
         Ok(Box::pin(stream))
     }
@@ -490,98 +432,95 @@ impl SandboxProvider for PodmanProvider {
         path: &str,
         content: &[u8],
     ) -> Result<(), DomainError> {
+        // Try registry-based routing first
+        if let Some(ref router) = self.command_router
+            && router.is_worker_connected(id.as_str())
+        {
+            tracing::info!(sandbox_id = %id, path, "Writing file via worker registry");
+            return router.route_write_file(id.as_str(), path, content).await;
+        }
+
+        // Fallback to exec
         let container_name = id.to_string();
 
         tracing::info!(
             sandbox_id = %id,
             path,
             size = content.len(),
-            "Writing file via WorkerAgent gRPC"
+            "Writing file via exec (fallback)"
         );
 
-        // Get gRPC client
-        let mut client = self
-            .clients
-            .get(&container_name)
-            .ok_or_else(|| DomainError::NotFound(container_name.clone()))?
-            .value()
-            .clone();
+        // Use base64 encoding for binary content in shell
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(content);
+        let shell_cmd = format!("echo '{}' | base64 -d > {}", encoded, path);
 
-        let req = WriteFileRequest {
-            path: path.to_string(),
-            content: content.to_vec(),
-        };
+        let (_, _, exit_code) = self.exec_in_container(&container_name, &shell_cmd).await?;
 
-        client
-            .write_file(req)
-            .await
-            .map_err(|e| DomainError::Internal(format!("gRPC error: {e}")))?;
+        if exit_code != 0 {
+            return Err(DomainError::Internal(format!("Failed to write file: exit code {}", exit_code)));
+        }
 
         tracing::info!(sandbox_id = %id, path, "File written");
         Ok(())
     }
 
     async fn read_file(&self, id: &SandboxId, path: &str) -> Result<Vec<u8>, DomainError> {
+        // Try registry-based routing first
+        if let Some(ref router) = self.command_router
+            && router.is_worker_connected(id.as_str())
+        {
+            tracing::info!(sandbox_id = %id, path, "Reading file via worker registry");
+            return router.route_read_file(id.as_str(), path).await;
+        }
+
+        // Fallback to exec
         let container_name = id.to_string();
 
-        tracing::info!(sandbox_id = %id, path, "Reading file via WorkerAgent gRPC");
+        tracing::info!(sandbox_id = %id, path, "Reading file via exec (fallback)");
 
-        // Get gRPC client
-        let mut client = self
-            .clients
-            .get(&container_name)
-            .ok_or_else(|| DomainError::NotFound(container_name.clone()))?
-            .value()
-            .clone();
+        // Read file and base64 encode it
+        let shell_cmd = format!("base64 {}", path);
+        let (stdout, _, exit_code) = self.exec_in_container(&container_name, &shell_cmd).await?;
 
-        let req = ReadFileRequest {
-            path: path.to_string(),
-        };
+        if exit_code != 0 {
+            return Err(DomainError::Internal(format!("Failed to read file: exit code {}", exit_code)));
+        }
 
-        let response = client
-            .read_file(req)
-            .await
-            .map_err(|e| DomainError::Internal(format!("gRPC error: {e}")))?;
+        // Decode base64
+        use base64::Engine;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&stdout)
+            .map_err(|e| DomainError::Internal(format!("Failed to decode base64: {}", e)))?;
 
-        Ok(response.into_inner().content)
+        Ok(decoded)
     }
 
     async fn list_files(&self, id: &SandboxId, dir: &str) -> Result<Vec<FileEntry>, DomainError> {
+        // Try registry-based routing first
+        if let Some(ref router) = self.command_router
+            && router.is_worker_connected(id.as_str())
+        {
+            tracing::info!(sandbox_id = %id, dir, "Listing files via worker registry");
+            return router.route_list_files(id.as_str(), dir).await;
+        }
+
+        // Fallback to exec
         let container_name = id.to_string();
 
-        tracing::info!(sandbox_id = %id, dir, "Listing files via WorkerAgent gRPC");
+        tracing::info!(sandbox_id = %id, dir, "Listing files via exec (fallback)");
 
-        // Get gRPC client
-        let mut client = self
-            .clients
-            .get(&container_name)
-            .ok_or_else(|| DomainError::NotFound(container_name.clone()))?
-            .value()
-            .clone();
+        // Use ls for simple listing (just names)
+        let shell_cmd = format!("ls -la {}", dir);
+        let (stdout, _, exit_code) = self.exec_in_container(&container_name, &shell_cmd).await?;
 
-        let req = ListFilesRequest {
-            directory: dir.to_string(),
-            recursive: false,
-        };
+        if exit_code != 0 {
+            return Err(DomainError::Internal(format!("Failed to list files: exit code {}", exit_code)));
+        }
 
-        let response = client
-            .list_files(req)
-            .await
-            .map_err(|e| DomainError::Internal(format!("gRPC error: {e}")))?;
-
-        let entries = response
-            .into_inner()
-            .entries
-            .into_iter()
-            .map(|e| FileEntry {
-                path: e.path,
-                is_directory: e.is_directory,
-                size_bytes: e.size_bytes as u64,
-                permissions: e.permissions,
-                modified_at: None,
-            })
-            .collect();
-
+        // Parse ls -la output
+        let output_str = String::from_utf8_lossy(&stdout);
+        let entries = parse_ls_output(&output_str);
         Ok(entries)
     }
 
@@ -602,4 +541,38 @@ impl SandboxProvider for PodmanProvider {
     fn name(&self) -> &str {
         "podman"
     }
+}
+
+/// Parse `ls -la` output into FileEntry structs
+fn parse_ls_output(output: &str) -> Vec<FileEntry> {
+    use chrono::Utc;
+
+    let mut entries = Vec::new();
+    
+    for line in output.lines().skip(1) { // Skip total line
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 8 {
+            let permissions = parts[0].to_string();
+            let is_directory = permissions.starts_with('d');
+            let path = parts.last().map(|s| s.to_string()).unwrap_or_default();
+            
+            // Size is at index 4
+            let size_bytes = parts.get(4).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+            
+            // For modified_at, use current time as placeholder (parsing ls date format is complex)
+            let modified_at = Utc::now();
+            
+            if !path.is_empty() && path != "." && path != ".." {
+                entries.push(FileEntry {
+                    path,
+                    is_directory,
+                    size_bytes: size_bytes as u64,
+                    permissions,
+                    modified_at: Some(modified_at),
+                });
+            }
+        }
+    }
+    
+    entries
 }

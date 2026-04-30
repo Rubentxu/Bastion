@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 
+use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_infrastructure::metrics::GatewayMetrics;
@@ -17,7 +18,13 @@ use bastion_infrastructure::provider::{PodmanProvider, ProviderFactory};
 
 use rmcp::ServiceExt;
 
+mod registry;
+mod sandbox;
 mod server;
+mod tls;
+
+use registry::{RegistryService, WorkerRegistryServer};
+use tonic::codec::CompressionEncoding;
 
 #[derive(Parser, Debug)]
 #[command(name = "bastion-gateway", version, about = "Bastion MCP Gateway")]
@@ -61,6 +68,30 @@ struct Args {
     /// Pool refill interval in milliseconds
     #[arg(long, default_value_t = 5_000)]
     pool_refill_interval_ms: u64,
+
+    /// gRPC registry server address
+    #[arg(long, default_value = "127.0.0.1:50052")]
+    registry_addr: String,
+
+    /// TLS certificate path (optional, enables TLS for registry)
+    #[arg(long)]
+    tls_cert: Option<String>,
+
+    /// TLS private key path (optional, enables TLS for registry)
+    #[arg(long)]
+    tls_key: Option<String>,
+}
+
+impl Args {
+    fn tls_config(&self) -> Option<tls::TlsConfig> {
+        match (&self.tls_cert, &self.tls_key) {
+            (Some(cert), Some(key)) => Some(tls::TlsConfig {
+                cert_path: cert.clone(),
+                key_path: key.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 #[tokio::main]
@@ -83,9 +114,18 @@ async fn main() -> Result<()> {
     // Create provider factory and register Podman
     let mut factory = ProviderFactory::new("podman");
 
-    let podman =
+    // First create the RegistryService (before PodmanProvider so we can wire it)
+    let registry: Arc<RegistryService> = Arc::new(RegistryService::new());
+
+    // Start watchdog to detect dead workers (10s heartbeat, 30s watchdog timeout)
+    registry.start_watchdog(10000);
+
+    let mut podman =
         PodmanProvider::new(&args.socket, &args.image, PathBuf::from(&args.worker_binary))
             .expect("Failed to connect to Podman");
+
+    // Wire the command router so PodmanProvider can route commands through the registry
+    podman.set_command_router(registry.clone() as Arc<dyn CommandRouter>);
 
     // Verify connection to Podman
     match podman.ping().await {
@@ -136,15 +176,83 @@ async fn main() -> Result<()> {
     let gateway =
         server::BastionGateway::new(podman.clone(), repository.clone(), pool_manager, metrics);
 
+    // Start the Worker Registry gRPC server (with optional TLS)
+    let registry_addr: std::net::SocketAddr = args.registry_addr.parse()
+        .expect("Invalid registry address");
+
+    let registry_for_grpc = Arc::clone(&registry);
+    let registry_handle = tokio::spawn(async move {
+        // Create service with gzip compression enabled
+        let svc = WorkerRegistryServer::new((*registry_for_grpc).clone())
+            .accept_compressed(CompressionEncoding::Gzip)
+            .send_compressed(CompressionEncoding::Gzip);
+
+        if let Some(ref tls_cfg) = args.tls_config()
+            && tls_cfg.files_exist()
+        {
+            match tls_cfg.load_identity() {
+                Ok(identity) => {
+                    tracing::info!("Starting registry with TLS + gzip compression");
+                    let tls_config = tonic::transport::ServerTlsConfig::new()
+                        .identity(identity);
+                    tonic::transport::Server::builder()
+                        .http2_adaptive_window(Some(true))
+                        .initial_stream_window_size(1024 * 1024)  // 1MB
+                        .initial_connection_window_size(4 * 1024 * 1024) // 4MB
+                        .max_frame_size(4 * 1024 * 1024)  // 4MB
+                        .tls_config(tls_config)
+                        .expect("TLS config failed")
+                        .add_service(svc)
+                        .serve(registry_addr)
+                        .await
+                        .expect("TLS registry server failed");
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load TLS identity: {}, falling back to plaintext", e);
+                }
+            }
+        }
+
+        // Plaintext fallback with HTTP/2 tuning
+        tracing::info!("Starting registry without TLS (plaintext) + gzip compression");
+        tonic::transport::Server::builder()
+            .http2_adaptive_window(Some(true))
+            .initial_stream_window_size(1024 * 1024)  // 1MB
+            .initial_connection_window_size(4 * 1024 * 1024) // 4MB
+            .max_frame_size(4 * 1024 * 1024)  // 4MB
+            .add_service(svc)
+            .serve(registry_addr)
+            .await
+            .expect("Worker registry server failed");
+    });
+    tracing::info!("Worker registry listening on {}", registry_addr);
+
     tracing::info!("MCP Gateway ready — serving on stdio");
 
-    let service = gateway
-        .serve(rmcp::transport::stdio())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {e}"))?;
+    // Run MCP server and registry in parallel
+    let mcp_future = async {
+        let service = gateway
+            .serve(rmcp::transport::stdio())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {e}"))?;
+        let _ = service.waiting().await;
+        Ok::<(), anyhow::Error>(())
+    };
 
-    // Wait for shutdown
-    service.waiting().await?;
+    // Wait for either to finish
+    tokio::select! {
+        result = mcp_future => {
+            if let Err(e) = result {
+                tracing::error!("MCP server error: {}", e);
+            }
+        }
+        result = registry_handle => {
+            if let Err(e) = result {
+                tracing::error!("Registry server error: {}", e);
+            }
+        }
+    }
 
     // Cleanup pool manager if enabled
     if let Some(pm) = pool_manager_cleanup {

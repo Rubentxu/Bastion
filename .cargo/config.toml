@@ -1,0 +1,13 @@
+# .cargo/config.toml
+# Build static binary for Linux containers
+# Usage: cargo build --release --target x86_64-unknown-linux-musl -p bastion-worker
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+
+[profile.release]
+opt-level = "s"     # Optimize for size (~5MB vs ~15MB)
+lto = true          # Link-time optimization
+codegen-units = 1   # Better optimization, slower compile
+strip = true        # Strip debug symbols
+panic = "abort"     # Smaller binary, no unwind tables

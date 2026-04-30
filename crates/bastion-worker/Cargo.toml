@@ -22,6 +22,8 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 prost = { workspace = true }
 clap = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

@@ -4,6 +4,8 @@
 
 pub mod capabilities;
 pub mod port;
+pub mod router;
 
 pub use capabilities::ProviderCapabilities;
 pub use port::SandboxProvider;
+pub use router::CommandRouter;
