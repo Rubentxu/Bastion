@@ -7,49 +7,7 @@
 
 ## Architecture
 
-```
-AI Agent (MCP Client)
-    │
-    ▼
-┌─────────────────────────────────┐
-│         Bastion Gateway          │  MCP Server (stdin/stdout)
-│  ┌─────────────────────────────┐│
-│  │  MCP Tool Router (rmcp)     ││
-│  │  • sandbox_create           ││
-│  │  • sandbox_run              ││
-│  │  • sandbox_run_stream      ││
-│  │  • sandbox_write            ││
-│  │  • sandbox_read             ││
-│  │  • sandbox_list_files       ││
-│  │  • sandbox_list             ││
-│  │  • sandbox_terminate        ││
-│  │  • sandbox_info             ││
-│  │  • sandbox_pool_stats       ││
-│  │  • sandbox_health           ││
-│  │  • sandbox_metrics           ││
-│  └─────────────────────────────┘│
-│  ┌─────────────────────────────┐│
-│  │  Use Cases (Application)    ││
-│  └─────────────────────────────┘│
-│  ┌─────────────────────────────┐│
-│  │  Pool Manager (optional)    ││
-│  │  Pre-warm containers        ││
-│  └─────────────────────────────┘│
-└─────────────┬───────────────────┘
-              │
-    ┌─────────▼──────────┐
-    │  Provider Adapters  │
-    ├─────────────────────┤
-    │ • Podman (bollard)  │
-    │ • Firecracker (TBD) │
-    │ • gVisor (TBD)      │
-    │ • Kubernetes (TBD)  │
-    └─────────┬──────────┘
-              │
-    ┌─────────▼──────────┐
-    │  Sandbox Containers │
-    └────────────────────┘
-```
+![Bastion Architecture](docs/assets/diagrama.png)
 
 ## Features
 
