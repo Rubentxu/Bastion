@@ -4,7 +4,7 @@
 
 ### Added
 - DDD workspace with 5 crates (domain, application, infrastructure, gateway, worker)
-- `SandboxProvider` trait with Podman backend via bollard
+- `SandboxProvider` trait with Podman backend via bollard and Firecracker backend via REST API
 - 12 MCP tools: sandbox_create, sandbox_run, sandbox_run_stream, sandbox_write, sandbox_read, sandbox_list_files, sandbox_list, sandbox_terminate, sandbox_info, sandbox_pool_stats, sandbox_health, sandbox_metrics
 - Streaming command execution (stdout/stderr in real-time via CommandChunk)
 - SandboxPoolManager with hot pool, background refill, and eviction

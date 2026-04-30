@@ -67,12 +67,12 @@ Bastion Gateway ──▶ Sandbox Container (Podman/Firecracker/gVisor)
 | Feature | Status | Description |
 |---------|--------|-------------|
 | **Podman Backend** | ✅ Stable | Container-based isolation via bollard Docker API |
+| **Firecracker Backend** | ✅ Implemented | microVM isolation via Firecracker REST API over Unix socket |
 | **Streaming Execution** | ✅ Stable | Real-time stdout/stderr streaming during commands |
 | **Hot Pool Manager** | ✅ Stable | Pre-warm containers for <200ms sandbox creation |
 | **Provider Abstraction** | ✅ Stable | ProviderFactory — swap backends via config |
 | **Prometheus Metrics** | ✅ Stable | Sandbox counts, command latency, error rates |
 | **Health Checks** | ✅ Stable | Provider + pool connectivity validation |
-| **Firecracker Backend** | 🔜 Planned | microVM isolation via Firecracker REST API |
 | **gVisor Backend** | 🔜 Planned | Kernel-level sandboxing via runsc |
 | **Kubernetes Backend** | 🔜 Planned | Pod-based ephemeral sandboxes |
 
