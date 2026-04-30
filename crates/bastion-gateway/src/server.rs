@@ -10,8 +10,8 @@ use serde::Deserialize;
 use schemars::JsonSchema;
 
 use bastion_application::execution::RunCommandUseCase;
-use bastion_application::file_ops::{ReadFileUseCase, WriteFileUseCase};
-use bastion_application::sandbox::{CreateSandboxUseCase, GetSandboxInfoUseCase, TerminateSandboxUseCase};
+use bastion_application::file_ops::{ListFilesUseCase, ReadFileUseCase, WriteFileUseCase};
+use bastion_application::sandbox::{CreateSandboxUseCase, GetSandboxInfoUseCase, ListSandboxesUseCase, TerminateSandboxUseCase};
 use bastion_domain::execution::command::CommandSpec;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::sandbox::repository::SandboxRepository;
@@ -74,6 +74,12 @@ pub struct SandboxTerminateParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxInfoParams {
     pub sandbox_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SandboxListFilesParams {
+    pub sandbox_id: String,
+    pub path: String,
 }
 
 #[tool_router(server_handler)]
@@ -171,6 +177,36 @@ impl BastionGateway {
         }
     }
 
+    #[tool(description = "List files in a directory inside a sandbox")]
+    async fn sandbox_list_files(
+        &self,
+        Parameters(params): Parameters<SandboxListFilesParams>,
+    ) -> String {
+        tracing::info!(sandbox_id = %params.sandbox_id, path = %params.path, "Listing files");
+
+        let sandbox_id = SandboxId::new(params.sandbox_id.clone());
+
+        let use_case = ListFilesUseCase::new(self.repository.clone());
+
+        match use_case.execute(&sandbox_id, &params.path, self.provider.as_ref()).await {
+            Ok(entries) => {
+                let list: Vec<serde_json::Value> = entries.iter().map(|e| {
+                    serde_json::json!({
+                        "path": e.path,
+                        "is_directory": e.is_directory,
+                        "size_bytes": e.size_bytes,
+                        "permissions": e.permissions,
+                    })
+                }).collect();
+                serde_json::json!({
+                    "count": list.len(),
+                    "entries": list
+                }).to_string()
+            }
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
     #[tool(description = "Terminate and destroy a sandbox")]
     async fn sandbox_terminate(
         &self,
@@ -207,6 +243,33 @@ impl BastionGateway {
                 "created_at": info.created_at.to_rfc3339(),
                 "expires_at": info.expires_at.map(|t| t.to_rfc3339()),
             }).to_string(),
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    #[tool(description = "List all active sandboxes")]
+    async fn sandbox_list(
+        &self,
+    ) -> String {
+        tracing::info!("Listing active sandboxes");
+
+        let use_case = ListSandboxesUseCase::new(self.repository.clone());
+
+        match use_case.execute().await {
+            Ok(sandboxes) => {
+                let list: Vec<serde_json::Value> = sandboxes.iter().map(|s| {
+                    serde_json::json!({
+                        "sandbox_id": s.id.to_string(),
+                        "status": s.status.to_string(),
+                        "template": s.template_id.to_string(),
+                        "created_at": s.created_at.to_rfc3339(),
+                    })
+                }).collect();
+                serde_json::json!({
+                    "count": list.len(),
+                    "sandboxes": list
+                }).to_string()
+            }
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
     }
