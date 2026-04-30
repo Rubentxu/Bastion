@@ -60,12 +60,52 @@ Bastion Gateway ──▶ Sandbox Container (Podman/Firecracker/gVisor)
 
 ## 🏗 Architecture
 
+```
+┌──────────────┐                         ┌──────────────────────────────────────┐
+│  MCP Client  │──tools/call──▶┌─────┐   │ Worker (gRPC CLIENT)                 │
+│ (OpenCode,   │                │     │   │  ┌────────┐  ┌────────┐  ┌────────┐ │
+│  Claude Code,│◀──responses───│     │◀──┼──│Sandbox1│  │Sandbox2│  │SandboxN│ │
+│  Goose...)   │               │ G   │   │  │┌──────┐│  │┌──────┐│  │┌──────┐│ │
+└──────────────┘               │ A   │   │  ││worker││  ││worker││  ││worker││ │
+                               │ T   │   │  ││(bin) ││  ││(bin) ││  ││(bin) ││ │
+                               │ E   │   │  └┴──────┴┘  └┴──────┴┘  └┴──────┴┘ │
+                               │ W   │   │     ▲ PodmanProvider                  │
+                               │ A   │   │     │ bind-mounts binary              │
+                               │ Y   │   │     │ :50052 outbound                 │
+                               │     │   └─────┼─────────────────────────────────┘
+                               │ :50052       │
+                               │ gRPC Registry│
+                               │ + MCP srv   │
+                               └─────┼───────┘
+                                     │
+                                     ▼
+                          ┌─────────────────────┐
+                          │ ProviderFactory     │
+                          │ ┌─────────────────┐ │
+                          │ │ PodmanProvider   │ │
+                          │ ├─────────────────┤ │
+                          │ │ FirecrackerProvider │
+                          │ └─────────────────┘ │
+                          └─────────────────────┘
+```
+
+### Worker Protocol v2 (JNLP-inspired)
+
+Workers connect **outbound** to the Gateway — no port mapping, no inbound firewall rules. The life cycle:
+
+1. **Register** — Worker sends `sandbox_id`, protocol version, capabilities, and a random nonce
+2. **ChallengeResponse** — Gateway responds with a challenge nonce; Worker proves identity via HMAC-SHA256(secret, worker_nonce || gateway_nonce). Secret never transits the wire.
+3. **CommandStream** — Bidirectional streaming: Gateway sends commands, Worker streams stdout/stderr/exit/health back
+
+Reliability: exponential backoff reconnect (1s→60s + jitter), 10s heartbeat ping/pong, 30s watchdog dead-worker cleanup, and circuit breaker (3 failures → 30s open).
+
 ![Bastion Architecture](docs/assets/diagrama.png)
 
 ## ✨ Features
 
 | Feature | Status | Description |
 |---------|--------|-------------|
+| **Worker Protocol v2** | ✅ Stable | gRPC-based JNLP protocol: Register→HMAC auth→CommandStream; outbound workers |
 | **Podman Backend** | ✅ Stable | Container-based isolation via bollard Docker API |
 | **Firecracker Backend** | ✅ Implemented | microVM isolation via Firecracker REST API over Unix socket |
 | **Streaming Execution** | ✅ Stable | Real-time stdout/stderr streaming during commands |
@@ -222,34 +262,32 @@ Bastion exposes 12 MCP tools for sandbox management:
 
 | Crate | Layer | Responsibility |
 |-------|-------|---------------|
-| `bastion-domain` | Domain | Entities, value objects, traits (`SandboxProvider`, `SandboxRepository`) |
+| `bastion-domain` | Domain | Entities, value objects, traits (`SandboxProvider`, `CommandRouter`, `SandboxRepository`) |
 | `bastion-application` | Application | Use cases (orchestration between domain and infrastructure) |
-| `bastion-infrastructure` | Infrastructure | Adapters (`PodmanProvider`, `InMemoryRepo`, `PoolManager`, `Metrics`) |
-| `bastion-gateway` | Presentation | MCP server via `rmcp`, composition root, CLI |
-| `bastion-worker` | Infrastructure | gRPC worker runtime for in-sandbox execution agents (planned) |
+| `bastion-infrastructure` | Infrastructure | Adapters (`PodmanProvider`, `FirecrackerProvider`, `InMemoryRepo`, `PoolManager`, `Metrics`) |
+| `bastion-gateway` | Presentation | MCP server via `rmcp`, gRPC `RegistryService` on `:50052`, composition root, CLI |
+| `bastion-worker` | Worker | gRPC CLIENT connecting outbound to Gateway; runs inside sandbox (JNLP pattern) |
 
 ### Data Flow
 
 ```
-┌──────────────┐     ┌─────────────────┐     ┌──────────────────┐
-│  MCP Client  │────▶│  BastionGateway  │────▶│   Use Cases      │
-│ (OpenCode,   │     │  (rmcp server)   │     │ (Application)    │
-│  Claude Code)│◀────│  12 tool handlers│◀────│                  │
-└──────────────┘     └────────┬────────┘     └────────┬─────────┘
-                              │                       │
-                              ▼                       ▼
-                     ┌────────────────┐     ┌──────────────────┐
-                     │ ProviderFactory │     │ SandboxRepository │
-                     │  (Podman,       │     │   (InMemory)      │
-                     │   Firecracker,  │     └──────────────────┘
-                     │   gVisor)       │
-                     └───────┬────────┘
-                             │
-                             ▼
-                     ┌────────────────┐
-                     │ Container/VM   │
-                     │ Runtime        │
-                     └────────────────┘
+┌──────────────┐     ┌─────────────────────────┐     ┌──────────────────┐
+│  MCP Client  │────▶│  BastionGateway          │────▶│   Use Cases      │
+│ (OpenCode,   │     │  (rmcp server + gRPC)    │     │ (Application)    │
+│  Claude Code)│◀────│  12 tool handlers        │◀────│                  │
+└──────────────┘     │  RegistryService :50052  │     └────────┬─────────┘
+                     └───┬──────────┬───────────┘              │
+                         │          │                          ▼
+                         │ gRPC     │              ┌──────────────────┐
+                         ▼          ▼              │ SandboxRepository │
+              ┌─────────────┐ ┌────────────────┐   │   (InMemory)      │
+              │ Worker      │ │ ProviderFactory │   └──────────────────┘
+              │ (gRPC CLIENT)│ │  (Podman,       │
+              │ in sandbox   │ │   Firecracker)  │
+              └─────────────┘ └────────────────┘
+                   ▲ bind-mount worker binary
+                   │
+            PodmanProvider
 ```
 
 ## 🗺 Roadmap
@@ -316,7 +354,9 @@ Bastion/
 │   │   └── src/
 │   │       ├── main.rs         # Composition root + CLI
 │   │       └── server.rs       # 12 MCP tool handlers
-│   └── bastion-worker/         # gRPC worker (TBD)
+│   └── bastion-worker/         # gRPC worker (outbound JNLP client)
+│       └── src/
+│           └── main.rs         # Connect→Register→ChallengeResponse→CommandStream
 ├── docs/assets/                # Documentation images
 ├── config/                     # Example configs
 ├── proto/                      # Protobuf definitions
