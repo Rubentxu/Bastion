@@ -254,7 +254,7 @@ impl GVisorProvider {
             "process": {
                 "terminal": false,
                 "user": { "uid": 0, "gid": 0 },
-                "args": ["sleep", "infinity"],
+                "args": ["sleep", "999999"],
                 "env": [
                     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
                 ],
@@ -338,11 +338,11 @@ impl GVisorProvider {
             .map_err(|e| DomainError::Internal(format!("Failed to run runsc list: {e}")))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // runsc list output: each line is "ID\tSTATUS\t..."
+        // runsc list output: ID\tPID\tSTATUS\tBUNDLE\tCREATED\tOWNER
         Ok(stdout.lines().any(|line| {
             let parts: Vec<&str> = line.split_whitespace().collect();
             parts.first().is_some_and(|id| *id == container_id)
-                && parts.get(1).is_some_and(|status| *status == "running")
+                && parts.get(2).is_some_and(|status| *status == "running")
         }))
     }
 
@@ -356,6 +356,11 @@ impl GVisorProvider {
         let mut cmd = Command::new(runsc);
         cmd.arg("-rootless");
         cmd
+    }
+
+    /// Return the rootfs directory (used by tests for cleanup).
+    pub fn rootfs_dir(&self) -> &PathBuf {
+        &self.rootfs_dir
     }
 }
 
