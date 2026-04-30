@@ -18,9 +18,18 @@ fn spawn_gateway() -> (std::process::Child, impl Write, impl BufRead) {
         .unwrap()
         .join("target/debug/bastion-gateway");
     
+    let worker = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/bastion-worker");
+
     let mut child = Command::new(&binary)
         .arg("--image")
         .arg("debian:bookworm-slim")
+        .arg("--worker-binary")
+        .arg(&worker)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

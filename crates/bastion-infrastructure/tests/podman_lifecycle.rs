@@ -10,9 +10,18 @@ use bastion_domain::shared::id::SandboxId;
 
 /// Helper to create a PodmanProvider connected to the local daemon.
 fn create_provider() -> bastion_infrastructure::provider::PodmanProvider {
+    // Find worker binary relative to workspace root
+    let worker_bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/debug/bastion-worker");
+
     bastion_infrastructure::provider::PodmanProvider::new(
         "/run/user/1000/podman/podman.sock",
         "debian:bookworm-slim",
+        worker_bin,
     )
     .expect("Failed to connect to Podman. Is Podman running?")
 }

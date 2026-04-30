@@ -2,6 +2,7 @@
 //!
 //! Entry point for the sandbox gateway MCP server.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -28,6 +29,10 @@ struct Args {
     /// Default image to use for sandboxes
     #[arg(long, default_value = "debian:bookworm-slim")]
     image: String,
+
+    /// Path to bastion-worker binary (for container injection)
+    #[arg(long, default_value = "target/debug/bastion-worker")]
+    worker_binary: String,
 
     /// Path to configuration file
     #[arg(short, long, default_value = "config/sandbox-gateway.toml")]
@@ -79,7 +84,8 @@ async fn main() -> Result<()> {
     let mut factory = ProviderFactory::new("podman");
 
     let podman =
-        PodmanProvider::new(&args.socket, &args.image).expect("Failed to connect to Podman");
+        PodmanProvider::new(&args.socket, &args.image, PathBuf::from(&args.worker_binary))
+            .expect("Failed to connect to Podman");
 
     // Verify connection to Podman
     match podman.ping().await {

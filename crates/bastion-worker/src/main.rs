@@ -5,38 +5,33 @@
 
 use anyhow::Result;
 use clap::Parser;
+use crate::sandbox::v1::worker_agent_server::WorkerAgentServer;
+use tonic::transport::Server;
+
+mod sandbox;
+mod worker;
 
 #[derive(Parser, Debug)]
-#[command(name = "bastion-worker", version, about = "Bastion Sandbox Worker")]
+#[command(name = "bastion-worker", version)]
 struct Args {
-    /// gRPC listen address
     #[arg(long, default_value = "0.0.0.0:50051")]
     grpc_addr: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("bastion=debug".parse()?),
-        )
-        .init();
-
+    tracing_subscriber::fmt().init();
     let args = Args::parse();
 
-    tracing::info!(
-        grpc_addr = %args.grpc_addr,
-        "Bastion Worker starting..."
-    );
+    let addr = args.grpc_addr.parse()?;
+    let service = WorkerAgentServer::new(worker::WorkerService);
 
-    // TODO: Start gRPC server with tonic
-    // For PoC: just log and wait
-    tracing::info!("Worker ready (stub)");
+    tracing::info!("Worker Agent starting on {}", addr);
 
-    // Wait for shutdown signal (using std::future::pending() for PoC stub)
-    std::future::pending::<()>().await;
-    tracing::info!("Worker shutting down");
+    Server::builder()
+        .add_service(service)
+        .serve(addr)
+        .await?;
 
     Ok(())
 }

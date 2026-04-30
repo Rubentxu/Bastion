@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 bastion-domain = { workspace = true }
 tonic = { workspace = true }
+tonic-prost = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
