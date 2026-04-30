@@ -25,3 +25,6 @@ futures = { workspace = true }
 clap = { workspace = true }
 toml = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+rand = "0.8"
