@@ -4,14 +4,16 @@
 //! Communication via HTTP PUT/GET over Unix socket.
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::time::sleep;
 
 use bastion_domain::execution::command::{CommandResult, CommandSpec};
@@ -35,6 +37,8 @@ pub struct FirecrackerProvider {
     vm_dir: PathBuf,
     /// Whether the rootfs is squashfs (read-only).
     rootfs_readonly: bool,
+    /// Running firecracker processes keyed by sandbox ID.
+    children: Arc<DashMap<String, Child>>,
 }
 
 impl std::fmt::Debug for FirecrackerProvider {
@@ -85,11 +89,8 @@ impl FirecrackerProvider {
             DomainError::Config(format!("Cannot create VM directory: {e}"))
         })?;
 
-        // Detect read-only filesystems (squashfs)
-        let rootfs_readonly = rootfs_path
-            .extension()
-            .map(|ext| ext == "squashfs")
-            .unwrap_or(false);
+        // Detect read-only filesystems (squashfs) by magic bytes
+        let rootfs_readonly = Self::detect_readonly(&rootfs_path);
 
         Ok(Self {
             firecracker_binary,
@@ -97,6 +98,7 @@ impl FirecrackerProvider {
             rootfs_path,
             vm_dir,
             rootfs_readonly,
+            children: Arc::new(DashMap::new()),
         })
     }
 
@@ -146,14 +148,31 @@ impl FirecrackerProvider {
             DomainError::Internal(format!("Failed to write to Firecracker socket: {e}"))
         })?;
 
-        // Read response
-        let mut buf = Vec::new();
-        stream.read_to_end(&mut buf).await.map_err(|e| {
-            DomainError::Internal(format!("Failed to read from Firecracker socket: {e}"))
-        })?;
+        // Read response headers (until \r\n\r\n)
+        let mut header_buf = Vec::new();
+        let mut buf = [0u8; 1];
+        loop {
+            let n = stream.read(&mut buf).await.map_err(|e| {
+                DomainError::Internal(format!("Failed to read headers: {e}"))
+            })?;
+            if n == 0 {
+                break;
+            }
+            header_buf.push(buf[0]);
+            // Check for \r\n\r\n terminator
+            let len = header_buf.len();
+            if len >= 4
+                && header_buf[len - 4] == b'\r'
+                && header_buf[len - 3] == b'\n'
+                && header_buf[len - 2] == b'\r'
+                && header_buf[len - 1] == b'\n'
+            {
+                break;
+            }
+        }
 
-        let response = String::from_utf8_lossy(&buf);
-        let status_line = response
+        let headers_str = String::from_utf8_lossy(&header_buf);
+        let status_line = headers_str
             .lines()
             .next()
             .unwrap_or("HTTP/1.1 500 ?");
@@ -163,14 +182,37 @@ impl FirecrackerProvider {
             .and_then(|s| s.parse().ok())
             .unwrap_or(500);
 
-        // Extract JSON body (after double CRLF)
-        let json_str = response
-            .split("\r\n\r\n")
-            .nth(1)
-            .unwrap_or("{}");
+        // Parse Content-Length
+        let content_length: usize = headers_str
+            .lines()
+            .find(|l| l.to_lowercase().starts_with("content-length:"))
+            .and_then(|l| l.split(':').nth(1))
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+
+        // Read body if present
+        let mut body_buf = vec![0u8; content_length];
+        if content_length > 0 {
+            let mut total = 0;
+            while total < content_length {
+                let n = stream.read(&mut body_buf[total..]).await.map_err(|e| {
+                    DomainError::Internal(format!("Failed to read body: {e}"))
+                })?;
+                if n == 0 {
+                    break;
+                }
+                total += n;
+            }
+        }
+
+        let json_str = if content_length > 0 {
+            String::from_utf8_lossy(&body_buf[..content_length]).to_string()
+        } else {
+            "{}".to_string()
+        };
 
         let json: serde_json::Value =
-            serde_json::from_str(json_str).unwrap_or(serde_json::json!({}));
+            serde_json::from_str(&json_str).unwrap_or(serde_json::json!({}));
 
         // Firecracker returns 204 No Content for many operations
         if status_code >= 400 {
@@ -183,6 +225,21 @@ impl FirecrackerProvider {
         }
 
         Ok(json)
+    }
+
+    /// Detect if a filesystem image is read-only by checking magic bytes.
+    fn detect_readonly(path: &Path) -> bool {
+        use std::io::Read;
+        let mut file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        let mut magic = [0u8; 4];
+        if file.read_exact(&mut magic).is_err() {
+            return false;
+        }
+        // squashfs magic: 0x68737173 = "hsqs"
+        magic == [0x68, 0x73, 0x71, 0x73]
     }
 
     /// Wait for the Firecracker socket to become available (polling).
@@ -242,8 +299,8 @@ impl SandboxProvider for FirecrackerProvider {
                 DomainError::Internal(format!("Failed to spawn Firecracker: {e}"))
             })?;
 
-        // Store the PID for later cleanup (we'll rely on kill_on_drop)
-        let _pid = child.id();
+        // Store child to prevent it from being dropped (and killed)
+        self.children.insert(id.to_string(), child);
 
         // 2. Wait for socket to appear
         Self::wait_for_socket(&socket_path, Duration::from_secs(5)).await?;
@@ -335,6 +392,11 @@ impl SandboxProvider for FirecrackerProvider {
 
             // Small delay for graceful shutdown
             sleep(Duration::from_millis(200)).await;
+        }
+
+        // Kill the firecracker process
+        if let Some((_, mut child)) = self.children.remove(&id.to_string()) {
+            let _ = child.kill().await;
         }
 
         // Clean up sandbox directory (which also removes the socket)
