@@ -118,7 +118,7 @@ impl GVisorProvider {
     ) -> Result<(Vec<u8>, Vec<u8>, i32), DomainError> {
         tracing::debug!(container_id, shell_cmd, "Running runsc exec");
 
-        let output = Command::new(&self.runsc_binary)
+        let output = self.runsc_cmd()
             .args(["exec", container_id, "sh", "-c", shell_cmd])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -145,7 +145,7 @@ impl GVisorProvider {
         let gateway = format!("http://{}", self.gateway_addr);
 
         tokio::spawn(async move {
-            let result = Command::new(&runsc)
+            let result = Self::runsc_cmd_static(&runsc)
                 .args([
                     "exec",
                     &cid,
@@ -329,7 +329,7 @@ impl GVisorProvider {
 
     /// Check if a container is running via runsc list.
     async fn container_is_running(&self, container_id: &str) -> Result<bool, DomainError> {
-        let output = Command::new(&self.runsc_binary)
+        let output = self.runsc_cmd()
             .args(["list"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -344,6 +344,18 @@ impl GVisorProvider {
             parts.first().is_some_and(|id| *id == container_id)
                 && parts.get(1).is_some_and(|status| *status == "running")
         }))
+    }
+
+    /// Create a `Command` with rootless runsc flags (for rootless gVisor).
+    fn runsc_cmd(&self) -> Command {
+        Self::runsc_cmd_static(&self.runsc_binary)
+    }
+
+    /// Static version that takes a path (for use in spawned tasks without self).
+    fn runsc_cmd_static(runsc: &Path) -> Command {
+        let mut cmd = Command::new(runsc);
+        cmd.arg("-rootless");
+        cmd
     }
 }
 
@@ -414,9 +426,9 @@ impl SandboxProvider for GVisorProvider {
         let bundle_dir = self.create_oci_bundle(&sandbox_id, &image)?;
 
         // Spawn runsc run (this process owns the container's lifetime)
-        let mut child = Command::new(&self.runsc_binary)
+        let mut child = self.runsc_cmd()
             .args([
-                "-rootless",
+                "--network=none",
                 "run",
                 "-bundle",
                 &bundle_dir.to_string_lossy(),
@@ -512,7 +524,7 @@ impl SandboxProvider for GVisorProvider {
         };
 
         // Force-delete the container via runsc (best-effort)
-        let _ = Command::new(&self.runsc_binary)
+        let _ = self.runsc_cmd()
             .args(["delete", "-force", &sandbox_id])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -675,6 +687,7 @@ impl SandboxProvider for GVisorProvider {
 
         tokio::spawn(async move {
             let output = Command::new(&runsc)
+                .arg("-rootless")
                 .args(["exec", &cid, "sh", "-c", &shell_cmd])
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
