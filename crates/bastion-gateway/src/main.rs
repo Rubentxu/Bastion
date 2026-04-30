@@ -2,15 +2,23 @@
 //!
 //! Entry point for the sandbox gateway MCP server.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
 
+use bastion_domain::execution::command::{CommandResult, CommandSpec};
+use bastion_domain::file_ops::FileEntry;
+use bastion_domain::provider::capabilities::ProviderCapabilities;
+use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::provider::router::CommandRouter;
-use bastion_domain::provider::SandboxProvider;
+use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::repository::SandboxRepository;
+use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
+use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::persistence::InMemorySandboxRepository;
 use bastion_infrastructure::pool::{PoolConfig, SandboxPoolManager};
@@ -96,12 +104,14 @@ impl Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Logs to stderr to keep stdout clean for MCP JSON-RPC protocol
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("bastion=debug".parse()?),
         )
         .json()
+        .with_writer(std::io::stderr)
         .init();
 
     let args = Args::parse();
@@ -120,22 +130,38 @@ async fn main() -> Result<()> {
     // Start watchdog to detect dead workers (10s heartbeat, 30s watchdog timeout)
     registry.start_watchdog(10000);
 
-    let mut podman =
-        PodmanProvider::new(&args.socket, &args.image, PathBuf::from(&args.worker_binary))
-            .expect("Failed to connect to Podman");
+    // Try to connect to Podman — degrade gracefully if unavailable
+    let podman_result =
+        PodmanProvider::new(&args.socket, &args.image, PathBuf::from(&args.worker_binary));
 
-    // Wire the command router so PodmanProvider can route commands through the registry
-    podman.set_command_router(registry.clone() as Arc<dyn CommandRouter>);
+    let podman: Arc<dyn SandboxProvider> = match podman_result {
+        Ok(mut p) => {
+            // Wire the command router so PodmanProvider can route commands through the registry
+            p.set_command_router(registry.clone() as Arc<dyn CommandRouter>);
 
-    // Verify connection to Podman
-    match podman.ping().await {
-        Ok(pong) => tracing::info!(pong = %pong, "Connected to Podman"),
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to ping Podman, containers may not be reachable")
+            // Verify connection to Podman
+            match p.ping().await {
+                Ok(pong) => tracing::info!(pong = %pong, "Connected to Podman"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to ping Podman, containers may not be reachable")
+                }
+            }
+
+            tracing::info!("Podman provider initialized");
+            Arc::new(p)
         }
-    }
-
-    let podman = Arc::new(podman) as Arc<dyn SandboxProvider>;
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                socket = %args.socket,
+                "Podman not available — sandbox operations will fail. \
+                 Start Podman or set --socket to the correct path."
+            );
+            // Create a "null" provider that errors on all operations
+            // This allows the gateway to start for health checks and tool listing
+            Arc::new(NullProvider::new(e.to_string())) as Arc<dyn SandboxProvider>
+        }
+    };
     factory.register("podman", podman.clone());
 
     // Optionally create pool manager
@@ -260,4 +286,100 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Fallback provider that errors on all sandbox operations.
+/// Used when no container runtime is available, allowing the gateway
+/// to still serve health checks and tool listings.
+struct NullProvider {
+    reason: String,
+}
+
+impl NullProvider {
+    fn new(reason: String) -> Self {
+        Self { reason }
+    }
+}
+
+impl std::fmt::Debug for NullProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NullProvider")
+            .field("reason", &self.reason)
+            .finish()
+    }
+}
+
+#[async_trait::async_trait]
+impl SandboxProvider for NullProvider {
+    async fn create(
+        &self,
+        _id: &SandboxId,
+        _template: &str,
+        _resources: &ResourcesSpec,
+        _network: &NetworkSpec,
+        _env_vars: &HashMap<String, String>,
+        _timeout_ms: u64,
+    ) -> Result<Sandbox, DomainError> {
+        Err(DomainError::ProviderUnavailable(format!(
+            "No provider available: {}",
+            self.reason
+        )))
+    }
+
+    async fn terminate(&self, _id: &SandboxId) -> Result<(), DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
+    }
+
+    async fn is_alive(&self, _id: &SandboxId) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+
+    async fn run_command(
+        &self,
+        _id: &SandboxId,
+        _command: &CommandSpec,
+    ) -> Result<CommandResult, DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
+    }
+
+    async fn run_command_stream(
+        &self,
+        _id: &SandboxId,
+        _command: &CommandSpec,
+    ) -> Result<CommandStream, DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
+    }
+
+    async fn write_file(
+        &self,
+        _id: &SandboxId,
+        _path: &str,
+        _content: &[u8],
+    ) -> Result<(), DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
+    }
+
+    async fn read_file(
+        &self,
+        _id: &SandboxId,
+        _path: &str,
+    ) -> Result<Vec<u8>, DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
+    }
+
+    async fn list_files(
+        &self,
+        _id: &SandboxId,
+        _dir: &str,
+    ) -> Result<Vec<FileEntry>, DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::default()
+    }
+
+    fn name(&self) -> &str {
+        "null"
+    }
 }

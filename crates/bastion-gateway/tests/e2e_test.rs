@@ -94,6 +94,13 @@ fn send_notification(stdin: &mut impl Write, method: &str, params: Value) {
 
 #[test]
 fn test_gateway_e2e_lifecycle() {
+    // Requires Podman daemon running
+    let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
+    if !socket.exists() {
+        eprintln!("Skipping: Podman socket not found at {:?}", socket);
+        return;
+    }
+
     let (mut child, mut stdin, mut reader) = spawn_gateway();
 
     // Small delay for gateway startup
