@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use bastion_domain::execution::command::{CommandResult, CommandSpec};
+use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
@@ -290,13 +291,95 @@ impl SandboxProvider for PodmanProvider {
 
     async fn run_command_stream(
         &self,
-        _id: &SandboxId,
-        _command: &CommandSpec,
+        id: &SandboxId,
+        command: &CommandSpec,
     ) -> Result<CommandStream, DomainError> {
-        // TODO: Implement streaming via exec with streaming output
-        Err(DomainError::UnsupportedOperation(
-            "streaming not yet implemented".to_string(),
-        ))
+        let container_name = id.to_string();
+
+        tracing::info!(
+            sandbox_id = %id,
+            command = %command.command,
+            "Starting streaming command via Podman exec"
+        );
+
+        // Build full command string
+        let full_command = if command.args.is_empty() {
+            command.command.clone()
+        } else {
+            format!("{} {}", command.command, command.args.join(" "))
+        };
+
+        // Create exec with streaming output
+        let exec_config = bollard::exec::CreateExecOptions {
+            cmd: Some(vec!["sh".to_string(), "-c".to_string(), full_command]),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            ..Default::default()
+        };
+
+        let exec = self
+            .docker
+            .create_exec(&container_name, exec_config)
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to create exec: {e}")))?;
+
+        let exec_id = exec.id.clone();
+        let docker = self.docker.clone();
+
+        match self
+            .docker
+            .start_exec(&exec_id, None)
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to start exec: {e}")))?
+        {
+            StartExecResults::Attached { output, .. } => {
+                // Convert LogOutput stream to CommandChunk stream
+                let docker_for_exit = docker.clone();
+                let exec_id_for_exit = exec_id.clone();
+                let exec_id_for_stream = exec_id.clone();
+
+                let stream = output.map(move |log_result| {
+                    match log_result {
+                        Ok(LogOutput::StdOut { message }) => {
+                            Ok(CommandChunk::stdout(message))
+                        }
+                        Ok(LogOutput::StdErr { message }) => {
+                            Ok(CommandChunk::stderr(message))
+                        }
+                        Ok(LogOutput::Console { message }) => {
+                            Ok(CommandChunk::stdout(message))
+                        }
+                        Ok(LogOutput::StdIn { .. }) => {
+                            // Ignore stdin output
+                            Ok(CommandChunk::stdout(Vec::new()))
+                        }
+                        Err(e) => {
+                            Ok(CommandChunk::error(e.to_string()))
+                        }
+                    }
+                });
+
+                // Append exit code at the end
+                let stream_with_exit = stream.chain(futures::stream::once(async move {
+                    let info = docker_for_exit
+                        .inspect_exec(&exec_id_for_exit)
+                        .await
+                        .map_err(|e| DomainError::Internal(format!("Failed to inspect exec: {e}")))?;
+                    let code = info.exit_code.unwrap_or(-1) as i32;
+                    tracing::debug!(
+                        exec_id = %exec_id_for_stream,
+                        exit_code = code,
+                        "Exec completed"
+                    );
+                    Ok(CommandChunk::exit_code(code))
+                }));
+
+                Ok(Box::pin(stream_with_exit))
+            }
+            StartExecResults::Detached => {
+                Err(DomainError::Internal("Exec started in detached mode".to_string()))
+            }
+        }
     }
 
     async fn write_file(

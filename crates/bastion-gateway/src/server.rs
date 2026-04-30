@@ -4,15 +4,17 @@
 
 use std::sync::Arc;
 
+use futures::StreamExt;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{schemars, tool, tool_router};
 use serde::Deserialize;
 use schemars::JsonSchema;
 
-use bastion_application::execution::RunCommandUseCase;
+use bastion_application::execution::{RunCommandStreamUseCase, RunCommandUseCase};
 use bastion_application::file_ops::{ListFilesUseCase, ReadFileUseCase, WriteFileUseCase};
 use bastion_application::sandbox::{CreateSandboxUseCase, GetSandboxInfoUseCase, ListSandboxesUseCase, TerminateSandboxUseCase};
 use bastion_domain::execution::command::CommandSpec;
+use bastion_domain::execution::stream::ChunkType;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::shared::id::SandboxId;
@@ -90,6 +92,14 @@ pub struct SandboxInfoParams {
 pub struct SandboxListFilesParams {
     pub sandbox_id: String,
     pub path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SandboxRunStreamParams {
+    /// ID of the sandbox
+    pub sandbox_id: String,
+    /// Command to execute
+    pub command: String,
 }
 
 #[tool_router(server_handler)]
@@ -171,6 +181,59 @@ impl BastionGateway {
                 "duration_ms": result.duration_ms,
                 "timed_out": result.timed_out
             }).to_string(),
+            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    #[tool(description = "Execute a command with streaming output (returns stdout/stderr separately with exit code)")]
+    async fn sandbox_run_stream(
+        &self,
+        Parameters(params): Parameters<SandboxRunStreamParams>,
+    ) -> String {
+        tracing::info!(sandbox_id = %params.sandbox_id, command = %params.command, "Running streaming command");
+
+        let sandbox_id = SandboxId::new(params.sandbox_id.clone());
+        let command_spec = CommandSpec::new(&params.command);
+
+        let use_case = RunCommandStreamUseCase::new(self.repository.clone());
+
+        match use_case.execute(&sandbox_id, &command_spec, self.provider.as_ref()).await {
+            Ok(mut stream) => {
+                let mut stdout_parts = Vec::new();
+                let mut stderr_parts = Vec::new();
+                let mut exit_code = -1i32;
+
+                while let Some(chunk_result) = stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => match chunk.chunk_type {
+                            ChunkType::Stdout => {
+                                stdout_parts.push(String::from_utf8_lossy(&chunk.data).to_string())
+                            }
+                            ChunkType::Stderr => {
+                                stderr_parts.push(String::from_utf8_lossy(&chunk.data).to_string())
+                            }
+                            ChunkType::ExitCode => {
+                                if chunk.data.len() >= 4 {
+                                    exit_code = i32::from_le_bytes(
+                                        chunk.data[..4].try_into().unwrap_or([-1i8 as u8, 0, 0, 0])
+                                    );
+                                }
+                            }
+                            _ => {}
+                        },
+                        Err(e) => {
+                            stderr_parts.push(format!("Stream error: {}", e));
+                        }
+                    }
+                }
+
+                serde_json::json!({
+                    "exit_code": exit_code,
+                    "stdout": stdout_parts.join(""),
+                    "stderr": stderr_parts.join(""),
+                    "chunks_received": stdout_parts.len() + stderr_parts.len(),
+                }).to_string()
+            }
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
     }
