@@ -9,6 +9,7 @@ use clap::Parser;
 
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::sandbox::repository::SandboxRepository;
+use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::persistence::InMemorySandboxRepository;
 use bastion_infrastructure::pool::{PoolConfig, SandboxPoolManager};
 use bastion_infrastructure::provider::{PodmanProvider, ProviderFactory};
@@ -62,7 +63,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("bastion=debug".parse()?)
+                .add_directive("bastion=debug".parse()?),
         )
         .json()
         .init();
@@ -77,13 +78,15 @@ async fn main() -> Result<()> {
     // Create provider factory and register Podman
     let mut factory = ProviderFactory::new("podman");
 
-    let podman = PodmanProvider::new(&args.socket, &args.image)
-        .expect("Failed to connect to Podman");
+    let podman =
+        PodmanProvider::new(&args.socket, &args.image).expect("Failed to connect to Podman");
 
     // Verify connection to Podman
     match podman.ping().await {
         Ok(pong) => tracing::info!(pong = %pong, "Connected to Podman"),
-        Err(e) => tracing::warn!(error = %e, "Failed to ping Podman, containers may not be reachable"),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to ping Podman, containers may not be reachable")
+        }
     }
 
     let podman = Arc::new(podman) as Arc<dyn SandboxProvider>;
@@ -99,11 +102,7 @@ async fn main() -> Result<()> {
             refill_interval_ms: args.pool_refill_interval_ms,
         };
 
-        let manager = SandboxPoolManager::new(
-            podman.clone(),
-            repository.clone(),
-            pool_config,
-        );
+        let manager = SandboxPoolManager::new(podman.clone(), repository.clone(), pool_config);
 
         // Register the default template with the pool
         manager.register_template(&args.image);
@@ -124,8 +123,12 @@ async fn main() -> Result<()> {
     // Clone pool_manager for potential cleanup after server exits
     let pool_manager_cleanup = pool_manager.clone();
 
+    // Create gateway metrics
+    let metrics = GatewayMetrics::default();
+
     // Create gateway and start MCP server
-    let gateway = server::BastionGateway::new(podman.clone(), repository.clone(), pool_manager);
+    let gateway =
+        server::BastionGateway::new(podman.clone(), repository.clone(), pool_manager, metrics);
 
     tracing::info!("MCP Gateway ready — serving on stdio");
 

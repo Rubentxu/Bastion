@@ -16,7 +16,10 @@ pub trait SandboxRepository: Send + Sync + std::fmt::Debug {
     async fn save(&self, sandbox: &Sandbox) -> Result<(), crate::shared::DomainError>;
 
     /// Retrieve a sandbox by ID.
-    async fn find_by_id(&self, id: &SandboxId) -> Result<Option<Sandbox>, crate::shared::DomainError>;
+    async fn find_by_id(
+        &self,
+        id: &SandboxId,
+    ) -> Result<Option<Sandbox>, crate::shared::DomainError>;
 
     /// Update an existing sandbox.
     async fn update(&self, sandbox: &Sandbox) -> Result<(), crate::shared::DomainError>;

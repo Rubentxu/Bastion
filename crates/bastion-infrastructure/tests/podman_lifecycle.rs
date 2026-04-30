@@ -45,7 +45,10 @@ async fn test_sandbox_create_and_terminate() {
     assert!(sandbox.is_active());
 
     // Verify it's alive
-    let alive = provider.is_alive(&sandbox_id).await.expect("is_alive failed");
+    let alive = provider
+        .is_alive(&sandbox_id)
+        .await
+        .expect("is_alive failed");
     assert!(alive);
 
     // Terminate
@@ -80,12 +83,23 @@ async fn test_sandbox_run_command() {
         .await
         .expect("Failed to run command");
 
-    assert!(result.is_success(), "Command failed with exit code {}", result.exit_code);
+    assert!(
+        result.is_success(),
+        "Command failed with exit code {}",
+        result.exit_code
+    );
     let stdout = String::from_utf8_lossy(&result.stdout);
-    assert!(stdout.contains("hello world"), "Expected 'hello world' in output, got: {}", stdout);
+    assert!(
+        stdout.contains("hello world"),
+        "Expected 'hello world' in output, got: {}",
+        stdout
+    );
 
     // Cleanup
-    provider.terminate(&sandbox_id).await.expect("Failed to terminate");
+    provider
+        .terminate(&sandbox_id)
+        .await
+        .expect("Failed to terminate");
 }
 
 #[tokio::test]
@@ -125,7 +139,10 @@ async fn test_sandbox_write_and_read_file() {
     );
 
     // Cleanup
-    provider.terminate(&sandbox_id).await.expect("Failed to terminate");
+    provider
+        .terminate(&sandbox_id)
+        .await
+        .expect("Failed to terminate");
 }
 
 #[tokio::test]
@@ -152,11 +169,16 @@ async fn test_sandbox_list_files() {
 
     assert!(!entries.is_empty(), "Root directory should have entries");
     assert!(
-        entries.iter().any(|e| e.path.contains("bin") || e.path.contains("etc")),
+        entries
+            .iter()
+            .any(|e| e.path.contains("bin") || e.path.contains("etc")),
         "Expected standard Linux directories, got: {:?}",
         entries.iter().map(|e| &e.path).collect::<Vec<_>>()
     );
 
     // Cleanup
-    provider.terminate(&sandbox_id).await.expect("Failed to terminate");
+    provider
+        .terminate(&sandbox_id)
+        .await
+        .expect("Failed to terminate");
 }

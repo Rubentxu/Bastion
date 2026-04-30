@@ -30,10 +30,7 @@ pub enum DomainError {
     PermissionDenied(String),
 
     #[error("Command failed with exit code {exit_code}: {stderr}")]
-    CommandFailed {
-        exit_code: i32,
-        stderr: String,
-    },
+    CommandFailed { exit_code: i32, stderr: String },
 
     #[error("Configuration error: {0}")]
     Config(String),

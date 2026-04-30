@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::SandboxProvider;
+use bastion_domain::provider::capabilities::ProviderCapabilities;
 
 /// Information about a registered provider.
 #[derive(Debug, Clone)]

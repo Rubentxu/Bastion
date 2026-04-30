@@ -1,9 +1,9 @@
 //! Terminate sandbox use case.
 
-use bastion_domain::shared::id::SandboxId;
-use bastion_domain::shared::DomainError;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::sandbox::repository::SandboxRepository;
+use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 use std::sync::Arc;
 
 pub struct TerminateSandboxUseCase {
@@ -22,7 +22,8 @@ impl TerminateSandboxUseCase {
     ) -> Result<(), DomainError> {
         tracing::info!(sandbox_id = %sandbox_id, "Terminating sandbox");
 
-        let mut sandbox = self.repository
+        let mut sandbox = self
+            .repository
             .find_by_id(sandbox_id)
             .await?
             .ok_or_else(|| DomainError::NotFound(sandbox_id.to_string()))?;

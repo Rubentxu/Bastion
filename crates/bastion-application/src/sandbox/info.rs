@@ -1,9 +1,9 @@
 //! Get sandbox info use case.
 
 use bastion_domain::sandbox::entity::Sandbox;
-use bastion_domain::shared::id::SandboxId;
-use bastion_domain::shared::DomainError;
 use bastion_domain::sandbox::repository::SandboxRepository;
+use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 use std::sync::Arc;
 
 pub struct GetSandboxInfoUseCase {

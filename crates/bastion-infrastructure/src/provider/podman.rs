@@ -3,11 +3,11 @@
 //! Creates containers with `sleep infinity`, runs commands via exec API.
 
 use async_trait::async_trait;
+use base64::Engine;
 use bollard::Docker;
 use bollard::container::LogOutput;
 use bollard::exec::StartExecResults;
 use futures::StreamExt;
-use base64::Engine;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -18,8 +18,8 @@ use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
-use bastion_domain::shared::id::SandboxId;
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 
 /// Podman-based sandbox provider using bollard Docker API client.
 pub struct PodmanProvider {
@@ -39,12 +39,8 @@ impl std::fmt::Debug for PodmanProvider {
 impl PodmanProvider {
     /// Connect to Podman via Unix socket.
     pub fn new(socket_path: &str, default_image: &str) -> Result<Self, DomainError> {
-        let docker = Docker::connect_with_unix(
-            socket_path,
-            120,
-            bollard::API_DEFAULT_VERSION,
-        )
-        .map_err(|e| DomainError::ProviderUnavailable(e.to_string()))?;
+        let docker = Docker::connect_with_unix(socket_path, 120, bollard::API_DEFAULT_VERSION)
+            .map_err(|e| DomainError::ProviderUnavailable(e.to_string()))?;
 
         Ok(Self {
             docker,
@@ -68,7 +64,11 @@ impl PodmanProvider {
         command: &str,
     ) -> Result<(Vec<u8>, Vec<u8>, i32), DomainError> {
         let exec_config = bollard::exec::CreateExecOptions {
-            cmd: Some(vec!["sh".to_string(), "-c".to_string(), command.to_string()]),
+            cmd: Some(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                command.to_string(),
+            ]),
             attach_stdout: Some(true),
             attach_stderr: Some(true),
             ..Default::default()
@@ -145,10 +145,7 @@ impl SandboxProvider for PodmanProvider {
         );
 
         // Build env vars as "KEY=VALUE" strings
-        let env: Vec<String> = env_vars
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
+        let env: Vec<String> = env_vars.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
         // Create container running `sleep infinity` to keep it alive
         let container_config = bollard::models::ContainerCreateBody {
@@ -172,7 +169,10 @@ impl SandboxProvider for PodmanProvider {
 
         // Start the container
         self.docker
-            .start_container(&container_name, None::<bollard::query_parameters::StartContainerOptions>)
+            .start_container(
+                &container_name,
+                None::<bollard::query_parameters::StartContainerOptions>,
+            )
             .await
             .map_err(|e| DomainError::Internal(format!("Failed to start container: {e}")))?;
 
@@ -202,7 +202,11 @@ impl SandboxProvider for PodmanProvider {
             .t(10)
             .build();
 
-        if let Err(e) = self.docker.stop_container(&container_name, Some(stop_options)).await {
+        if let Err(e) = self
+            .docker
+            .stop_container(&container_name, Some(stop_options))
+            .await
+        {
             tracing::warn!(sandbox_id = %id, error = %e, "Stop failed, will force-remove");
         }
 
@@ -226,11 +230,7 @@ impl SandboxProvider for PodmanProvider {
 
         match self.docker.inspect_container(&container_name, None).await {
             Ok(info) => {
-                let running = info
-                    .state
-                    .as_ref()
-                    .and_then(|s| s.running)
-                    .unwrap_or(false);
+                let running = info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
                 Ok(running)
             }
             Err(e) => {
@@ -268,8 +268,9 @@ impl SandboxProvider for PodmanProvider {
             format!("{} {}", command.command, command.args.join(" "))
         };
 
-        let (stdout, stderr, exit_code) =
-            self.exec_in_container(&container_name, &full_command).await?;
+        let (stdout, stderr, exit_code) = self
+            .exec_in_container(&container_name, &full_command)
+            .await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -340,22 +341,14 @@ impl SandboxProvider for PodmanProvider {
 
                 let stream = output.map(move |log_result| {
                     match log_result {
-                        Ok(LogOutput::StdOut { message }) => {
-                            Ok(CommandChunk::stdout(message))
-                        }
-                        Ok(LogOutput::StdErr { message }) => {
-                            Ok(CommandChunk::stderr(message))
-                        }
-                        Ok(LogOutput::Console { message }) => {
-                            Ok(CommandChunk::stdout(message))
-                        }
+                        Ok(LogOutput::StdOut { message }) => Ok(CommandChunk::stdout(message)),
+                        Ok(LogOutput::StdErr { message }) => Ok(CommandChunk::stderr(message)),
+                        Ok(LogOutput::Console { message }) => Ok(CommandChunk::stdout(message)),
                         Ok(LogOutput::StdIn { .. }) => {
                             // Ignore stdin output
                             Ok(CommandChunk::stdout(Vec::new()))
                         }
-                        Err(e) => {
-                            Ok(CommandChunk::error(e.to_string()))
-                        }
+                        Err(e) => Ok(CommandChunk::error(e.to_string())),
                     }
                 });
 
@@ -364,7 +357,9 @@ impl SandboxProvider for PodmanProvider {
                     let info = docker_for_exit
                         .inspect_exec(&exec_id_for_exit)
                         .await
-                        .map_err(|e| DomainError::Internal(format!("Failed to inspect exec: {e}")))?;
+                        .map_err(|e| {
+                            DomainError::Internal(format!("Failed to inspect exec: {e}"))
+                        })?;
                     let code = info.exit_code.unwrap_or(-1) as i32;
                     tracing::debug!(
                         exec_id = %exec_id_for_stream,
@@ -376,9 +371,9 @@ impl SandboxProvider for PodmanProvider {
 
                 Ok(Box::pin(stream_with_exit))
             }
-            StartExecResults::Detached => {
-                Err(DomainError::Internal("Exec started in detached mode".to_string()))
-            }
+            StartExecResults::Detached => Err(DomainError::Internal(
+                "Exec started in detached mode".to_string(),
+            )),
         }
     }
 
@@ -398,12 +393,10 @@ impl SandboxProvider for PodmanProvider {
         );
 
         // Use base64 to avoid shell escaping issues
-        let encoded =
-            base64::engine::general_purpose::STANDARD.encode(content);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(content);
         let command = format!("printf '%s' '{encoded}' | base64 -d > '{path}'");
 
-        let (_, stderr, exit_code) =
-            self.exec_in_container(&container_name, &command).await?;
+        let (_, stderr, exit_code) = self.exec_in_container(&container_name, &command).await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(
@@ -416,11 +409,7 @@ impl SandboxProvider for PodmanProvider {
         Ok(())
     }
 
-    async fn read_file(
-        &self,
-        id: &SandboxId,
-        path: &str,
-    ) -> Result<Vec<u8>, DomainError> {
+    async fn read_file(&self, id: &SandboxId, path: &str) -> Result<Vec<u8>, DomainError> {
         let container_name = id.to_string();
 
         tracing::info!(sandbox_id = %id, path, "Reading file via Podman exec");
@@ -439,18 +428,13 @@ impl SandboxProvider for PodmanProvider {
         Ok(stdout)
     }
 
-    async fn list_files(
-        &self,
-        id: &SandboxId,
-        dir: &str,
-    ) -> Result<Vec<FileEntry>, DomainError> {
+    async fn list_files(&self, id: &SandboxId, dir: &str) -> Result<Vec<FileEntry>, DomainError> {
         let container_name = id.to_string();
 
         tracing::info!(sandbox_id = %id, dir, "Listing files via Podman exec");
 
         let command = format!("ls -la '{dir}' 2>/dev/null || ls -la '{dir}'");
-        let (stdout, stderr, exit_code) =
-            self.exec_in_container(&container_name, &command).await?;
+        let (stdout, stderr, exit_code) = self.exec_in_container(&container_name, &command).await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(

@@ -8,15 +8,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use tokio::sync::{oneshot, Semaphore};
+use tokio::sync::{Semaphore, oneshot};
 use tokio::time;
 
 use bastion_domain::provider::port::SandboxProvider;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
-use bastion_domain::shared::id::SandboxId;
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 
 /// Configuration for the pool manager.
 #[derive(Debug, Clone)]
@@ -40,7 +40,7 @@ impl Default for PoolConfig {
             max_idle: 5,
             max_total: 50,
             idle_timeout_ms: 600_000,  // 10 minutes
-            refill_interval_ms: 5_000,  // 5 seconds
+            refill_interval_ms: 5_000, // 5 seconds
         }
     }
 }
@@ -269,7 +269,9 @@ impl SandboxPoolManager {
                 total_evicted += 1;
             }
         }
-        state.total_idle.fetch_sub(total_evicted, std::sync::atomic::Ordering::SeqCst);
+        state
+            .total_idle
+            .fetch_sub(total_evicted, std::sync::atomic::Ordering::SeqCst);
 
         // Then, refill pools that need it
         for mut entry in state.pools.iter_mut() {
@@ -300,7 +302,9 @@ impl SandboxPoolManager {
                             }
                             break;
                         }
-                        state.total_idle.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        state
+                            .total_idle
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                     Err(_) => {
                         // No permits available, skip refill
@@ -331,11 +335,7 @@ impl SandboxPoolManager {
 
         let sandbox = provider
             .create(
-                &id,
-                template,
-                &resources,
-                &network,
-                &env_vars,
+                &id, template, &resources, &network, &env_vars,
                 3_600_000, // 1 hour timeout for pooled sandboxes
             )
             .await?;
@@ -370,8 +370,10 @@ impl SandboxPoolManager {
             }
         }
 
-        self.total_idle.store(0, std::sync::atomic::Ordering::SeqCst);
-        self.total_active.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.total_idle
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        self.total_active
+            .store(0, std::sync::atomic::Ordering::SeqCst);
 
         tracing::info!(terminated = total_terminated, "SandboxPoolManager stopped");
 
@@ -379,17 +381,15 @@ impl SandboxPoolManager {
     }
 
     /// Checkout a sandbox from the pool (or create a new one if pool is empty).
-    pub async fn checkout(
-        &self,
-        template: &str,
-        timeout_ms: u64,
-    ) -> Result<Sandbox, DomainError> {
+    pub async fn checkout(&self, template: &str, timeout_ms: u64) -> Result<Sandbox, DomainError> {
         // Try to get from pool first
         if let Some(mut queue) = self.pools.get_mut(template)
             && let Some(sandbox) = queue.value_mut().checkout()
         {
-            self.total_idle.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            self.total_active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.total_idle
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            self.total_active
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
             tracing::debug!(
                 sandbox_id = %sandbox.id,
@@ -406,7 +406,10 @@ impl SandboxPoolManager {
         // Pool is empty or doesn't exist, fall back to direct creation
         tracing::debug!(template = %template, "Pool empty, creating sandbox directly");
 
-        let permit = self.semaphore.acquire().await
+        let permit = self
+            .semaphore
+            .acquire()
+            .await
             .map_err(|_| DomainError::ResourceExhausted("No permits available".to_string()))?;
 
         let id = SandboxId::generate();
@@ -416,18 +419,12 @@ impl SandboxPoolManager {
 
         let sandbox = self
             .provider
-            .create(
-                &id,
-                template,
-                &resources,
-                &network,
-                &env_vars,
-                timeout_ms,
-            )
+            .create(&id, template, &resources, &network, &env_vars, timeout_ms)
             .await?;
 
         self.repository.save(&sandbox).await?;
-        self.total_active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.total_active
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         // Release permit on drop will count toward max_total
         drop(permit);
@@ -438,7 +435,10 @@ impl SandboxPoolManager {
     /// Return a sandbox to the pool (resets state and returns to pool).
     pub async fn checkin(&self, sandbox_id: &SandboxId) -> Result<(), DomainError> {
         // Find the sandbox in the repository
-        let sandbox = self.repository.find_by_id(sandbox_id).await?
+        let sandbox = self
+            .repository
+            .find_by_id(sandbox_id)
+            .await?
             .ok_or_else(|| DomainError::NotFound(sandbox_id.to_string()))?;
 
         let template = sandbox.template_id.to_string();
@@ -453,8 +453,10 @@ impl SandboxPoolManager {
         if let Some(mut queue) = self.pools.get_mut(&template)
             && queue.value_mut().checkin(sandbox)
         {
-            self.total_active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            self.total_idle.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.total_active
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            self.total_idle
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
             tracing::debug!(
                 sandbox_id = %sandbox_id,
@@ -465,7 +467,8 @@ impl SandboxPoolManager {
         }
 
         // Pool queue doesn't exist or is full, just terminate
-        self.total_active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.total_active
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
 
         tracing::debug!(
             sandbox_id = %sandbox_id,

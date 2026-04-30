@@ -7,17 +7,20 @@ use std::sync::Arc;
 use futures::StreamExt;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{schemars, tool, tool_router};
-use serde::Deserialize;
 use schemars::JsonSchema;
+use serde::Deserialize;
 
 use bastion_application::execution::{RunCommandStreamUseCase, RunCommandUseCase};
 use bastion_application::file_ops::{ListFilesUseCase, ReadFileUseCase, WriteFileUseCase};
-use bastion_application::sandbox::{CreateSandboxUseCase, GetSandboxInfoUseCase, ListSandboxesUseCase, TerminateSandboxUseCase};
+use bastion_application::sandbox::{
+    CreateSandboxUseCase, GetSandboxInfoUseCase, ListSandboxesUseCase, TerminateSandboxUseCase,
+};
 use bastion_domain::execution::command::CommandSpec;
 use bastion_domain::execution::stream::ChunkType;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::shared::id::SandboxId;
+use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::pool::SandboxPoolManager;
 
 /// Bastion MCP Gateway server.
@@ -28,6 +31,7 @@ pub struct BastionGateway {
     provider: Arc<dyn SandboxProvider>,
     repository: Arc<dyn SandboxRepository>,
     pool_manager: Option<Arc<SandboxPoolManager>>,
+    metrics: GatewayMetrics,
 }
 
 impl BastionGateway {
@@ -35,11 +39,13 @@ impl BastionGateway {
         provider: Arc<dyn SandboxProvider>,
         repository: Arc<dyn SandboxRepository>,
         pool_manager: Option<Arc<SandboxPoolManager>>,
+        metrics: GatewayMetrics,
     ) -> Self {
         Self {
             provider,
             repository,
             pool_manager,
+            metrics,
         }
     }
 }
@@ -54,7 +60,9 @@ pub struct SandboxCreateParams {
     pub timeout_ms: u64,
 }
 
-fn default_timeout() -> u64 { 3_600_000 }
+fn default_timeout() -> u64 {
+    3_600_000
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxRunParams {
@@ -105,10 +113,7 @@ pub struct SandboxRunStreamParams {
 #[tool_router(server_handler)]
 impl BastionGateway {
     #[tool(description = "Create a new isolated sandbox environment")]
-    async fn sandbox_create(
-        &self,
-        Parameters(params): Parameters<SandboxCreateParams>,
-    ) -> String {
+    async fn sandbox_create(&self, Parameters(params): Parameters<SandboxCreateParams>) -> String {
         tracing::info!(template = %params.template, "Creating sandbox");
 
         // Try pool checkout first if pool is available
@@ -120,12 +125,14 @@ impl BastionGateway {
                         template = %params.template,
                         "Sandbox created via pool checkout"
                     );
+                    self.metrics.record_sandbox_created();
                     return serde_json::json!({
                         "sandbox_id": sandbox.id.to_string(),
                         "status": sandbox.status.to_string(),
                         "template": sandbox.template_id.to_string(),
                         "from_pool": true
-                    }).to_string();
+                    })
+                    .to_string();
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Pool checkout failed, falling back to direct creation");
@@ -150,21 +157,25 @@ impl BastionGateway {
         };
 
         match use_case.execute(input, self.provider.as_ref()).await {
-            Ok(sandbox) => serde_json::json!({
-                "sandbox_id": sandbox.id.to_string(),
-                "status": sandbox.status.to_string(),
-                "template": sandbox.template_id.to_string(),
-                "from_pool": false
-            }).to_string(),
-            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+            Ok(sandbox) => {
+                self.metrics.record_sandbox_created();
+                serde_json::json!({
+                    "sandbox_id": sandbox.id.to_string(),
+                    "status": sandbox.status.to_string(),
+                    "template": sandbox.template_id.to_string(),
+                    "from_pool": false
+                })
+                .to_string()
+            }
+            Err(e) => {
+                self.metrics.record_error();
+                serde_json::json!({"error": e.to_string()}).to_string()
+            }
         }
     }
 
     #[tool(description = "Execute a command in a sandbox")]
-    async fn sandbox_run(
-        &self,
-        Parameters(params): Parameters<SandboxRunParams>,
-    ) -> String {
+    async fn sandbox_run(&self, Parameters(params): Parameters<SandboxRunParams>) -> String {
         tracing::info!(sandbox_id = %params.sandbox_id, command = %params.command, "Running command");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
@@ -173,19 +184,31 @@ impl BastionGateway {
 
         let command_spec = CommandSpec::new(&params.command);
 
-        match use_case.execute(&sandbox_id, &command_spec, self.provider.as_ref()).await {
-            Ok(result) => serde_json::json!({
-                "exit_code": result.exit_code,
-                "stdout": String::from_utf8_lossy(&result.stdout).to_string(),
-                "stderr": String::from_utf8_lossy(&result.stderr).to_string(),
-                "duration_ms": result.duration_ms,
-                "timed_out": result.timed_out
-            }).to_string(),
-            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+        match use_case
+            .execute(&sandbox_id, &command_spec, self.provider.as_ref())
+            .await
+        {
+            Ok(result) => {
+                self.metrics.record_command(result.duration_ms * 1000);
+                serde_json::json!({
+                    "exit_code": result.exit_code,
+                    "stdout": String::from_utf8_lossy(&result.stdout).to_string(),
+                    "stderr": String::from_utf8_lossy(&result.stderr).to_string(),
+                    "duration_ms": result.duration_ms,
+                    "timed_out": result.timed_out
+                })
+                .to_string()
+            }
+            Err(e) => {
+                self.metrics.record_error();
+                serde_json::json!({"error": e.to_string()}).to_string()
+            }
         }
     }
 
-    #[tool(description = "Execute a command with streaming output (returns stdout/stderr separately with exit code)")]
+    #[tool(
+        description = "Execute a command with streaming output (returns stdout/stderr separately with exit code)"
+    )]
     async fn sandbox_run_stream(
         &self,
         Parameters(params): Parameters<SandboxRunStreamParams>,
@@ -196,8 +219,12 @@ impl BastionGateway {
         let command_spec = CommandSpec::new(&params.command);
 
         let use_case = RunCommandStreamUseCase::new(self.repository.clone());
+        let start_time = std::time::Instant::now();
 
-        match use_case.execute(&sandbox_id, &command_spec, self.provider.as_ref()).await {
+        match use_case
+            .execute(&sandbox_id, &command_spec, self.provider.as_ref())
+            .await
+        {
             Ok(mut stream) => {
                 let mut stdout_parts = Vec::new();
                 let mut stderr_parts = Vec::new();
@@ -215,7 +242,7 @@ impl BastionGateway {
                             ChunkType::ExitCode => {
                                 if chunk.data.len() >= 4 {
                                     exit_code = i32::from_le_bytes(
-                                        chunk.data[..4].try_into().unwrap_or([-1i8 as u8, 0, 0, 0])
+                                        chunk.data[..4].try_into().unwrap_or([-1i8 as u8, 0, 0, 0]),
                                     );
                                 }
                             }
@@ -227,50 +254,63 @@ impl BastionGateway {
                     }
                 }
 
+                let duration_us = start_time.elapsed().as_micros() as u64;
+                self.metrics.record_command(duration_us);
+
                 serde_json::json!({
                     "exit_code": exit_code,
                     "stdout": stdout_parts.join(""),
                     "stderr": stderr_parts.join(""),
                     "chunks_received": stdout_parts.len() + stderr_parts.len(),
-                }).to_string()
+                })
+                .to_string()
             }
-            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+            Err(e) => {
+                self.metrics.record_error();
+                serde_json::json!({"error": e.to_string()}).to_string()
+            }
         }
     }
 
     #[tool(description = "Write a file to a sandbox")]
-    async fn sandbox_write(
-        &self,
-        Parameters(params): Parameters<SandboxWriteParams>,
-    ) -> String {
+    async fn sandbox_write(&self, Parameters(params): Parameters<SandboxWriteParams>) -> String {
         tracing::info!(sandbox_id = %params.sandbox_id, path = %params.path, "Writing file");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
 
         let use_case = WriteFileUseCase::new(self.repository.clone());
 
-        match use_case.execute(&sandbox_id, &params.path, params.content.as_bytes(), self.provider.as_ref()).await {
+        match use_case
+            .execute(
+                &sandbox_id,
+                &params.path,
+                params.content.as_bytes(),
+                self.provider.as_ref(),
+            )
+            .await
+        {
             Ok(()) => serde_json::json!({"status": "ok"}).to_string(),
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
     }
 
     #[tool(description = "Read a file from a sandbox")]
-    async fn sandbox_read(
-        &self,
-        Parameters(params): Parameters<SandboxReadParams>,
-    ) -> String {
+    async fn sandbox_read(&self, Parameters(params): Parameters<SandboxReadParams>) -> String {
         tracing::info!(sandbox_id = %params.sandbox_id, path = %params.path, "Reading file");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
 
         let use_case = ReadFileUseCase::new(self.repository.clone());
 
-        match use_case.execute(&sandbox_id, &params.path, self.provider.as_ref()).await {
+        match use_case
+            .execute(&sandbox_id, &params.path, self.provider.as_ref())
+            .await
+        {
             Ok(content) => serde_json::json!({
                 "content": String::from_utf8_lossy(&content).to_string(),
                 "encoding": "utf-8"
-            }).to_string(),
+            })
+            .to_string(),
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
     }
@@ -286,20 +326,27 @@ impl BastionGateway {
 
         let use_case = ListFilesUseCase::new(self.repository.clone());
 
-        match use_case.execute(&sandbox_id, &params.path, self.provider.as_ref()).await {
+        match use_case
+            .execute(&sandbox_id, &params.path, self.provider.as_ref())
+            .await
+        {
             Ok(entries) => {
-                let list: Vec<serde_json::Value> = entries.iter().map(|e| {
-                    serde_json::json!({
-                        "path": e.path,
-                        "is_directory": e.is_directory,
-                        "size_bytes": e.size_bytes,
-                        "permissions": e.permissions,
+                let list: Vec<serde_json::Value> = entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "path": e.path,
+                            "is_directory": e.is_directory,
+                            "size_bytes": e.size_bytes,
+                            "permissions": e.permissions,
+                        })
                     })
-                }).collect();
+                    .collect();
                 serde_json::json!({
                     "count": list.len(),
                     "entries": list
-                }).to_string()
+                })
+                .to_string()
             }
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
@@ -319,10 +366,12 @@ impl BastionGateway {
             match pool.checkin(&sandbox_id).await {
                 Ok(()) => {
                     tracing::debug!(sandbox_id = %params.sandbox_id, "Sandbox returned to pool");
+                    self.metrics.record_sandbox_terminated();
                     return serde_json::json!({
                         "status": "pooled",
                         "sandbox_id": params.sandbox_id
-                    }).to_string();
+                    })
+                    .to_string();
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Pool checkin failed, terminating directly");
@@ -334,16 +383,19 @@ impl BastionGateway {
         let use_case = TerminateSandboxUseCase::new(self.repository.clone());
 
         match use_case.execute(&sandbox_id, self.provider.as_ref()).await {
-            Ok(()) => serde_json::json!({"status": "terminated"}).to_string(),
-            Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
+            Ok(()) => {
+                self.metrics.record_sandbox_terminated();
+                serde_json::json!({"status": "terminated"}).to_string()
+            }
+            Err(e) => {
+                self.metrics.record_error();
+                serde_json::json!({"error": e.to_string()}).to_string()
+            }
         }
     }
 
     #[tool(description = "Get information about a sandbox")]
-    async fn sandbox_info(
-        &self,
-        Parameters(params): Parameters<SandboxInfoParams>,
-    ) -> String {
+    async fn sandbox_info(&self, Parameters(params): Parameters<SandboxInfoParams>) -> String {
         tracing::info!(sandbox_id = %params.sandbox_id, "Getting sandbox info");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
@@ -357,42 +409,43 @@ impl BastionGateway {
                 "template": info.template_id.to_string(),
                 "created_at": info.created_at.to_rfc3339(),
                 "expires_at": info.expires_at.map(|t| t.to_rfc3339()),
-            }).to_string(),
+            })
+            .to_string(),
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
     }
 
     #[tool(description = "List all active sandboxes")]
-    async fn sandbox_list(
-        &self,
-    ) -> String {
+    async fn sandbox_list(&self) -> String {
         tracing::info!("Listing active sandboxes");
 
         let use_case = ListSandboxesUseCase::new(self.repository.clone());
 
         match use_case.execute().await {
             Ok(sandboxes) => {
-                let list: Vec<serde_json::Value> = sandboxes.iter().map(|s| {
-                    serde_json::json!({
-                        "sandbox_id": s.id.to_string(),
-                        "status": s.status.to_string(),
-                        "template": s.template_id.to_string(),
-                        "created_at": s.created_at.to_rfc3339(),
+                let list: Vec<serde_json::Value> = sandboxes
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "sandbox_id": s.id.to_string(),
+                            "status": s.status.to_string(),
+                            "template": s.template_id.to_string(),
+                            "created_at": s.created_at.to_rfc3339(),
+                        })
                     })
-                }).collect();
+                    .collect();
                 serde_json::json!({
                     "count": list.len(),
                     "sandboxes": list
-                }).to_string()
+                })
+                .to_string()
             }
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
     }
 
     #[tool(description = "Get sandbox pool statistics")]
-    async fn sandbox_pool_stats(
-        &self,
-    ) -> String {
+    async fn sandbox_pool_stats(&self) -> String {
         tracing::debug!("Getting pool statistics");
 
         if let Some(ref pool) = self.pool_manager {
@@ -410,12 +463,56 @@ impl BastionGateway {
                         "max_idle": t.max_idle
                     })
                 }).collect::<Vec<_>>()
-            }).to_string()
+            })
+            .to_string()
         } else {
             serde_json::json!({
                 "enabled": false,
                 "message": "Pool is not enabled"
-            }).to_string()
+            })
+            .to_string()
         }
+    }
+
+    #[tool(description = "Check gateway health including provider connectivity and pool status")]
+    async fn sandbox_health(&self) -> String {
+        let mut checks = Vec::new();
+
+        // Check provider connectivity
+        checks.push(serde_json::json!({
+            "component": "provider",
+            "provider": self.provider.name(),
+            "status": "ok"
+        }));
+
+        // Check pool status
+        if let Some(ref pool) = self.pool_manager {
+            let stats = pool.stats().await;
+            checks.push(serde_json::json!({
+                "component": "pool",
+                "status": "ok",
+                "enabled": true,
+                "active": stats.active,
+                "idle": stats.idle
+            }));
+        } else {
+            checks.push(serde_json::json!({
+                "component": "pool",
+                "status": "disabled"
+            }));
+        }
+
+        serde_json::json!({
+            "status": "healthy",
+            "version": env!("CARGO_PKG_VERSION"),
+            "checks": checks
+        })
+        .to_string()
+    }
+
+    #[tool(description = "Get gateway metrics in Prometheus format")]
+    async fn sandbox_metrics(&self) -> String {
+        tracing::debug!("Getting metrics");
+        self.metrics.prometheus_export()
     }
 }

@@ -6,8 +6,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::value_objects::{ResourcesSpec, NetworkSpec, SandboxStatus};
-use crate::shared::id::{SandboxId, TemplateId, ProviderId};
+use super::value_objects::{NetworkSpec, ResourcesSpec, SandboxStatus};
+use crate::shared::id::{ProviderId, SandboxId, TemplateId};
 
 /// Sandbox aggregate root.
 ///

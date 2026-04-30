@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use std::pin::Pin;
 
+use super::capabilities::ProviderCapabilities;
 use crate::execution::command::{CommandResult, CommandSpec};
 use crate::execution::stream::CommandChunk;
 use crate::file_ops::FileEntry;
@@ -14,7 +15,6 @@ use crate::sandbox::entity::Sandbox;
 use crate::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
 use crate::shared::DomainError;
 use crate::shared::id::SandboxId;
-use super::capabilities::ProviderCapabilities;
 
 /// Stream type for command output chunks.
 pub type CommandStream = Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>;
@@ -73,18 +73,10 @@ pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
     ) -> Result<(), DomainError>;
 
     /// Read content from a file inside the sandbox.
-    async fn read_file(
-        &self,
-        id: &SandboxId,
-        path: &str,
-    ) -> Result<Vec<u8>, DomainError>;
+    async fn read_file(&self, id: &SandboxId, path: &str) -> Result<Vec<u8>, DomainError>;
 
     /// List files in a directory inside the sandbox.
-    async fn list_files(
-        &self,
-        id: &SandboxId,
-        dir: &str,
-    ) -> Result<Vec<FileEntry>, DomainError>;
+    async fn list_files(&self, id: &SandboxId, dir: &str) -> Result<Vec<FileEntry>, DomainError>;
 
     // ── Metadata ───────────────────────────────────────────────
 

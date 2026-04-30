@@ -1,11 +1,11 @@
 //! Run command with streaming output use case.
 
 use bastion_domain::execution::command::CommandSpec;
-use bastion_domain::provider::port::CommandStream;
 use bastion_domain::provider::SandboxProvider;
+use bastion_domain::provider::port::CommandStream;
 use bastion_domain::sandbox::repository::SandboxRepository;
-use bastion_domain::shared::id::SandboxId;
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 use std::sync::Arc;
 
 pub struct RunCommandStreamUseCase {

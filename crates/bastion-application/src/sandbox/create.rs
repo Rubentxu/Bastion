@@ -1,11 +1,11 @@
 //! Create sandbox use case.
 
-use bastion_domain::sandbox::entity::Sandbox;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
-use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::provider::SandboxProvider;
-use bastion_domain::shared::id::{SandboxId, ProviderId};
+use bastion_domain::sandbox::entity::Sandbox;
+use bastion_domain::sandbox::repository::SandboxRepository;
+use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::{ProviderId, SandboxId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -29,7 +29,10 @@ pub struct CreateSandboxUseCase {
 
 impl CreateSandboxUseCase {
     pub fn new(repository: Arc<dyn SandboxRepository>, default_provider_id: ProviderId) -> Self {
-        Self { repository, default_provider_id }
+        Self {
+            repository,
+            default_provider_id,
+        }
     }
 
     pub async fn execute(
@@ -37,7 +40,8 @@ impl CreateSandboxUseCase {
         input: CreateSandboxInput,
         provider: &dyn SandboxProvider,
     ) -> Result<Sandbox, DomainError> {
-        let _provider_id = input.provider_id
+        let _provider_id = input
+            .provider_id
             .unwrap_or_else(|| self.default_provider_id.clone());
 
         let sandbox_id = SandboxId::generate();
@@ -49,14 +53,16 @@ impl CreateSandboxUseCase {
             "Creating sandbox"
         );
 
-        let sandbox = provider.create(
-            &sandbox_id,
-            &input.template_id,
-            &input.resources,
-            &input.network,
-            &input.env_vars,
-            input.timeout_ms,
-        ).await?;
+        let sandbox = provider
+            .create(
+                &sandbox_id,
+                &input.template_id,
+                &input.resources,
+                &input.network,
+                &input.env_vars,
+                input.timeout_ms,
+            )
+            .await?;
 
         self.repository.save(&sandbox).await?;
 

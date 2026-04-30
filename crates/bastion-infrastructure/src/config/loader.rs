@@ -46,8 +46,12 @@ pub struct PodmanConfig {
     pub hot_pool_size: usize,
 }
 
-fn default_network_mode() -> String { "bridge".to_string() }
-fn default_pool_size() -> usize { 3 }
+fn default_network_mode() -> String {
+    "bridge".to_string()
+}
+fn default_pool_size() -> usize {
+    3
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct FirecrackerConfig {
@@ -91,7 +95,15 @@ impl Default for PoolConfig {
     }
 }
 
-fn default_min_hot() -> usize { 1 }
-fn default_max_hot() -> usize { 10 }
-fn default_idle_timeout() -> u64 { 300_000 }
-fn default_cleanup_interval() -> u64 { 60_000 }
+fn default_min_hot() -> usize {
+    1
+}
+fn default_max_hot() -> usize {
+    10
+}
+fn default_idle_timeout() -> u64 {
+    300_000
+}
+fn default_cleanup_interval() -> u64 {
+    60_000
+}

@@ -7,8 +7,8 @@ use tokio::sync::RwLock;
 
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::repository::SandboxRepository;
-use bastion_domain::shared::id::SandboxId;
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 
 /// In-memory implementation of SandboxRepository.
 /// Suitable for PoC and testing. NOT for production.
@@ -46,7 +46,8 @@ impl SandboxRepository for InMemorySandboxRepository {
 
     async fn delete(&self, id: &SandboxId) -> Result<(), DomainError> {
         let mut sandboxes = self.sandboxes.write().await;
-        sandboxes.remove(&id.to_string())
+        sandboxes
+            .remove(&id.to_string())
             .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
         Ok(())
     }
