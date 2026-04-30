@@ -362,7 +362,13 @@ impl FirecrackerProvider {
             return Ok(());
         }
 
-        let mount_point = target.parent().unwrap().join("mnt");
+        let mount_point = match target.parent() {
+            Some(parent) => parent.join("mnt"),
+            None => {
+                tracing::warn!("Rootfs path has no parent, skipping mount for worker injection");
+                return Ok(());
+            }
+        };
         if std::fs::create_dir_all(&mount_point).is_err() {
             tracing::warn!("Cannot create mount point {:?}, skipping worker injection", mount_point);
             return Ok(());
@@ -744,11 +750,12 @@ impl SandboxProvider for FirecrackerProvider {
         let marker = format!("E{}", std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros() % 999999);
         
-        // Send commands one line at a time for reliability
+        // Send commands one line at a time for reliability.
+        // Disable local echo and prompt to keep output clean.
         let commands = vec![
-            format!("echo __{}_S__", marker),   // start marker
-            full_cmd,                             // actual command
-            format!("echo __{}_E__:$?", marker),  // end marker with exit code
+            format!("stty -echo 2>/dev/null; PS1=''; echo __{}_S__", marker),   // start marker
+            full_cmd,                                                             // actual command
+            format!("echo __{}_E__:$?", marker),                                  // end marker with exit code
         ];
 
         for cmd in &commands {
@@ -799,7 +806,12 @@ impl SandboxProvider for FirecrackerProvider {
                         let cmd_output = if out_start < out_end {
                             tail[out_start..out_end]
                                 .lines()
-                                .filter(|l| !l.contains(&start_marker) && !l.contains("__E__"))
+                                .filter(|l| {
+                                    let trimmed = l.trim();
+                                    !trimmed.is_empty()
+                                    && !trimmed.contains(&start_marker)
+                                    && !trimmed.contains("__E__")
+                                })
                                 .collect::<Vec<_>>()
                                 .join("\n")
                                 .trim()
