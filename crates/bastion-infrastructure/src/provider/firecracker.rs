@@ -22,6 +22,7 @@ use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
+use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
 use bastion_domain::shared::id::SandboxId;
@@ -49,6 +50,12 @@ pub struct FirecrackerProvider {
     rootfs_readonly: bool,
     /// Running VM states keyed by sandbox ID.
     vms: Arc<DashMap<String, VmState>>,
+    /// Path to the MUSL static worker binary to inject into rootfs.
+    worker_binary: PathBuf,
+    /// Host gateway address for worker connections (e.g., "10.0.2.1:50052").
+    gateway_addr: String,
+    /// Optional command router for registry-based command execution.
+    command_router: Option<Arc<dyn CommandRouter>>,
 }
 
 impl std::fmt::Debug for FirecrackerProvider {
@@ -58,6 +65,9 @@ impl std::fmt::Debug for FirecrackerProvider {
             .field("kernel_path", &self.kernel_path)
             .field("rootfs_path", &self.rootfs_path)
             .field("rootfs_readonly", &self.rootfs_readonly)
+            .field("worker_binary", &self.worker_binary)
+            .field("gateway_addr", &self.gateway_addr)
+            .field("command_router", &self.command_router.is_some())
             .finish()
     }
 }
@@ -69,11 +79,15 @@ impl FirecrackerProvider {
     /// * `kernel_path` — path to the Linux kernel (vmlinux)
     /// * `rootfs_path` — path to the root filesystem image (ext4 or squashfs)
     /// * `vm_dir` — directory where per-VM sockets and metadata are stored
+    /// * `worker_binary` — path to the bastion-worker MUSL static binary
+    /// * `gateway_addr` — host gateway address for worker connections (e.g., "10.0.2.1:50052")
     pub fn new(
         firecracker_binary: PathBuf,
         kernel_path: PathBuf,
         rootfs_path: PathBuf,
         vm_dir: PathBuf,
+        worker_binary: PathBuf,
+        gateway_addr: String,
     ) -> Result<Self, DomainError> {
         // Validate paths exist
         if !firecracker_binary.exists() {
@@ -109,6 +123,9 @@ impl FirecrackerProvider {
             vm_dir,
             rootfs_readonly,
             vms: Arc::new(DashMap::new()),
+            worker_binary,
+            gateway_addr,
+            command_router: None,
         })
     }
 
@@ -298,6 +315,129 @@ impl FirecrackerProvider {
             sleep(Duration::from_millis(100)).await;
         }
     }
+
+    /// Set the command router for registry-based command execution.
+    pub fn set_command_router(&mut self, router: Arc<dyn CommandRouter>) {
+        self.command_router = Some(router);
+    }
+
+    /// Create a TAP device for VM networking.
+    fn create_tap_device(&self, tap_name: &str) -> Result<(), DomainError> {
+        let output = std::process::Command::new("ip")
+            .args(["tuntap", "add", "dev", tap_name, "mode", "tap"])
+            .output()
+            .map_err(|e| DomainError::Internal(format!("Failed to create TAP: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.contains("File exists") {
+                tracing::warn!(tap_name, "TAP creation warning: {stderr}");
+            }
+        }
+        let _ = std::process::Command::new("ip")
+            .args(["addr", "add", "10.0.2.1/24", "dev", tap_name])
+            .output();
+        let _ = std::process::Command::new("ip")
+            .args(["link", "set", tap_name, "up"])
+            .output();
+        Ok(())
+    }
+
+    /// Destroy a TAP device.
+    fn destroy_tap_device(&self, tap_name: &str) {
+        let _ = std::process::Command::new("ip")
+            .args(["link", "set", tap_name, "down"])
+            .output();
+        let _ = std::process::Command::new("ip")
+            .args(["tuntap", "del", "dev", tap_name, "mode", "tap"])
+            .output();
+    }
+
+    /// Prepare a per-sandbox rootfs copy, optionally injecting the worker binary.
+    fn prepare_rootfs(&self, base_rootfs: &Path, target: &Path) -> Result<(), DomainError> {
+        std::fs::copy(base_rootfs, target)
+            .map_err(|e| DomainError::Internal(format!("Failed to copy rootfs: {e}")))?;
+
+        if self.rootfs_readonly {
+            tracing::debug!("Rootfs is read-only, skipping worker injection (must be pre-baked)");
+            return Ok(());
+        }
+
+        let mount_point = target.parent().unwrap().join("mnt");
+        if std::fs::create_dir_all(&mount_point).is_err() {
+            tracing::warn!("Cannot create mount point {:?}, skipping worker injection", mount_point);
+            return Ok(());
+        }
+
+        let mount_cmd = std::process::Command::new("mount")
+            .args(["-o", "loop", &*target.to_string_lossy(), &*mount_point.to_string_lossy()])
+            .output();
+
+        match mount_cmd {
+            Err(e) => {
+                tracing::warn!("Mount failed ({e}), cannot inject worker binary — ensure worker is pre-baked in rootfs");
+                let _ = std::fs::remove_dir_all(&mount_point);
+                return Ok(());
+            }
+            Ok(output) if !output.status.success() => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::warn!("Mount failed: {stderr}, cannot inject worker binary — ensure worker is pre-baked in rootfs");
+                let _ = std::fs::remove_dir_all(&mount_point);
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        // Copy worker binary
+        let worker_dest = mount_point.join("usr/local/bin/bastion-worker");
+        if let Some(parent) = worker_dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::copy(&self.worker_binary, &worker_dest) {
+            Ok(_) => tracing::info!("Worker binary injected at {:?}", worker_dest),
+            Err(e) => tracing::warn!("Failed to copy worker binary: {e}"),
+        }
+
+        // Create /workspace directory
+        let workspace = mount_point.join("workspace");
+        let _ = std::fs::create_dir_all(&workspace);
+
+        // Unmount
+        let _ = std::process::Command::new("umount")
+            .arg(&*mount_point.to_string_lossy())
+            .output();
+
+        let _ = std::fs::remove_dir_all(&mount_point);
+
+        Ok(())
+    }
+
+    /// Sanitize sandbox ID for use as a Linux interface name (max 15 chars, no underscores).
+    fn tap_name(id: &SandboxId) -> String {
+        format!(
+            "tap-{}",
+            id.to_string()
+                .replace('_', "-")
+                .chars()
+                .take(12)
+                .collect::<String>()
+        )
+    }
+
+    /// Start the worker process via serial console (internal helper for create).
+    /// Calls through to run_command, which falls through to serial console
+    /// when the worker is not yet registered.
+    async fn start_via_serial(&self, id: &SandboxId, secret: &str) -> Result<(), DomainError> {
+        let gateway = format!("http://{}", self.gateway_addr);
+        let sandbox_id = id.to_string();
+        let worker_cmd = format!(
+            "nohup /usr/local/bin/bastion-worker --gateway-addr {} --sandbox-id {} --secret {} --workdir /workspace > /tmp/worker.log 2>&1 &",
+            gateway, sandbox_id, secret
+        );
+        let cmd = CommandSpec::new(&worker_cmd);
+        // Falls through to serial console since worker is not connected yet
+        self.run_command(id, &cmd).await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -324,6 +464,17 @@ impl SandboxProvider for FirecrackerProvider {
             kernel = %self.kernel_path.display(),
             "Starting Firecracker microVM"
         );
+
+        // Generate a secret for worker registration
+        let secret = format!("secret-{}", uuid::Uuid::new_v4());
+
+        // Prepare per-sandbox rootfs with worker binary injected
+        let sandbox_rootfs = sandbox_dir.join("rootfs.img");
+        self.prepare_rootfs(&self.rootfs_path, &sandbox_rootfs)?;
+
+        // Create TAP device for networking
+        let tap_name = Self::tap_name(id);
+        self.create_tap_device(&tap_name)?;
 
         // 1. Spawn firecracker process with piped stdin/stdout for serial console
         let mut child = Command::new(&self.firecracker_binary)
@@ -374,19 +525,20 @@ impl SandboxProvider for FirecrackerProvider {
 
         // 3. Configure boot source
         let kernel_path_str = self.kernel_path.to_string_lossy();
+        let boot_args = "console=ttyS0 reboot=k panic=1 ip=10.0.2.2::10.0.2.1:255.255.255.0::eth0:off";
         Self::api_request(
             &socket_path,
             "PUT",
             "/boot-source",
             Some(&serde_json::json!({
                 "kernel_image_path": kernel_path_str,
-                "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"
+                "boot_args": boot_args
             })),
         )
         .await?;
 
-        // 4. Configure rootfs drive
-        let rootfs_path_str = self.rootfs_path.to_string_lossy();
+        // 4. Configure rootfs drive (per-sandbox copy)
+        let rootfs_path_str = sandbox_rootfs.to_string_lossy();
         Self::api_request(
             &socket_path,
             "PUT",
@@ -413,7 +565,20 @@ impl SandboxProvider for FirecrackerProvider {
         )
         .await?;
 
-        // 6. Start the VM
+        // 6. Configure networking via TAP device
+        Self::api_request(
+            &socket_path,
+            "PUT",
+            "/network-interfaces/eth0",
+            Some(&serde_json::json!({
+                "iface_id": "eth0",
+                "host_dev_name": tap_name,
+                "guest_mac": "AA:FC:00:00:00:01"
+            })),
+        )
+        .await?;
+
+        // 7. Start the VM
         Self::api_request(
             &socket_path,
             "PUT",
@@ -426,13 +591,21 @@ impl SandboxProvider for FirecrackerProvider {
 
         tracing::info!(sandbox_id = %id, "Firecracker microVM started");
 
-        // 7. Wait for the VM to boot and show login prompt
+        // Wait for the VM to boot and show login prompt
         self.wait_for_boot(id, Duration::from_secs(30)).await?;
 
         tracing::info!(sandbox_id = %id, "Firecracker microVM booted and ready");
 
         // Wait for serial console to stabilize (MOTD, trailing output)
         sleep(Duration::from_millis(1000)).await;
+
+        // Start the worker process via serial console
+        self.start_via_serial(id, &secret).await?;
+
+        // Register secret with command router
+        if let Some(ref router) = self.command_router {
+            router.set_sandbox_secret(&id.to_string(), &secret);
+        }
 
         // Build domain entity
         let mut sandbox = Sandbox::new(
@@ -474,6 +647,10 @@ impl SandboxProvider for FirecrackerProvider {
             let _ = vm.child.kill().await;
         }
 
+        // Clean up TAP device
+        let tap_name = Self::tap_name(id);
+        self.destroy_tap_device(&tap_name);
+
         // Clean up sandbox directory (which also removes the socket)
         let sandbox_dir = self.sandbox_dir(id);
         if sandbox_dir.exists() {
@@ -510,6 +687,23 @@ impl SandboxProvider for FirecrackerProvider {
         id: &SandboxId,
         command: &CommandSpec,
     ) -> Result<CommandResult, DomainError> {
+        // Try registry-based routing first
+        if let Some(ref router) = self.command_router
+            && router.is_worker_connected(&id.to_string())
+        {
+            tracing::info!(sandbox_id = %id, "Routing command via worker registry");
+            let timeout_ms = command.timeout_ms.unwrap_or(30000);
+            return router.route_run_command(
+                &id.to_string(),
+                &command.command,
+                &command.args,
+                command.working_dir.as_deref().unwrap_or("/workspace"),
+                &command.env_vars,
+                timeout_ms,
+            ).await;
+        }
+
+        // Fallback to serial console
         let full_cmd = if command.args.is_empty() {
             command.command.clone()
         } else {
@@ -629,6 +823,14 @@ impl SandboxProvider for FirecrackerProvider {
         _id: &SandboxId,
         _command: &CommandSpec,
     ) -> Result<CommandStream, DomainError> {
+        // Streaming not supported over serial console.
+        // Once worker is connected via the registry, streaming can be added.
+        if self.command_router.is_some() {
+            return Err(DomainError::UnsupportedOperation(
+                "Streaming command execution: worker is active but streaming not yet implemented for Firecracker"
+                    .to_string(),
+            ));
+        }
         Err(DomainError::UnsupportedOperation(
             "Streaming command execution inside Firecracker requires SSH or agent in guest"
                 .to_string(),
@@ -641,7 +843,15 @@ impl SandboxProvider for FirecrackerProvider {
         path: &str,
         content: &[u8],
     ) -> Result<(), DomainError> {
-        // Use printf for reliable file writing over serial console
+        // Try registry-based routing first
+        if let Some(ref router) = self.command_router
+            && router.is_worker_connected(&id.to_string())
+        {
+            tracing::info!(sandbox_id = %id, path, "Writing file via worker registry");
+            return router.route_write_file(&id.to_string(), path, content).await;
+        }
+
+        // Fallback to serial console
         let text = String::from_utf8_lossy(content).replace('\'', "'\\''");
         let command = format!("printf '%s' '{}' > '{}'", text, path);
 
@@ -665,6 +875,15 @@ impl SandboxProvider for FirecrackerProvider {
         id: &SandboxId,
         path: &str,
     ) -> Result<Vec<u8>, DomainError> {
+        // Try registry-based routing first
+        if let Some(ref router) = self.command_router
+            && router.is_worker_connected(&id.to_string())
+        {
+            tracing::info!(sandbox_id = %id, path, "Reading file via worker registry");
+            return router.route_read_file(&id.to_string(), path).await;
+        }
+
+        // Fallback to serial console
         let command = format!("cat '{}'", path);
         let cmd = CommandSpec::new(&command);
         let result = self.run_command(id, &cmd).await?;
@@ -685,6 +904,15 @@ impl SandboxProvider for FirecrackerProvider {
         id: &SandboxId,
         dir: &str,
     ) -> Result<Vec<FileEntry>, DomainError> {
+        // Try registry-based routing first
+        if let Some(ref router) = self.command_router
+            && router.is_worker_connected(&id.to_string())
+        {
+            tracing::info!(sandbox_id = %id, dir, "Listing files via worker registry");
+            return router.route_list_files(&id.to_string(), dir).await;
+        }
+
+        // Fallback to serial console
         let command = format!("ls -la '{}' 2>/dev/null || ls -la '{}'", dir, dir);
         let cmd = CommandSpec::new(&command);
         let result = self.run_command(id, &cmd).await?;
@@ -773,6 +1001,8 @@ mod tests {
             PathBuf::from("/nonexistent/vmlinux"),
             PathBuf::from("/nonexistent/rootfs"),
             PathBuf::from("/tmp/bastion-test"),
+            PathBuf::from("/nonexistent/bastion-worker"),
+            "10.0.2.1:50052".to_string(),
         );
         assert!(result.is_err());
     }
