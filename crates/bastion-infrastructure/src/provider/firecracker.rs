@@ -831,26 +831,25 @@ impl SandboxProvider for FirecrackerProvider {
         id: &SandboxId,
         _command: &CommandSpec,
     ) -> Result<CommandStream, DomainError> {
-        // Streaming is not yet supported for Firecracker provider.
-        // Serial console doesn't support streaming, and the CommandRouter
-        // trait doesn't expose a streaming route yet.
-        let has_router = self.command_router.is_some();
-        let worker_connected = self.command_router
-            .as_ref()
-            .map(|r| r.is_worker_connected(&id.to_string()))
-            .unwrap_or(false);
-
-        match (has_router, worker_connected) {
-            (true, true) => Err(DomainError::UnsupportedOperation(
-                "Streaming command execution: worker is connected but streaming is not yet implemented in the CommandRouter trait".to_string(),
-            )),
-            (true, false) => Err(DomainError::UnsupportedOperation(
-                "Streaming command execution: worker is not connected, and serial console does not support streaming".to_string(),
-            )),
-            (false, _) => Err(DomainError::UnsupportedOperation(
-                "Streaming command execution inside Firecracker requires a connected worker via the CommandRouter".to_string(),
-            )),
+        // Try registry-based routing
+        if let Some(ref router) = self.command_router
+            && router.is_worker_connected(&id.to_string())
+        {
+            tracing::info!(sandbox_id = %id, "Streaming command via worker registry");
+            let timeout_ms = _command.timeout_ms.unwrap_or(30000);
+            return router.route_run_command_stream(
+                &id.to_string(),
+                &_command.command,
+                &_command.args,
+                _command.working_dir.as_deref().unwrap_or("/workspace"),
+                &_command.env_vars,
+                timeout_ms,
+            ).await;
         }
+
+        Err(DomainError::UnsupportedOperation(
+            "Streaming command execution requires a connected worker via the CommandRouter".to_string(),
+        ))
     }
 
     async fn write_file(

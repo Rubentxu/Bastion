@@ -19,7 +19,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use bastion_domain::execution::command::CommandResult;
+use bastion_domain::execution::stream::{ChunkType, CommandChunk};
 use bastion_domain::file_ops::FileEntry;
+use bastion_domain::provider::port::CommandStream;
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::shared::DomainError;
 
@@ -422,6 +424,132 @@ impl CommandRouter for RegistryService {
             duration_ms,
             timed_out,
         })
+    }
+
+    async fn route_run_command_stream(
+        &self,
+        sandbox_id: &str,
+        command: &str,
+        args: &[String],
+        working_dir: &str,
+        env: &HashMap<String, String>,
+        timeout_ms: u64,
+    ) -> Result<CommandStream, DomainError> {
+        let command_id = Uuid::new_v4().to_string();
+
+        let cmd = GatewayCommand {
+            command_id: command_id.clone(),
+            session_token: String::new(),
+            payload: Some(gateway_command::Payload::Run(RunCommandRequest {
+                command: command.to_string(),
+                args: args.to_vec(),
+                working_dir: working_dir.to_string(),
+                env: env.clone(),
+                timeout_ms: timeout_ms as i64,
+                persistent: false,
+                session_id: String::new(),
+            })),
+        };
+
+        let handle = {
+            let entry = self.workers.get(sandbox_id)
+                .ok_or_else(|| DomainError::Internal(format!("Worker not found: {}", sandbox_id)))?;
+
+            if entry.is_circuit_open() {
+                return Err(DomainError::Internal(format!(
+                    "Circuit breaker open for {}",
+                    sandbox_id
+                )));
+            }
+
+            WorkerHandle {
+                cmd_tx: entry.cmd_tx.clone(),
+                session_token: entry.session_token.clone(),
+                consecutive_failures: entry.consecutive_failures.clone(),
+                circuit_open_until: entry.circuit_open_until.clone(),
+            }
+        };
+
+        // Check rate limit
+        if let Some(limiter) = self.rate_limiters.get(sandbox_id)
+            && let Ok(mut guard) = limiter.lock()
+            && !guard.try_consume()
+        {
+            return Err(DomainError::Internal(format!("Rate limited for {}", sandbox_id)));
+        }
+
+        // Create channel for streaming output chunks
+        let (chunk_tx, chunk_rx) = mpsc::channel::<Result<CommandChunk, DomainError>>(64);
+
+        // Create response channel registered in pending_multi
+        let (resp_tx, mut resp_rx) = mpsc::channel::<Result<WorkerMessage, Status>>(16);
+        self.pending_multi.insert(command_id.clone(), resp_tx);
+
+        // Send command to worker
+        if handle.cmd_tx.send(cmd).await.is_err() {
+            handle.record_failure();
+            self.pending_multi.remove(&command_id);
+            return Err(DomainError::Internal(format!(
+                "Worker disconnected: {}",
+                sandbox_id
+            )));
+        }
+
+        let pending_multi = self.pending_multi.clone();
+        let cmd_id = command_id.clone();
+
+        // Spawn task to forward worker responses as CommandChunks
+        tokio::spawn(async move {
+            while let Some(result) = resp_rx.recv().await {
+                match result {
+                    Ok(msg) => match msg.payload {
+                        Some(worker_message::Payload::Stdout(chunk)) => {
+                            if chunk_tx.send(Ok(CommandChunk::stdout(chunk.data))).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(worker_message::Payload::Stderr(chunk)) => {
+                            if chunk_tx
+                                .send(Ok(CommandChunk::stderr(chunk.data)))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Some(worker_message::Payload::Exit(result)) => {
+                            let exit_bytes = result.exit_code.to_le_bytes().to_vec();
+                            let _ = chunk_tx
+                                .send(Ok(CommandChunk {
+                                    chunk_type: ChunkType::ExitCode,
+                                    data: exit_bytes,
+                                    is_final: true,
+                                }))
+                                .await;
+                            break;
+                        }
+                        Some(worker_message::Payload::Error(err)) => {
+                            let _ = chunk_tx
+                                .send(Err(DomainError::Internal(err.error)))
+                                .await;
+                            break;
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        let _ = chunk_tx
+                            .send(Err(DomainError::Internal(e.to_string())))
+                            .await;
+                        break;
+                    }
+                }
+            }
+            // Cleanup the pending_multi entry
+            pending_multi.remove(&cmd_id);
+        });
+
+        let stream: CommandStream = Box::pin(ReceiverStream::new(chunk_rx));
+        Ok(stream)
     }
 
     async fn route_write_file(

@@ -379,6 +379,22 @@ impl SandboxProvider for PodmanProvider {
         id: &SandboxId,
         command: &CommandSpec,
     ) -> Result<CommandStream, DomainError> {
+        // Try registry-based routing first
+        if let Some(ref router) = self.command_router
+            && router.is_worker_connected(id.as_str())
+        {
+            tracing::info!(sandbox_id = %id, "Streaming command via worker registry");
+            let timeout_ms = command.timeout_ms.unwrap_or(30000);
+            return router.route_run_command_stream(
+                id.as_str(),
+                &command.command,
+                &command.args,
+                command.working_dir.as_deref().unwrap_or("/workspace"),
+                &command.env_vars,
+                timeout_ms,
+            ).await;
+        }
+
         let container_name = id.to_string();
 
         tracing::info!(

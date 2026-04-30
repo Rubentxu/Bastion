@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use crate::execution::command::CommandResult;
 use crate::file_ops::FileEntry;
+use crate::provider::port::CommandStream;
 use crate::shared::DomainError;
 
 /// Trait for routing commands to sandbox workers via the registry.
@@ -27,6 +28,18 @@ pub trait CommandRouter: Send + Sync + std::fmt::Debug {
         env: &HashMap<String, String>,
         timeout_ms: u64,
     ) -> Result<CommandResult, DomainError>;
+
+    /// Execute a command with streaming output via the worker registry.
+    /// Returns a stream of CommandChunks that the caller can consume as output arrives.
+    async fn route_run_command_stream(
+        &self,
+        sandbox_id: &str,
+        command: &str,
+        args: &[String],
+        working_dir: &str,
+        env: &HashMap<String, String>,
+        timeout_ms: u64,
+    ) -> Result<CommandStream, DomainError>;
 
     /// Write a file to a sandbox via the worker registry.
     async fn route_write_file(
