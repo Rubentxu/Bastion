@@ -301,7 +301,13 @@ async fn run_command_loop(
                 let sem = semaphore.clone();
 
                 tokio::spawn(async move {
-                    let _permit = sem.acquire().await.unwrap();
+                    let _permit = match sem.acquire().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Semaphore closed, skipping command");
+                            return;
+                        }
+                    };
 
                     tracing::info!(command_id = %command_id, command = %run_req.command, "Executing command");
                     ACTIVE_COMMANDS.fetch_add(1, Ordering::Relaxed);
@@ -424,7 +430,13 @@ async fn run_command_loop(
                 let sem = semaphore.clone();
 
                 tokio::spawn(async move {
-                    let _permit = sem.acquire().await.unwrap();
+                    let _permit = match sem.acquire().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Semaphore closed, skipping read");
+                            return;
+                        }
+                    };
                     handle_read(read_req, &command_id, &tx).await;
                 });
             }
@@ -433,7 +445,13 @@ async fn run_command_loop(
                 let sem = semaphore.clone();
 
                 tokio::spawn(async move {
-                    let _permit = sem.acquire().await.unwrap();
+                    let _permit = match sem.acquire().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Semaphore closed, skipping write");
+                            return;
+                        }
+                    };
                     handle_write(write_req, &command_id, &tx).await;
                 });
             }
@@ -442,7 +460,13 @@ async fn run_command_loop(
                 let sem = semaphore.clone();
 
                 tokio::spawn(async move {
-                    let _permit = sem.acquire().await.unwrap();
+                    let _permit = match sem.acquire().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Semaphore closed, skipping list");
+                            return;
+                        }
+                    };
                     handle_list(list_req, &command_id, &tx).await;
                 });
             }
