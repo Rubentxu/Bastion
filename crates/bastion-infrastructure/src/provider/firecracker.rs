@@ -446,7 +446,7 @@ impl SandboxProvider for FirecrackerProvider {
         &self,
         id: &SandboxId,
         _template: &str,
-        _resources: &ResourcesSpec,
+        resources: &ResourcesSpec,
         _network: &NetworkSpec,
         _env_vars: &HashMap<String, String>,
         timeout_ms: u64,
@@ -552,18 +552,26 @@ impl SandboxProvider for FirecrackerProvider {
         )
         .await?;
 
-        // 5. Configure machine
+        // 5. Configure machine — honor ResourcesSpec with safety clamps
+        let vcpu_count = resources.cpu_count.clamp(1, self.capabilities().max_cpu_count);
+        let mem_size_mib = (resources.memory_mb).clamp(128, self.capabilities().max_memory_mb);
         Self::api_request(
             &socket_path,
             "PUT",
             "/machine-config",
             Some(&serde_json::json!({
-                "vcpu_count": 1,
-                "mem_size_mib": 128,
+                "vcpu_count": vcpu_count,
+                "mem_size_mib": mem_size_mib,
                 "smt": false
             })),
         )
         .await?;
+        tracing::info!(
+            sandbox_id = %id,
+            vcpu_count,
+            mem_size_mib,
+            "Firecracker machine configured"
+        );
 
         // 6. Configure networking via TAP device
         Self::api_request(
@@ -612,7 +620,7 @@ impl SandboxProvider for FirecrackerProvider {
             id.clone(),
             bastion_domain::shared::id::TemplateId::new("firecracker"),
             bastion_domain::shared::id::ProviderId::new("firecracker"),
-            _resources.clone(),
+            resources.clone(),
             _network.clone(),
         );
         sandbox.set_timeout(timeout_ms);
@@ -820,21 +828,29 @@ impl SandboxProvider for FirecrackerProvider {
 
     async fn run_command_stream(
         &self,
-        _id: &SandboxId,
+        id: &SandboxId,
         _command: &CommandSpec,
     ) -> Result<CommandStream, DomainError> {
-        // Streaming not supported over serial console.
-        // Once worker is connected via the registry, streaming can be added.
-        if self.command_router.is_some() {
-            return Err(DomainError::UnsupportedOperation(
-                "Streaming command execution: worker is active but streaming not yet implemented for Firecracker"
-                    .to_string(),
-            ));
+        // Streaming is not yet supported for Firecracker provider.
+        // Serial console doesn't support streaming, and the CommandRouter
+        // trait doesn't expose a streaming route yet.
+        let has_router = self.command_router.is_some();
+        let worker_connected = self.command_router
+            .as_ref()
+            .map(|r| r.is_worker_connected(&id.to_string()))
+            .unwrap_or(false);
+
+        match (has_router, worker_connected) {
+            (true, true) => Err(DomainError::UnsupportedOperation(
+                "Streaming command execution: worker is connected but streaming is not yet implemented in the CommandRouter trait".to_string(),
+            )),
+            (true, false) => Err(DomainError::UnsupportedOperation(
+                "Streaming command execution: worker is not connected, and serial console does not support streaming".to_string(),
+            )),
+            (false, _) => Err(DomainError::UnsupportedOperation(
+                "Streaming command execution inside Firecracker requires a connected worker via the CommandRouter".to_string(),
+            )),
         }
-        Err(DomainError::UnsupportedOperation(
-            "Streaming command execution inside Firecracker requires SSH or agent in guest"
-                .to_string(),
-        ))
     }
 
     async fn write_file(

@@ -31,6 +31,7 @@ tonic-prost = { workspace = true }
 prost = { workspace = true }
 dashmap = "6.1"
 async-trait = { workspace = true }
+chrono = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 

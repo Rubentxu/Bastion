@@ -528,12 +528,19 @@ impl CommandRouter for RegistryService {
         for msg in responses {
             match msg.payload {
                 Some(worker_message::Payload::FileList(list)) => {
-                    return Ok(list.entries.into_iter().map(|e| FileEntry {
-                        path: e.path,
-                        is_directory: e.is_directory,
-                        size_bytes: e.size_bytes as u64,
-                        permissions: e.permissions,
-                        modified_at: None,
+                    return Ok(list.entries.into_iter().map(|e| {
+                        let modified_at = if e.modified_epoch_ms > 0 {
+                            chrono::DateTime::from_timestamp_millis(e.modified_epoch_ms)
+                        } else {
+                            None
+                        };
+                        FileEntry {
+                            path: e.path,
+                            is_directory: e.is_directory,
+                            size_bytes: e.size_bytes as u64,
+                            permissions: e.permissions,
+                            modified_at,
+                        }
                     }).collect());
                 }
                 Some(worker_message::Payload::Error(err)) => {
