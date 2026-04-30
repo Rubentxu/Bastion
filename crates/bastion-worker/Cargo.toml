@@ -24,6 +24,7 @@ prost = { workspace = true }
 clap = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+dashmap = "6.1"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

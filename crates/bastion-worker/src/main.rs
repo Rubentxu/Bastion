@@ -5,9 +5,10 @@
 
 use anyhow::Result;
 use clap::Parser;
+use dashmap::DashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::{mpsc, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
@@ -39,6 +40,13 @@ struct Args {
 
 /// Track active commands for health reporting
 static ACTIVE_COMMANDS: AtomicU32 = AtomicU32::new(0);
+
+/// Accumulate multi-chunk writes keyed by command_id
+static PENDING_WRITES: LazyLock<DashMap<String, Vec<u8>>> = LazyLock::new(DashMap::new);
+
+/// Running processes keyed by command_id for cancellation
+static RUNNING_PROCESSES: LazyLock<DashMap<String, Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>>> =
+    LazyLock::new(DashMap::new);
 
 /// Maximum concurrent commands per worker
 const MAX_CONCURRENT_COMMANDS: usize = 4;
@@ -307,7 +315,7 @@ async fn run_command_loop(
                     }).await;
 
                     let start = std::time::Instant::now();
-                    let output = execute_command(&run_req).await;
+                    let output = execute_command(&run_req, &command_id).await;
                     let duration_ms = start.elapsed().as_millis() as i64;
 
                     ACTIVE_COMMANDS.fetch_sub(1, Ordering::Relaxed);
@@ -439,13 +447,12 @@ async fn run_command_loop(
                 });
             }
             Some(CmdPayload::Cancel(cancel_req)) => {
-                tracing::info!(target = %cancel_req.target_command_id, "Cancel requested (not yet supported)");
+                tracing::info!(target = %cancel_req.target_command_id, "Cancel requested");
+                let target_id = cancel_req.target_command_id.clone();
+                let cancel_result = cancel_running_process(&target_id).await;
                 let _ = tx.send(WorkerMessage {
                     command_id: command_id.clone(),
-                    payload: Some(Payload::CancelAck(CancelAck {
-                        cancelled: false,
-                        error: "Cancel not yet implemented".into(),
-                    })),
+                    payload: Some(Payload::CancelAck(cancel_result)),
                 }).await;
             }
             None => {
@@ -548,31 +555,8 @@ async fn handle_read(read_req: ReadFileRequest, command_id: &str, tx: &mpsc::Sen
 async fn handle_write(write_req: WriteFileRequest, command_id: &str, tx: &mpsc::Sender<WorkerMessage>) {
     use worker_message::Payload;
 
-    match validate_path(&write_req.path) {
-        Ok(safe_path) => {
-            // TODO: Add multi-chunk write support
-            // For now, single-chunk write (total_chunks should be 1)
-            match tokio::fs::write(&safe_path, &write_req.content).await {
-                Ok(()) => {
-                    let _ = tx.send(WorkerMessage {
-                        command_id: command_id.to_string(),
-                        payload: Some(Payload::Ack(CommandAck {
-                            state: command_ack::State::Received as i32,
-                        })),
-                    }).await;
-                }
-                Err(e) => {
-                    let _ = tx.send(WorkerMessage {
-                        command_id: command_id.to_string(),
-                        payload: Some(Payload::Error(ErrorResult {
-                            error: e.to_string(),
-                            error_kind: "permission".into(),
-                            errno: e.raw_os_error().unwrap_or(0),
-                        })),
-                    }).await;
-                }
-            }
-        }
+    let safe_path = match validate_path(&write_req.path) {
+        Ok(p) => p,
         Err(e) => {
             let _ = tx.send(WorkerMessage {
                 command_id: command_id.to_string(),
@@ -582,10 +566,137 @@ async fn handle_write(write_req: WriteFileRequest, command_id: &str, tx: &mpsc::
                     errno: 0,
                 })),
             }).await;
+            return;
         }
+    };
+
+    if write_req.total_chunks == 1 {
+        // Single chunk — write directly
+        match tokio::fs::write(&safe_path, &write_req.content).await {
+            Ok(()) => {
+                apply_file_mode(&safe_path, write_req.mode);
+                let _ = tx.send(WorkerMessage {
+                    command_id: command_id.to_string(),
+                    payload: Some(Payload::Ack(CommandAck {
+                        state: command_ack::State::Received as i32,
+                    })),
+                }).await;
+            }
+            Err(e) => {
+                let _ = tx.send(WorkerMessage {
+                    command_id: command_id.to_string(),
+                    payload: Some(Payload::Error(ErrorResult {
+                        error: e.to_string(),
+                        error_kind: "permission".into(),
+                        errno: e.raw_os_error().unwrap_or(0),
+                    })),
+                }).await;
+            }
+        }
+    } else if write_req.total_chunks > 1 {
+        // Multi-chunk — accumulate until last chunk
+        let cid = command_id.to_string();
+        let is_last = write_req.chunk_index + 1 == write_req.total_chunks;
+
+        if is_last {
+            // Final chunk — flush accumulated data
+            let all_data = {
+                let mut entry = PENDING_WRITES.entry(cid.clone()).or_default();
+                entry.extend_from_slice(&write_req.content);
+                std::mem::take(&mut *entry)
+            };
+            PENDING_WRITES.remove(&cid);
+
+            match tokio::fs::write(&safe_path, &all_data).await {
+                Ok(()) => {
+                    apply_file_mode(&safe_path, write_req.mode);
+                    let _ = tx.send(WorkerMessage {
+                        command_id: cid,
+                        payload: Some(Payload::Ack(CommandAck {
+                            state: command_ack::State::Received as i32,
+                        })),
+                    }).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(WorkerMessage {
+                        command_id: cid,
+                        payload: Some(Payload::Error(ErrorResult {
+                            error: e.to_string(),
+                            error_kind: "permission".into(),
+                            errno: e.raw_os_error().unwrap_or(0),
+                        })),
+                    }).await;
+                }
+            }
+        } else {
+            // Intermediate chunk — accumulate
+            PENDING_WRITES.entry(cid.clone()).or_default().extend_from_slice(&write_req.content);
+            let _ = tx.send(WorkerMessage {
+                command_id: cid,
+                payload: Some(Payload::Ack(CommandAck {
+                    state: command_ack::State::Received as i32,
+                })),
+            }).await;
+        }
+    } else {
+        // Streaming mode (total_chunks == -1): append immediately
+        if let Some(parent) = std::path::Path::new(&safe_path).parent()
+            && tokio::fs::create_dir_all(parent).await.is_err()
+        {
+            let _ = tx.send(WorkerMessage {
+                command_id: command_id.to_string(),
+                payload: Some(Payload::Error(ErrorResult {
+                    error: "Failed to create parent directory".into(),
+                    error_kind: "permission".into(),
+                    errno: 0,
+                })),
+            }).await;
+            return;
+        }
+
+        let mut file = match tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&safe_path)
+            .await
+        {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = tx.send(WorkerMessage {
+                    command_id: command_id.to_string(),
+                    payload: Some(Payload::Error(ErrorResult {
+                        error: e.to_string(),
+                        error_kind: "permission".into(),
+                        errno: e.raw_os_error().unwrap_or(0),
+                    })),
+                }).await;
+                return;
+            }
+        };
+
+        use tokio::io::AsyncWriteExt;
+        if let Err(e) = file.write_all(&write_req.content).await {
+            let _ = tx.send(WorkerMessage {
+                command_id: command_id.to_string(),
+                payload: Some(Payload::Error(ErrorResult {
+                    error: e.to_string(),
+                    error_kind: "internal".into(),
+                    errno: e.raw_os_error().unwrap_or(0),
+                })),
+            }).await;
+            return;
+        }
+
+        apply_file_mode(&safe_path, write_req.mode);
+
+        let _ = tx.send(WorkerMessage {
+            command_id: command_id.to_string(),
+            payload: Some(Payload::Ack(CommandAck {
+                state: command_ack::State::Received as i32,
+            })),
+        }).await;
     }
 }
-
 async fn handle_list(list_req: ListFilesRequest, command_id: &str, tx: &mpsc::Sender<WorkerMessage>) {
     use worker_message::Payload;
 
@@ -623,9 +734,12 @@ async fn handle_list(list_req: ListFilesRequest, command_id: &str, tx: &mpsc::Se
     }
 }
 
-async fn execute_command(req: &RunCommandRequest) -> Result<(Vec<u8>, Vec<u8>, i32)> {
+async fn execute_command(req: &RunCommandRequest, command_id: &str) -> Result<(Vec<u8>, Vec<u8>, i32)> {
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c").arg(&req.command);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(std::process::Stdio::null());
 
     if !req.working_dir.is_empty() {
         cmd.current_dir(&req.working_dir);
@@ -635,10 +749,49 @@ async fn execute_command(req: &RunCommandRequest) -> Result<(Vec<u8>, Vec<u8>, i
         cmd.env(k, v);
     }
 
-    let output = cmd.output().await
+    let child = cmd.spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn: {e}"))?;
+
+    let child_entry = Arc::new(tokio::sync::Mutex::new(Some(child)));
+    RUNNING_PROCESSES.insert(command_id.to_string(), child_entry.clone());
+
+    let child = child_entry.lock().await.take()
+        .ok_or_else(|| anyhow::anyhow!("Process state corrupted"))?;
+    RUNNING_PROCESSES.remove(command_id);
+
+    let output = child.wait_with_output().await
         .map_err(|e| anyhow::anyhow!("Failed to execute: {e}"))?;
 
     Ok((output.stdout, output.stderr, output.status.code().unwrap_or(-1)))
+}
+
+async fn cancel_running_process(target_id: &str) -> CancelAck {
+    let removed = RUNNING_PROCESSES.remove(target_id);
+
+    if let Some((_, handle)) = removed {
+        let mut guard = handle.lock().await;
+        if let Some(mut child) = guard.take() {
+            match child.kill().await {
+                Ok(()) => {
+                    let _ = child.wait().await;
+                    tracing::info!(command_id = %target_id, "Process killed");
+                    return CancelAck { cancelled: true, error: String::new() };
+                }
+                Err(e) => {
+                    return CancelAck { cancelled: false, error: format!("kill failed: {e}") };
+                }
+            }
+        }
+    }
+
+    CancelAck { cancelled: false, error: "Process not found".into() }
+}
+
+fn apply_file_mode(path: &str, mode: i32) {
+    if mode != 0 {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode as u32))
+            .map_err(|e| tracing::warn!(path = %path, error = %e, "Failed to set permissions"));
+    }
 }
 
 async fn list_directory(dir: &str) -> Result<Vec<FileEntry>> {
