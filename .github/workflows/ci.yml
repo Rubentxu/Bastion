@@ -35,7 +35,15 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
-      
+
+      - name: Cache rust toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup
+          key: ${{ runner.os }}-rustup-stable-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-rustup-stable-
+
       - name: Check formatting
         run: cargo fmt --all -- --check
       
@@ -47,6 +55,13 @@ jobs:
       
       - name: Run unit tests
         run: cargo test --workspace --lib
+
+      - name: Build debug binaries
+        run: |
+          cargo build --workspace
+          # Verify bastion-worker binary exists
+          test -f target/debug/bastion-worker
+          test -f target/debug/bastion-gateway
 
   integration:
     name: Integration Tests (Podman)
@@ -83,3 +98,9 @@ jobs:
       
       - name: Run integration tests
         run: cargo test --test podman_lifecycle -- --test-threads=1
+
+      - name: Run gateway E2E tests
+        run: cargo test -p bastion-gateway --test e2e_test
+
+      - name: Run worker E2E tests
+        run: cargo test --test e2e_worker_v2 -- --test-threads=1
