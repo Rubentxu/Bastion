@@ -22,7 +22,7 @@ use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
+use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus};
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
 
@@ -181,6 +181,34 @@ impl GVisorProvider {
         tracing::debug!(container_id, "Worker process spawned");
     }
 
+    /// Verify the worker binary is static musl.
+    /// This is required because gVisor runsc containers use musl libc.
+    fn verify_worker_binary(&self) -> Result<(), DomainError> {
+        let worker_path = &self.worker_binary;
+
+        // Run `file` command to check binary format
+        let output = std::process::Command::new("file")
+            .arg(worker_path)
+            .output()
+            .map_err(|e| DomainError::Internal(format!("file command failed: {e}")))?;
+
+        let file_output = String::from_utf8_lossy(&output.stdout);
+
+        // Check for indicators of static musl binary
+        let is_static_musl = file_output.contains("statically linked")
+            || (file_output.contains("musl") && file_output.contains("static"));
+
+        if !is_static_musl {
+            tracing::warn!(
+                "Worker binary may not be static musl: {}",
+                file_output
+            );
+            // Don't fail - just warn. The binary might still work.
+        }
+
+        Ok(())
+    }
+
     /// Create an OCI bundle for the container.
     ///
     /// Copies the base rootfs image, generates config.json, and injects
@@ -190,6 +218,10 @@ impl GVisorProvider {
         sandbox_id: &str,
         image: &str,
     ) -> Result<PathBuf, DomainError> {
+        // Verify worker binary is static musl before injection
+        // gVisor runsc containers use musl libc, so the binary must be static musl
+        self.verify_worker_binary()?;
+
         let bundle_dir = self.rootfs_dir.join(sandbox_id);
         let rootfs_dest = bundle_dir.join("rootfs");
 
@@ -413,7 +445,7 @@ impl SandboxProvider for GVisorProvider {
         id: &SandboxId,
         template: &str,
         _resources: &ResourcesSpec,
-        _network: &NetworkSpec,
+        network: &NetworkSpec,
         _env_vars: &HashMap<String, String>,
         timeout_ms: u64,
     ) -> Result<Sandbox, DomainError> {
@@ -433,7 +465,7 @@ impl SandboxProvider for GVisorProvider {
         // Spawn runsc run (this process owns the container's lifetime)
         let mut child = self.runsc_cmd()
             .args([
-                "--network=none",
+                    &format!("--network={}", if network.allow_internet { "bridge" } else { "none" }),
                 "run",
                 "-bundle",
                 &bundle_dir.to_string_lossy(),
@@ -507,7 +539,7 @@ impl SandboxProvider for GVisorProvider {
             bastion_domain::shared::id::TemplateId::new(template),
             bastion_domain::shared::id::ProviderId::new("gvisor"),
             _resources.clone(),
-            _network.clone(),
+            network.clone(),
         );
         sandbox.set_timeout(timeout_ms);
         sandbox.mark_running()?;
@@ -849,7 +881,7 @@ impl SandboxProvider for GVisorProvider {
             max_timeout_ms: 600_000,
             max_memory_mb: 4096,
             max_cpu_count: 4,
-            supports_networking: false,
+            supports_networking: true,
             requires_kvm: false,
             avg_startup_ms: 2000,
         }
@@ -857,6 +889,110 @@ impl SandboxProvider for GVisorProvider {
 
     fn name(&self) -> &str {
         "gvisor"
+    }
+
+    async fn list_sandboxes(
+        &self,
+        filter: &SandboxFilter,
+    ) -> Result<Vec<Sandbox>, DomainError> {
+        let mut sandboxes = Vec::new();
+        let limit = filter.limit.unwrap_or(u32::MAX) as usize;
+
+        // Collect keys to avoid holding DashMap lock while calling try_wait
+        let sandbox_ids: Vec<String> = self.containers.iter()
+            .map(|item| item.key().clone())
+            .take(limit)
+            .collect();
+
+        for sandbox_id in sandbox_ids {
+            // Use get_mut to allow calling try_wait()
+            let is_alive = if let Some(mut state) = self.containers.get_mut(&sandbox_id) {
+                match state.child.try_wait() {
+                    Ok(Some(_)) => false,
+                    Ok(None) => true,
+                    Err(_) => false,
+                }
+            } else {
+                continue;
+            };
+
+            let status = if is_alive {
+                SandboxStatus::Running
+            } else {
+                SandboxStatus::Stopped
+            };
+
+            // Apply status filter
+            if let Some(ref filter_status) = filter.status {
+                if status != *filter_status {
+                    continue;
+                }
+            }
+
+            // Build a minimal Sandbox entity
+            let sandbox = Sandbox::new(
+                SandboxId::new(&sandbox_id),
+                bastion_domain::shared::id::TemplateId::new("gvisor"),
+                bastion_domain::shared::id::ProviderId::new("gvisor"),
+                ResourcesSpec::default(),
+                NetworkSpec::default(),
+            );
+
+            sandboxes.push(sandbox);
+        }
+
+        Ok(sandboxes)
+    }
+
+    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
+        let sandbox_id = id.to_string();
+
+        // Check if we have this container tracked
+        let mut container = self.containers.get_mut(&sandbox_id)
+            .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
+
+        // Check if container process is still alive
+        let is_alive = match container.child.try_wait() {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(_) => false,
+        };
+
+        let status = if is_alive {
+            SandboxStatus::Running
+        } else {
+            SandboxStatus::Stopped
+        };
+
+        let mut sandbox = Sandbox::new(
+            id.clone(),
+            bastion_domain::shared::id::TemplateId::new("gvisor"),
+            bastion_domain::shared::id::ProviderId::new("gvisor"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+
+        if status == SandboxStatus::Running {
+            sandbox.mark_running()?;
+        } else {
+            let _ = sandbox.terminate();
+        }
+
+        Ok(sandbox)
+    }
+
+    async fn set_timeout(&self, id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+        let sandbox_id = id.to_string();
+
+        // Verify the container exists
+        let _ = self.containers.get(&sandbox_id)
+            .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
+
+        // gVisor containers don't have a native timeout mechanism.
+        // The timeout is managed at the Bastion layer.
+        // This operation is a no-op at the provider level.
+        tracing::debug!(sandbox_id = %id, "set_timeout called on GVisorProvider (no-op at provider level)");
+        Ok(())
     }
 }
 

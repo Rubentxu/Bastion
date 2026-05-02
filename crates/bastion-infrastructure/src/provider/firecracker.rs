@@ -24,7 +24,8 @@ use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
+use bastion_domain::sandbox::snapshot::SnapshotInfo;
+use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus};
 use bastion_domain::shared::id::SandboxId;
 use bastion_domain::shared::DomainError;
 
@@ -352,6 +353,35 @@ impl FirecrackerProvider {
             .output();
     }
 
+    /// Verify the worker binary is static musl.
+    /// This is required because Firecracker rootfs uses musl libc.
+    async fn verify_worker_binary(&self) -> Result<(), DomainError> {
+        let worker_path = &self.worker_binary;
+
+        // Run `file` command to check binary format
+        let output = Command::new("file")
+            .arg(worker_path)
+            .output()
+            .await
+            .map_err(|e| DomainError::Internal(format!("file command failed: {e}")))?;
+
+        let file_output = String::from_utf8_lossy(&output.stdout);
+
+        // Check for indicators of static musl binary
+        let is_static_musl = file_output.contains("statically linked")
+            || (file_output.contains("musl") && file_output.contains("static"));
+
+        if !is_static_musl {
+            tracing::warn!(
+                "Worker binary may not be static musl: {}",
+                file_output
+            );
+            // Don't fail - just warn. The binary might still work.
+        }
+
+        Ok(())
+    }
+
     /// Prepare a per-sandbox rootfs copy, optionally injecting the worker binary.
     fn prepare_rootfs(&self, base_rootfs: &Path, target: &Path) -> Result<(), DomainError> {
         std::fs::copy(base_rootfs, target)
@@ -473,6 +503,10 @@ impl SandboxProvider for FirecrackerProvider {
 
         // Generate a secret for worker registration
         let secret = format!("secret-{}", uuid::Uuid::new_v4());
+
+        // Verify worker binary is static musl before injection
+        // Firecracker rootfs uses musl libc, so the binary must be static musl
+        self.verify_worker_binary().await?;
 
         // Prepare per-sandbox rootfs with worker binary injected
         let sandbox_rootfs = sandbox_dir.join("rootfs.img");
@@ -998,6 +1032,101 @@ impl SandboxProvider for FirecrackerProvider {
         Ok(entries)
     }
 
+    async fn create_snapshot(
+        &self,
+        id: &SandboxId,
+        name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
+        let socket_path = self.socket_path(id);
+        let snapshot_dir = self.sandbox_dir(id).join("snapshots").join(name);
+
+        tracing::info!(
+            sandbox_id = %id,
+            snapshot_name = %name,
+            "Creating Firecracker snapshot"
+        );
+
+        // Create snapshot directory
+        std::fs::create_dir_all(&snapshot_dir).map_err(|e| {
+            DomainError::Internal(format!("Cannot create snapshot directory: {e}"))
+        })?;
+
+        // 1. Pause the VM
+        Self::api_request(
+            &socket_path,
+            "PUT",
+            "/actions",
+            Some(&serde_json::json!({
+                "action_type": "Pause"
+            })),
+        )
+        .await?;
+
+        // 2. Create snapshot via Firecracker snapshot API
+        let state_file = snapshot_dir.join("snapshot.state");
+        let mem_file = snapshot_dir.join("snapshot.memory");
+
+        Self::api_request(
+            &socket_path,
+            "PUT",
+            "/snapshot/create",
+            Some(&serde_json::json!({
+                "snapshot_type": "Full",
+                "state_file_path": state_file.to_string_lossy(),
+                "mem_file_path": mem_file.to_string_lossy()
+            })),
+        )
+        .await?;
+
+        // 3. Resume the VM
+        Self::api_request(
+            &socket_path,
+            "PUT",
+            "/actions",
+            Some(&serde_json::json!({
+                "action_type": "Resume"
+            })),
+        )
+        .await?;
+
+        // 4. Calculate total size of snapshot files
+        let size_bytes = std::fs::metadata(&state_file)
+            .map(|m| m.len())
+            .unwrap_or(0)
+            + std::fs::metadata(&mem_file)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+        let snapshot_id = format!("{}-{}", id, name);
+
+        tracing::info!(
+            sandbox_id = %id,
+            snapshot_id = %snapshot_id,
+            size_bytes,
+            "Firecracker snapshot created"
+        );
+
+        Ok(SnapshotInfo {
+            snapshot_id,
+            sandbox_id: id.to_string(),
+            name: name.to_string(),
+            created_at: chrono::Utc::now(),
+            size_bytes,
+        })
+    }
+
+    async fn restore_snapshot(
+        &self,
+        _snapshot_id: &str,
+    ) -> Result<Sandbox, DomainError> {
+        // Restore requires the original sandbox_id which is not available from snapshot_id alone.
+        // This would need additional design work to track the mapping.
+        Err(DomainError::UnsupportedOperation(
+            "restore_snapshot requires additional context (original sandbox_id). \
+             This is complex without storing the mapping during create_snapshot.".to_string(),
+        ))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             supports_snapshots: true,
@@ -1014,6 +1143,110 @@ impl SandboxProvider for FirecrackerProvider {
 
     fn name(&self) -> &str {
         "firecracker"
+    }
+
+    async fn list_sandboxes(
+        &self,
+        filter: &SandboxFilter,
+    ) -> Result<Vec<Sandbox>, DomainError> {
+        let mut sandboxes = Vec::new();
+        let limit = filter.limit.unwrap_or(u32::MAX) as usize;
+
+        // Collect keys to avoid holding DashMap lock while calling try_wait
+        let sandbox_ids: Vec<String> = self.vms.iter()
+            .map(|item| item.key().clone())
+            .take(limit)
+            .collect();
+
+        for sandbox_id in sandbox_ids {
+            // Use get_mut to allow calling try_wait()
+            let is_alive = if let Some(mut vm) = self.vms.get_mut(&sandbox_id) {
+                match vm.child.try_wait() {
+                    Ok(Some(_)) => false,
+                    Ok(None) => true,
+                    Err(_) => false,
+                }
+            } else {
+                continue;
+            };
+
+            let status = if is_alive {
+                SandboxStatus::Running
+            } else {
+                SandboxStatus::Stopped
+            };
+
+            // Apply status filter
+            if let Some(ref filter_status) = filter.status {
+                if status != *filter_status {
+                    continue;
+                }
+            }
+
+            // Build a minimal Sandbox entity
+            let sandbox = Sandbox::new(
+                SandboxId::new(&sandbox_id),
+                bastion_domain::shared::id::TemplateId::new("firecracker"),
+                bastion_domain::shared::id::ProviderId::new("firecracker"),
+                ResourcesSpec::default(),
+                NetworkSpec::default(),
+            );
+
+            sandboxes.push(sandbox);
+        }
+
+        Ok(sandboxes)
+    }
+
+    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
+        let sandbox_id = id.to_string();
+
+        // Check if we have this VM tracked
+        let mut vm = self.vms.get_mut(&sandbox_id)
+            .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
+
+        // Check if VM process is still alive
+        let is_alive = match vm.child.try_wait() {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(_) => false,
+        };
+
+        let status = if is_alive {
+            SandboxStatus::Running
+        } else {
+            SandboxStatus::Stopped
+        };
+
+        let mut sandbox = Sandbox::new(
+            id.clone(),
+            bastion_domain::shared::id::TemplateId::new("firecracker"),
+            bastion_domain::shared::id::ProviderId::new("firecracker"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+
+        if status == SandboxStatus::Running {
+            sandbox.mark_running()?;
+        } else {
+            let _ = sandbox.terminate();
+        }
+
+        Ok(sandbox)
+    }
+
+    async fn set_timeout(&self, id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+        let sandbox_id = id.to_string();
+
+        // Verify the VM exists
+        let _ = self.vms.get(&sandbox_id)
+            .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
+
+        // Firecracker doesn't have a native timeout mechanism at the VM level.
+        // The timeout is managed at the Bastion layer.
+        // This operation is a no-op at the provider level.
+        tracing::debug!(sandbox_id = %id, "set_timeout called on FirecrackerProvider (no-op at provider level)");
+        Ok(())
     }
 }
 

@@ -2,6 +2,11 @@
 //!
 //! Creates containers with `sleep infinity`, injects worker binary via bind mount,
 //! and communicates with workers via exec (MVP) or future registry-based routing.
+//!
+//! **Binary Format**: Unlike Firecracker/gVisor (which require static musl binaries
+//! because they copy the binary into a musl-based rootfs), Podman uses bind mount
+//! which works with ANY binary format (glibc or musl). The binary is mounted
+//! directly from the host filesystem read-only.
 
 use async_trait::async_trait;
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
@@ -22,7 +27,7 @@ use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
+use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus};
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
 
@@ -35,6 +40,8 @@ pub struct PodmanProvider {
     worker_binary: PathBuf,
     /// Optional command router for registry-based command execution
     command_router: Option<Arc<dyn CommandRouter>>,
+    /// Optional source code path to mount into containers for self-testing
+    source_mount: Option<PathBuf>,
 }
 
 // Manual Debug impl because Docker doesn't derive Debug
@@ -44,6 +51,7 @@ impl std::fmt::Debug for PodmanProvider {
             .field("default_image", &self.default_image)
             .field("worker_binary", &self.worker_binary)
             .field("command_router", &self.command_router.is_some())
+            .field("source_mount", &self.source_mount)
             .finish_non_exhaustive()
     }
 }
@@ -59,6 +67,7 @@ impl PodmanProvider {
             default_image: default_image.to_string(),
             worker_binary,
             command_router: None,
+            source_mount: None,
         })
     }
 
@@ -66,6 +75,13 @@ impl PodmanProvider {
     /// When set, commands will be routed through the worker registry instead of exec.
     pub fn set_command_router(&mut self, router: Arc<dyn CommandRouter>) {
         self.command_router = Some(router);
+    }
+
+    /// Add a source code mount for self-testing purposes.
+    /// The path will be mounted at /workspace/code in the container.
+    pub fn with_source_mount(&mut self, path: PathBuf) -> &mut Self {
+        self.source_mount = Some(path);
+        self
     }
 
     /// Ping the Podman daemon to verify connectivity.
@@ -186,7 +202,7 @@ impl SandboxProvider for PodmanProvider {
         id: &SandboxId,
         template: &str,
         _resources: &ResourcesSpec,
-        _network: &NetworkSpec,
+        network: &NetworkSpec,
         env_vars: &HashMap<String, String>,
         timeout_ms: u64,
     ) -> Result<Sandbox, DomainError> {
@@ -204,6 +220,18 @@ impl SandboxProvider for PodmanProvider {
         let env: Vec<String> = env_vars.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
         // Create container with bind-mounted worker binary
+        // NOTE: Unlike Firecracker and gVisor (which copy the binary into rootfs),
+        // Podman uses bind mount which works with ANY binary format (glibc or musl).
+        // The binary is mounted read-only (:ro) directly from the host.
+        // Also mount source code if configured (for self-testing)
+        let mut binds = vec![format!(
+            "{}:/usr/local/bin/bastion-worker:ro",
+            self.worker_binary.display()
+        )];
+        if let Some(ref source_path) = self.source_mount {
+            binds.push(format!("{}:/workspace/code:ro", source_path.display()));
+        }
+
         let container_config = bollard::models::ContainerCreateBody {
             image: Some(image),
             cmd: Some(vec!["sleep".to_string(), "infinity".to_string()]),
@@ -212,10 +240,7 @@ impl SandboxProvider for PodmanProvider {
             attach_stdout: Some(false),
             attach_stderr: Some(false),
             host_config: Some(bollard::models::HostConfig {
-                binds: Some(vec![format!(
-                    "{}:/usr/local/bin/bastion-worker:ro",
-                    self.worker_binary.display()
-                )]),
+                binds: Some(binds),
                 ..Default::default()
             }),
             ..Default::default()
@@ -250,7 +275,7 @@ impl SandboxProvider for PodmanProvider {
             bastion_domain::shared::id::TemplateId::new(template),
             bastion_domain::shared::id::ProviderId::new("podman"),
             _resources.clone(),
-            _network.clone(),
+            network.clone(),
         );
         sandbox.set_timeout(timeout_ms);
         sandbox.mark_running()?;
@@ -556,6 +581,132 @@ impl SandboxProvider for PodmanProvider {
 
     fn name(&self) -> &str {
         "podman"
+    }
+
+    async fn list_sandboxes(
+        &self,
+        filter: &SandboxFilter,
+    ) -> Result<Vec<Sandbox>, DomainError> {
+        use bollard::query_parameters::ListContainersOptionsBuilder;
+
+        let options = ListContainersOptionsBuilder::default()
+            .all(true)
+            .build();
+
+        let containers = self.docker.list_containers(Some(options)).await
+            .map_err(|e| DomainError::Internal(format!("Failed to list containers: {e}")))?;
+
+        let mut sandboxes = Vec::new();
+        let limit = filter.limit.unwrap_or(u32::MAX) as usize;
+
+        for container in containers.iter().take(limit) {
+            // Try to get sandbox ID from container name or ID
+            let sandbox_id = container.names.as_ref()
+                .and_then(|names| names.first())
+                .and_then(|name| name.strip_prefix('/'))
+                .map(|s| s.to_string())
+                .or_else(|| container.id.as_ref().map(|s| s.to_string()))
+                .unwrap_or_default();
+
+            // Filter by status if specified
+            let status = match container.state.as_ref().map(|s| s.as_ref()) {
+                Some("running") => SandboxStatus::Running,
+                Some("exited") | Some("dead") => SandboxStatus::Stopped,
+                Some("paused") => SandboxStatus::Paused,
+                Some("created") => SandboxStatus::Pending,
+                _ => continue,
+            };
+
+            if let Some(ref filter_status) = filter.status {
+                if status != *filter_status {
+                    continue;
+                }
+            }
+
+            // Build a minimal Sandbox entity from container info
+            // Note: This is best-effort since Podman doesn't store full sandbox metadata
+            let sandbox = Sandbox::new(
+                SandboxId::new(&sandbox_id),
+                bastion_domain::shared::id::TemplateId::new(
+                    container.image.as_deref().unwrap_or_default()
+                ),
+                bastion_domain::shared::id::ProviderId::new("podman"),
+                ResourcesSpec::default(),
+                NetworkSpec::default(),
+            );
+
+            sandboxes.push(sandbox);
+        }
+
+        Ok(sandboxes)
+    }
+
+    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
+        let container_name = id.to_string();
+
+        let info = self.docker.inspect_container(&container_name, None).await
+            .map_err(|e| {
+                if format!("{e}").contains("404") || format!("{e}").contains("No such container") {
+                    DomainError::NotFound(id.to_string())
+                } else {
+                    DomainError::Internal(format!("Failed to inspect container: {e}"))
+                }
+            })?;
+
+        let state = info.state.as_ref()
+            .ok_or_else(|| DomainError::Internal("Container has no state".to_string()))?;
+
+        let status = match state.status.as_ref().map(|s| s.as_ref()) {
+            Some("running") => SandboxStatus::Running,
+            Some("exited") | Some("dead") => SandboxStatus::Stopped,
+            Some("paused") => SandboxStatus::Paused,
+            Some("created") => SandboxStatus::Pending,
+            Some("restarting") => SandboxStatus::Pending,
+            _ => SandboxStatus::Failed,
+        };
+
+        let mut sandbox = Sandbox::new(
+            id.clone(),
+            bastion_domain::shared::id::TemplateId::new(
+                info.config.as_ref()
+                    .and_then(|c| c.image.clone())
+                    .unwrap_or_default()
+            ),
+            bastion_domain::shared::id::ProviderId::new("podman"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+
+        // Note: We lose expires_at, created_at, etc. from the original sandbox
+        // since Podman only gives us current state
+        if status == SandboxStatus::Running {
+            sandbox.mark_running()?;
+        } else if status == SandboxStatus::Stopped {
+            let _ = sandbox.terminate();
+        } else if status == SandboxStatus::Failed {
+            sandbox.mark_failed();
+        }
+
+        Ok(sandbox)
+    }
+
+    async fn set_timeout(&self, id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+        // Verify the container exists
+        let container_name = id.to_string();
+        let _ = self.docker.inspect_container(&container_name, None).await
+            .map_err(|e| {
+                if format!("{e}").contains("404") || format!("{e}").contains("No such container") {
+                    DomainError::NotFound(id.to_string())
+                } else {
+                    DomainError::Internal(format!("Failed to inspect container: {e}"))
+                }
+            })?;
+
+        // Podman containers don't have a native timeout mechanism.
+        // The timeout is managed at the Bastion layer (repository/service).
+        // This operation is a no-op at the provider level.
+        tracing::debug!(sandbox_id = %id, "set_timeout called on PodmanProvider (no-op at provider level)");
+        Ok(())
     }
 }
 
