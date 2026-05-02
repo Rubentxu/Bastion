@@ -45,7 +45,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # ── gRPC ─────────────────────────────────────────────────────
-tonic = { version = "0.14", features = ["tls-native-roots", "gzip"] }
+tonic = { version = "0.14", features = ["tls-ring", "gzip"] }
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
 prost = "0.14"
