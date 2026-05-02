@@ -2,20 +2,24 @@
 
 ## Status
 
-Accepted
+**Implemented** (2026-05-02, commit 90a29a8)
+
+> ✅ TLS migration complete: `tls-native-roots` → `tls-ring`
 
 ## Context
 
 The `bastion-worker` binary must be present inside every sandbox container across multiple backends:
 Podman/Docker (current), Kubernetes, Firecracker MicroVM, gVisor, and Lambda/FaaS.
 
-### Current State
+### Current State (Post-Implementation)
 
-- Worker binary is dynamically linked against glibc (2.5MB release)
-- **PodmanProvider** bind-mounts the host binary into containers (`self.worker_binary` → `/usr/local/bin/bastion-worker:ro`)
+- Worker binary uses **BoringSSL/ring** for TLS (musl-compatible) ✅
+- `Cargo.toml` now uses `tonic = { features = ["tls-ring", "gzip"] }` instead of `tls-native-roots`
+- **PodmanProvider** bind-mounts the host binary into containers
 - **FirecrackerProvider** and **gVisorProvider** copy the binary into rootfs at VM/container creation time
-- Workspace `Cargo.toml` configures `tonic` with `tls-native-roots` (OpenSSL), which does NOT support musl static linking
-- `.cargo/config.toml` already has musl linker configured and `scripts/build-worker.sh` exists, but the musl build fails due to the OpenSSL dependency
+- `.cargo/config.toml` has musl linker configured
+- `scripts/build-worker.sh` exists for musl builds
+- **Remaining**: Install `musl-gcc` toolchain to enable musl builds (`apt install musl-tools`)
 
 ### Problem
 
