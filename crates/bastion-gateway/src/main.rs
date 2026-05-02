@@ -16,7 +16,8 @@ use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::repository::SandboxRepository;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
+use bastion_domain::sandbox::snapshot::SnapshotInfo;
+use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
 use bastion_infrastructure::metrics::GatewayMetrics;
@@ -375,11 +376,34 @@ impl SandboxProvider for NullProvider {
         Err(DomainError::ProviderUnavailable(self.reason.clone()))
     }
 
+    async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
+    }
+
+    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::default()
     }
 
     fn name(&self) -> &str {
         "null"
+    }
+
+    async fn list_sandboxes(
+        &self,
+        _filter: &SandboxFilter,
+    ) -> Result<Vec<Sandbox>, DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
+    }
+
+    async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
+    }
+
+    async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+        Err(DomainError::ProviderUnavailable(self.reason.clone()))
     }
 }

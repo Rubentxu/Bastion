@@ -12,7 +12,8 @@ use crate::execution::command::{CommandResult, CommandSpec};
 use crate::execution::stream::CommandChunk;
 use crate::file_ops::FileEntry;
 use crate::sandbox::entity::Sandbox;
-use crate::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
+use crate::sandbox::snapshot::SnapshotInfo;
+use crate::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
 use crate::shared::DomainError;
 use crate::shared::id::SandboxId;
 
@@ -78,6 +79,18 @@ pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
     /// List files in a directory inside the sandbox.
     async fn list_files(&self, id: &SandboxId, dir: &str) -> Result<Vec<FileEntry>, DomainError>;
 
+    // ── Snapshot Operations ─────────────────────────────────────
+
+    /// Create a snapshot of the sandbox state.
+    async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+        Err(DomainError::UnsupportedOperation("snapshots".to_string()))
+    }
+
+    /// Restore a sandbox from a snapshot.
+    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+        Err(DomainError::UnsupportedOperation("snapshots".to_string()))
+    }
+
     // ── Metadata ───────────────────────────────────────────────
 
     /// Report what this provider can do.
@@ -85,4 +98,41 @@ pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
 
     /// Human-readable provider name.
     fn name(&self) -> &str;
+
+    // ── Provider-scoped Operations ────────────────────────────────
+
+    /// List sandboxes managed by this provider (not from repository).
+    ///
+    /// Returns sandboxes that are currently running or have recently
+    /// been managed by this provider instance.
+    async fn list_sandboxes(
+        &self,
+        _filter: &SandboxFilter,
+    ) -> Result<Vec<Sandbox>, DomainError> {
+        Err(DomainError::UnsupportedOperation(
+            "list_sandboxes".to_string(),
+        ))
+    }
+
+    /// Get current sandbox info from the backend provider.
+    ///
+    /// Returns the `Sandbox` entity with potentially updated status
+    /// from the actual backend (e.g., Docker, Firecracker, gVisor).
+    async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
+        Err(DomainError::UnsupportedOperation("get_info".to_string()))
+    }
+
+    /// Extend or shorten the lifetime of a sandbox.
+    ///
+    /// Updates the `expires_at` field of the sandbox. The backend
+    /// may enforce minimum/maximum timeout limits.
+    async fn set_timeout(
+        &self,
+        _id: &SandboxId,
+        _timeout_ms: u64,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::UnsupportedOperation(
+            "set_timeout".to_string(),
+        ))
+    }
 }

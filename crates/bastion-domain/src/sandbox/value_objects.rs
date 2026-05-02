@@ -66,3 +66,16 @@ impl Default for NetworkSpec {
         }
     }
 }
+
+/// Filter for listing sandboxes managed by a provider.
+#[derive(Debug, Clone, Default)]
+pub struct SandboxFilter {
+    /// Filter by provider name (exact match).
+    pub provider_name: Option<String>,
+    /// Filter by sandbox status.
+    pub status: Option<SandboxStatus>,
+    /// Maximum number of results to return.
+    pub limit: Option<u32>,
+    /// Cursor for pagination (opaque string from previous response).
+    pub cursor: Option<String>,
+}

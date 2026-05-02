@@ -4,4 +4,4 @@
 
 pub mod manager;
 
-pub use manager::{PoolConfig, PoolQueue, PoolStats, SandboxPoolManager};
+pub use manager::{PoolConfig, PoolQueue, PoolStats, RecoveryResult, SandboxPoolManager};

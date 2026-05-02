@@ -14,7 +14,7 @@ use tokio::time;
 use bastion_domain::provider::port::SandboxProvider;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::repository::SandboxRepository;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
+use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus};
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
 
@@ -156,6 +156,21 @@ pub struct TemplateStats {
     pub max_idle: usize,
 }
 
+/// Result of a pool recovery operation.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct RecoveryResult {
+    /// Number of sandboxes successfully reintegrated into the pool.
+    pub reintegrated: usize,
+    /// Number of sandboxes skipped because the pool is at max_idle capacity.
+    pub skipped_pool_full: usize,
+    /// Number of sandboxes skipped because their template is not registered.
+    pub skipped_not_registered: usize,
+    /// Number of sandboxes in repository marked as terminated (orphaned).
+    pub orphaned_terminated: usize,
+    /// Number of sandboxes that failed to recover.
+    pub failed: usize,
+}
+
 /// Shared state for the pool background task.
 struct PoolState {
     pools: Arc<DashMap<String, PoolQueue>>,
@@ -209,8 +224,198 @@ impl SandboxPoolManager {
         }
     }
 
+    /// Recover active sandboxes from the provider on startup.
+    ///
+    /// This reconciles the provider's view of running sandboxes with the
+    /// repository. Sandboxes that are running in the provider but exist
+    /// in the repository are reintegrated into the pool if their template
+    /// is registered. Sandboxes that are marked active in the repository
+    /// but are not running in the provider are marked as terminated.
+    ///
+    /// This is a "best effort" operation — failures on individual sandboxes
+    /// do not stop the recovery of remaining sandboxes.
+    pub async fn recover_active_sandboxes(&self) -> Result<RecoveryResult, DomainError> {
+        let filter = SandboxFilter {
+            status: Some(SandboxStatus::Running),
+            ..Default::default()
+        };
+
+        let provider_sandboxes = match self.provider.list_sandboxes(&filter).await {
+            Ok(sandboxes) => sandboxes,
+            Err(e) => {
+                tracing::warn!(error = %e, "Provider list_sandboxes failed during recovery, starting with empty pool");
+                return Ok(RecoveryResult::default());
+            }
+        };
+
+        let mut result = RecoveryResult::default();
+        let provider_sandbox_ids: std::collections::HashSet<_> = provider_sandboxes
+            .iter()
+            .map(|s| s.id.clone())
+            .collect();
+
+        // Phase 1: Reintegrate running sandboxes from provider
+        for provider_sandbox in &provider_sandboxes {
+            let template = provider_sandbox.template_id.to_string();
+
+            // Check if template is registered in pool
+            if !self.pools.contains_key(&template) {
+                tracing::debug!(
+                    sandbox_id = %provider_sandbox.id,
+                    template = %template,
+                    "Skipping recovery: template not registered in pool"
+                );
+                result.skipped_not_registered += 1;
+                continue;
+            }
+
+            // Check if sandbox exists in repository
+            match self.repository.find_by_id(&provider_sandbox.id).await {
+                Ok(Some(repo_sandbox)) => {
+                    // Sandbox exists in repository
+                    if repo_sandbox.status != SandboxStatus::Running {
+                        // Sandbox was marked as not running in repo, update it
+                        tracing::info!(
+                            sandbox_id = %provider_sandbox.id,
+                            repo_status = ?repo_sandbox.status,
+                            "Updating sandbox status to Running in repository"
+                        );
+                        let mut updated = repo_sandbox.clone();
+                        if updated.mark_running().is_err() {
+                            tracing::warn!(
+                                sandbox_id = %provider_sandbox.id,
+                                "Failed to mark recovered sandbox as running"
+                            );
+                        } else if self.repository.update(&updated).await.is_err() {
+                            tracing::warn!(
+                                sandbox_id = %provider_sandbox.id,
+                                "Failed to update recovered sandbox in repository"
+                            );
+                        }
+                    }
+
+                    // Reintegrate into pool if there's capacity
+                    if let Some(mut queue) = self.pools.get_mut(&template) {
+                        if queue.value().idle_count() >= queue.value().max_idle {
+                            tracing::debug!(
+                                sandbox_id = %provider_sandbox.id,
+                                template = %template,
+                                idle_count = queue.value().idle_count(),
+                                max_idle = queue.value().max_idle,
+                                "Skipping recovery: pool at max_idle capacity"
+                            );
+                            result.skipped_pool_full += 1;
+                            continue;
+                        }
+
+                        if queue.value_mut().checkin(provider_sandbox.clone()) {
+                            result.reintegrated += 1;
+                            self.total_idle
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            tracing::info!(
+                                sandbox_id = %provider_sandbox.id,
+                                template = %template,
+                                "Reintegrated active sandbox into pool"
+                            );
+                        } else {
+                            result.skipped_pool_full += 1;
+                            tracing::debug!(
+                                sandbox_id = %provider_sandbox.id,
+                                "Failed to reintegrate sandbox into pool"
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Sandbox not in repository - create a minimal entry
+                    tracing::info!(
+                        sandbox_id = %provider_sandbox.id,
+                        template = %template,
+                        "Recovered sandbox not in repository, saving it"
+                    );
+
+                    if let Err(e) = self.repository.save(provider_sandbox).await {
+                        tracing::warn!(
+                            sandbox_id = %provider_sandbox.id,
+                            error = %e,
+                            "Failed to save recovered sandbox to repository"
+                        );
+                        result.failed += 1;
+                    } else {
+                        // Try to reintegrate into pool
+                        if let Some(mut queue) = self.pools.get_mut(&template) {
+                            if queue.value_mut().checkin(provider_sandbox.clone()) {
+                                result.reintegrated += 1;
+                                self.total_idle
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            } else {
+                                result.skipped_pool_full += 1;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        sandbox_id = %provider_sandbox.id,
+                        error = %e,
+                        "Failed to check repository for sandbox"
+                    );
+                    result.failed += 1;
+                }
+            }
+        }
+
+        // Phase 2: Mark orphaned sandboxes as terminated
+        // These are sandboxes in the repository that are marked as active
+        // but are not in the provider's list of running sandboxes
+        if let Ok(active_in_repo) = self.repository.find_active().await {
+            for repo_sandbox in active_in_repo {
+                if !provider_sandbox_ids.contains(&repo_sandbox.id) {
+                    tracing::info!(
+                        sandbox_id = %repo_sandbox.id,
+                        repo_status = ?repo_sandbox.status,
+                        "Marking sandbox as terminated: not in provider's active list"
+                    );
+                    let mut updated = repo_sandbox.clone();
+                    if updated.terminate().is_ok() {
+                        if let Err(e) = self.repository.update(&updated).await {
+                            tracing::warn!(
+                                sandbox_id = %repo_sandbox.id,
+                                error = %e,
+                                "Failed to update orphaned sandbox status"
+                            );
+                        } else {
+                            result.orphaned_terminated += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            reintegrated = result.reintegrated,
+            skipped_pool_full = result.skipped_pool_full,
+            skipped_not_registered = result.skipped_not_registered,
+            orphaned_terminated = result.orphaned_terminated,
+            failed = result.failed,
+            "Pool recovery completed"
+        );
+
+        Ok(result)
+    }
+
     /// Start the background refill task.
     pub async fn start(&self) -> Result<(), DomainError> {
+        // Recovery phase: reintegrate active sandboxes from provider
+        tracing::info!("Starting pool recovery...");
+        let recovery_result = self.recover_active_sandboxes().await?;
+        tracing::info!(
+            reintegrated = recovery_result.reintegrated,
+            skipped_pool_full = recovery_result.skipped_pool_full,
+            orphaned_terminated = recovery_result.orphaned_terminated,
+            "Pool recovery completed"
+        );
+
         let (tx, rx) = oneshot::channel();
         *self.shutdown_tx.lock().await = Some(tx);
 
@@ -519,6 +724,7 @@ impl SandboxPoolManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::Stream;
 
     #[test]
     fn test_pool_config_default() {
@@ -583,5 +789,324 @@ mod tests {
         assert!(!queue.checkin(sandbox3)); // Should fail - max_idle is 2
 
         assert_eq!(queue.idle_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_recover_active_sandboxes() {
+        use bastion_domain::provider::capabilities::ProviderCapabilities;
+        use bastion_domain::execution::command::CommandSpec;
+        use bastion_domain::execution::stream::CommandChunk;
+        use bastion_domain::file_ops::FileEntry;
+        use bastion_domain::sandbox::snapshot::SnapshotInfo;
+        use std::collections::HashMap;
+        use futures::StreamExt;
+        use std::pin::Pin;
+
+        // Create mock provider
+        let provider_sandbox = Sandbox::new(
+            SandboxId::new("test-sandbox-1"),
+            bastion_domain::shared::id::TemplateId::new("test-template"),
+            bastion_domain::shared::id::ProviderId::new("mock"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+
+        let provider_sandbox2 = Sandbox::new(
+            SandboxId::new("test-sandbox-2"),
+            bastion_domain::shared::id::TemplateId::new("test-template"),
+            bastion_domain::shared::id::ProviderId::new("mock"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+
+        // Track what methods are called
+        let list_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let list_called_clone = list_called.clone();
+
+        // Create in-memory repository with the sandbox already saved
+        let repo_sandbox = provider_sandbox.clone();
+        let repo_sandbox2 = provider_sandbox2.clone();
+        let repo_sandboxes = std::sync::Arc::new(tokio::sync::Mutex::new(vec![
+            repo_sandbox.clone(),
+            repo_sandbox2.clone(),
+        ]));
+
+        // Mock provider implementation
+        #[derive(Debug)]
+        struct MockProvider {
+            sandboxes: Vec<Sandbox>,
+            list_called: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl SandboxProvider for MockProvider {
+            async fn create(
+                &self,
+                _id: &SandboxId,
+                _template: &str,
+                _resources: &ResourcesSpec,
+                _network: &NetworkSpec,
+                _env_vars: &HashMap<String, String>,
+                _timeout_ms: u64,
+            ) -> Result<Sandbox, DomainError> {
+                unimplemented!()
+            }
+            async fn terminate(&self, _id: &SandboxId) -> Result<(), DomainError> {
+                unimplemented!()
+            }
+            async fn is_alive(&self, _id: &SandboxId) -> Result<bool, DomainError> {
+                unimplemented!()
+            }
+            async fn run_command(
+                &self,
+                _id: &SandboxId,
+                _command: &CommandSpec,
+            ) -> Result<bastion_domain::execution::command::CommandResult, DomainError> {
+                unimplemented!()
+            }
+            async fn run_command_stream(
+                &self,
+                _id: &SandboxId,
+                _command: &CommandSpec,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>, DomainError> {
+                unimplemented!()
+            }
+            async fn write_file(&self, _id: &SandboxId, _path: &str, _content: &[u8]) -> Result<(), DomainError> {
+                unimplemented!()
+            }
+            async fn read_file(&self, _id: &SandboxId, _path: &str) -> Result<Vec<u8>, DomainError> {
+                unimplemented!()
+            }
+            async fn list_files(&self, _id: &SandboxId, _dir: &str) -> Result<Vec<FileEntry>, DomainError> {
+                unimplemented!()
+            }
+            async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+                unimplemented!()
+            }
+            async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+                unimplemented!()
+            }
+            fn capabilities(&self) -> ProviderCapabilities {
+                ProviderCapabilities::default()
+            }
+            fn name(&self) -> &str {
+                "mock"
+            }
+            async fn list_sandboxes(
+                &self,
+                filter: &SandboxFilter,
+            ) -> Result<Vec<Sandbox>, DomainError> {
+                self.list_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                if filter.status == Some(SandboxStatus::Running) {
+                    Ok(self.sandboxes.clone())
+                } else {
+                    Ok(vec![])
+                }
+            }
+            async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
+                unimplemented!()
+            }
+            async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+                unimplemented!()
+            }
+        }
+
+        // Mock repository implementation
+        #[derive(Debug)]
+        struct MockRepository {
+            sandboxes: std::sync::Arc<tokio::sync::Mutex<Vec<Sandbox>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl SandboxRepository for MockRepository {
+            async fn save(&self, sandbox: &Sandbox) -> Result<(), DomainError> {
+                let mut sb = self.sandboxes.lock().await;
+                if !sb.iter().any(|s| s.id == sandbox.id) {
+                    sb.push(sandbox.clone());
+                }
+                Ok(())
+            }
+            async fn find_by_id(&self, id: &SandboxId) -> Result<Option<Sandbox>, DomainError> {
+                let sb = self.sandboxes.lock().await;
+                Ok(sb.iter().find(|s| s.id == *id).cloned())
+            }
+            async fn update(&self, sandbox: &Sandbox) -> Result<(), DomainError> {
+                let mut sb = self.sandboxes.lock().await;
+                if let Some(idx) = sb.iter().position(|s| s.id == sandbox.id) {
+                    sb[idx] = sandbox.clone();
+                }
+                Ok(())
+            }
+            async fn delete(&self, _id: &SandboxId) -> Result<(), DomainError> {
+                Ok(())
+            }
+            async fn find_active(&self) -> Result<Vec<Sandbox>, DomainError> {
+                let sb = self.sandboxes.lock().await;
+                Ok(sb.iter().filter(|s| s.is_active()).cloned().collect())
+            }
+        }
+
+        let provider = Arc::new(MockProvider {
+            sandboxes: vec![provider_sandbox.clone(), provider_sandbox2.clone()],
+            list_called,
+        });
+
+        let repository = Arc::new(MockRepository {
+            sandboxes: repo_sandboxes.clone(),
+        });
+
+        let config = PoolConfig {
+            min_idle: 1,
+            max_idle: 3,
+            max_total: 10,
+            idle_timeout_ms: 60000,
+            refill_interval_ms: 5000,
+        };
+
+        let manager = SandboxPoolManager::new(provider.clone(), repository.clone(), config);
+        manager.register_template("test-template");
+
+        // Run recovery
+        let result = manager.recover_active_sandboxes().await.unwrap();
+
+        // Verify list_sandboxes was called
+        assert!(list_called_clone.load(std::sync::atomic::Ordering::SeqCst));
+
+        // Verify the sandboxes were reintegrated
+        assert_eq!(result.reintegrated, 2);
+        assert_eq!(result.skipped_not_registered, 0);
+        assert_eq!(result.skipped_pool_full, 0);
+        assert_eq!(result.failed, 0);
+
+        // Check the pool now has 2 sandboxes
+        let pool = manager.pools.get("test-template").unwrap();
+        assert_eq!(pool.idle_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_recover_active_sandboxes_skips_unregistered_templates() {
+        use bastion_domain::provider::capabilities::ProviderCapabilities;
+        use bastion_domain::execution::command::CommandSpec;
+        use bastion_domain::execution::stream::CommandChunk;
+        use bastion_domain::file_ops::FileEntry;
+        use bastion_domain::sandbox::snapshot::SnapshotInfo;
+        use std::collections::HashMap;
+        use futures::StreamExt;
+        use std::pin::Pin;
+
+        // Sandbox with unregistered template
+        let provider_sandbox = Sandbox::new(
+            SandboxId::new("unregistered-template-sandbox"),
+            bastion_domain::shared::id::TemplateId::new("unregistered-template"),
+            bastion_domain::shared::id::ProviderId::new("mock"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+
+        // Mock provider
+        #[derive(Debug)]
+        struct MockProvider {
+            sandboxes: Vec<Sandbox>,
+        }
+
+        #[async_trait::async_trait]
+        impl SandboxProvider for MockProvider {
+            async fn create(
+                &self,
+                _id: &SandboxId,
+                _template: &str,
+                _resources: &ResourcesSpec,
+                _network: &NetworkSpec,
+                _env_vars: &HashMap<String, String>,
+                _timeout_ms: u64,
+            ) -> Result<Sandbox, DomainError> {
+                unimplemented!()
+            }
+            async fn terminate(&self, _id: &SandboxId) -> Result<(), DomainError> {
+                unimplemented!()
+            }
+            async fn is_alive(&self, _id: &SandboxId) -> Result<bool, DomainError> {
+                unimplemented!()
+            }
+            async fn run_command(
+                &self,
+                _id: &SandboxId,
+                _command: &CommandSpec,
+            ) -> Result<bastion_domain::execution::command::CommandResult, DomainError> {
+                unimplemented!()
+            }
+            async fn run_command_stream(
+                &self,
+                _id: &SandboxId,
+                _command: &CommandSpec,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>, DomainError> {
+                unimplemented!()
+            }
+            async fn write_file(&self, _id: &SandboxId, _path: &str, _content: &[u8]) -> Result<(), DomainError> {
+                unimplemented!()
+            }
+            async fn read_file(&self, _id: &SandboxId, _path: &str) -> Result<Vec<u8>, DomainError> {
+                unimplemented!()
+            }
+            async fn list_files(&self, _id: &SandboxId, _dir: &str) -> Result<Vec<FileEntry>, DomainError> {
+                unimplemented!()
+            }
+            async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+                unimplemented!()
+            }
+            async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+                unimplemented!()
+            }
+            fn capabilities(&self) -> ProviderCapabilities {
+                ProviderCapabilities::default()
+            }
+            fn name(&self) -> &str {
+                "mock"
+            }
+            async fn list_sandboxes(
+                &self,
+                filter: &SandboxFilter,
+            ) -> Result<Vec<Sandbox>, DomainError> {
+                if filter.status == Some(SandboxStatus::Running) {
+                    Ok(self.sandboxes.clone())
+                } else {
+                    Ok(vec![])
+                }
+            }
+            async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
+                unimplemented!()
+            }
+            async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+                unimplemented!()
+            }
+        }
+
+        // Mock repository
+        #[derive(Debug)]
+        struct MockRepository;
+
+        #[async_trait::async_trait]
+        impl SandboxRepository for MockRepository {
+            async fn save(&self, _sandbox: &Sandbox) -> Result<(), DomainError> { Ok(()) }
+            async fn find_by_id(&self, _id: &SandboxId) -> Result<Option<Sandbox>, DomainError> { Ok(None) }
+            async fn update(&self, _sandbox: &Sandbox) -> Result<(), DomainError> { Ok(()) }
+            async fn delete(&self, _id: &SandboxId) -> Result<(), DomainError> { Ok(()) }
+            async fn find_active(&self) -> Result<Vec<Sandbox>, DomainError> { Ok(vec![]) }
+        }
+
+        let provider = Arc::new(MockProvider {
+            sandboxes: vec![provider_sandbox.clone()],
+        });
+        let repository = Arc::new(MockRepository);
+
+        let config = PoolConfig::default();
+        let manager = SandboxPoolManager::new(provider, repository, config);
+        // Note: NOT registering "unregistered-template"
+
+        let result = manager.recover_active_sandboxes().await.unwrap();
+
+        // Sandbox should be skipped because template is not registered
+        assert_eq!(result.reintegrated, 0);
+        assert_eq!(result.skipped_not_registered, 1);
     }
 }

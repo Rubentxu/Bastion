@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::{schemars, tool, tool_router};
+use rmcp::model::{ProgressNotificationParam, ProgressToken};
+use rmcp::service::RequestContext;
+use rmcp::{schemars, tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -212,7 +214,12 @@ impl BastionGateway {
     async fn sandbox_run_stream(
         &self,
         Parameters(params): Parameters<SandboxRunStreamParams>,
+        request_ctx: RequestContext<RoleServer>,
     ) -> String {
+        // Extract progress token from meta if present
+        let progress_token = request_ctx.meta.get_progress_token();
+        let peer = request_ctx.peer.clone();
+
         tracing::info!(sandbox_id = %params.sandbox_id, command = %params.command, "Running streaming command");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
@@ -229,8 +236,20 @@ impl BastionGateway {
                 let mut stdout_parts = Vec::new();
                 let mut stderr_parts = Vec::new();
                 let mut exit_code = -1i32;
+                let mut chunk_count = 0u32;
 
                 while let Some(chunk_result) = stream.next().await {
+                    // Send progress notification if token is present
+                    if let Some(ref token) = progress_token {
+                        chunk_count += 1;
+                        // Estimate progress based on chunk count (0.0 to 0.9 until complete)
+                        let progress = (chunk_count as f64 / 100.0).min(0.9);
+                        let message = Self::build_progress_message(&stdout_parts, &stderr_parts, chunk_count);
+                        if let Some(ref msg) = message {
+                            Self::send_progress(&peer, token, progress, Some(msg.as_str())).await;
+                        }
+                    }
+
                     match chunk_result {
                         Ok(chunk) => match chunk.chunk_type {
                             ChunkType::Stdout => {
@@ -252,6 +271,11 @@ impl BastionGateway {
                             stderr_parts.push(format!("Stream error: {}", e));
                         }
                     }
+                }
+
+                // Send final progress notification
+                if let Some(ref token) = progress_token {
+                    Self::send_progress(&peer, token, 1.0, Some("Complete")).await;
                 }
 
                 let duration_us = start_time.elapsed().as_micros() as u64;
@@ -514,5 +538,55 @@ impl BastionGateway {
     async fn sandbox_metrics(&self) -> String {
         tracing::debug!("Getting metrics");
         self.metrics.prometheus_export()
+    }
+
+    /// Send a progress notification to the MCP client.
+    /// If sending fails, logs a warning but continues execution.
+    async fn send_progress(
+        peer: &rmcp::Peer<rmcp::RoleServer>,
+        token: &ProgressToken,
+        progress: f64,
+        message: Option<&str>,
+    ) {
+        let params = match message {
+            Some(msg) => ProgressNotificationParam::new(token.clone(), progress).with_message(msg),
+            None => ProgressNotificationParam::new(token.clone(), progress),
+        };
+        if let Err(e) = peer.notify_progress(params).await {
+            tracing::warn!(error = %e, "Failed to send progress notification");
+        }
+    }
+
+    /// Build a progress message from current stdout/stderr accumulated output.
+    fn build_progress_message(
+        stdout_parts: &[String],
+        stderr_parts: &[String],
+        chunk_count: u32,
+    ) -> Option<String> {
+        // Show last 200 chars of stdout as preview, truncated for notification size
+        let stdout_preview = stdout_parts
+            .last()
+            .map(|s| {
+                if s.len() > 200 {
+                    format!("{}...", &s[s.len() - 200..])
+                } else {
+                    s.clone()
+                }
+            })
+            .filter(|s| !s.is_empty());
+
+        let message = match (stdout_preview, stderr_parts.is_empty()) {
+            (Some(preview), true) => format!("[{} chunks] {}", chunk_count, preview),
+            (Some(preview), false) => format!("[{} chunks] {} (+stderr)", chunk_count, preview),
+            (None, false) => format!("[{} chunks] (stderr: {})", chunk_count, stderr_parts.len()),
+            (None, true) => format!("[{} chunks] processing...", chunk_count),
+        };
+
+        // Truncate message if too long for notification
+        if message.len() > 500 {
+            Some(format!("{}...", &message[..500]))
+        } else {
+            Some(message)
+        }
     }
 }
