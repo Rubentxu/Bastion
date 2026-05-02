@@ -164,10 +164,10 @@ cargo build --target x86_64-unknown-linux-musl --release -p bastion-worker
 ldd target/x86_64-unknown-linux-musl/release/bastion-worker  # → "statically linked"
 ```
 
-### Phase 3: Update Providers
-- [ ] **PodmanProvider**: No change (bind-mount works with any binary)
-- [ ] **FirecrackerProvider**: Update `inject_worker()` to verify binary is static musl
-- [ ] **gVisorProvider**: Update `inject_worker()` to verify binary is static musl
+### Phase 3: Update Providers ✅ DONE
+- [x] **PodmanProvider**: Documentation updated - bind-mount works with any binary
+- [x] **FirecrackerProvider**: Added `verify_worker_binary()` async fn with `file` command check
+- [x] **gVisorProvider**: Added `verify_worker_binary()` sync fn with `file` command check
 - [ ] **Kubernetes**: Document init container pattern in deployment manifests
 
 ### Phase 4: Lambda/FaaS Bootstrap
