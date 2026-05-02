@@ -170,10 +170,31 @@ ldd target/x86_64-unknown-linux-musl/release/bastion-worker  # → "statically l
 - [x] **gVisorProvider**: Added `verify_worker_binary()` sync fn with `file` command check
 - [ ] **Kubernetes**: Document init container pattern in deployment manifests
 
-### Phase 4: Lambda/FaaS Bootstrap
-- [ ] Create shell bootstrap script that downloads worker from artifact store
-- [ ] Add sha256 integrity verification to bootstrap
-- [ ] Document Lambda custom runtime configuration
+### Phase 4: Lambda/FaaS Bootstrap ✅ DONE
+- [x] Create shell bootstrap script (`scripts/bootstrap-worker.sh`) that downloads worker from artifact store
+- [x] Add sha256 integrity verification to bootstrap
+- [x] Create Rust bootstrap crate (`crates/bastion-bootstrap/`) for environments that prefer Rust-based bootstrap
+- [x] Document Lambda custom runtime configuration
+
+**Shell bootstrap** (`scripts/bootstrap-worker.sh`):
+- Downloads worker binary from BASTION_WORKER_URL
+- Optional sha256 verification
+- Works with curl or wget
+- Minimal (~50 lines of shell)
+
+**Rust bootstrap** (`crates/bastion-bootstrap/`):
+- Alternative for environments that prefer Rust-based bootstrap
+- Uses reqwest for HTTP downloads with streaming
+- sha256 verification using sha2 crate
+- Passes through BASTION_* environment variables to worker
+
+**Usage in Lambda:**
+```bash
+#!/bin/sh
+exec /var/runtime/bootstrap "$@"
+```
+
+For Lambda custom runtime, the bootstrap script replaces the default runtime bootstrap.
 
 ## Security Considerations
 

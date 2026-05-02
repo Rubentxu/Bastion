@@ -6,6 +6,7 @@ members = [
     "crates/bastion-infrastructure",
     "crates/bastion-gateway",
     "crates/bastion-worker",
+    "crates/bastion-bootstrap",
 ]
 
 [workspace.package]
