@@ -39,6 +39,7 @@ jsonwebtoken = "9"
 dirs = "6"
 time = "0.3"
 hex = "0.4"
+base64 = { workspace = true }
 rustls = { version = "0.23", features = ["ring"] }
 
 # ── HTTP transport ─────────────────────────────────────────────
@@ -52,3 +53,4 @@ tonic-prost-build = { workspace = true }
 [dev-dependencies]
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
+tempfile = "3"

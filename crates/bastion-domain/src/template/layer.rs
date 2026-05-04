@@ -155,7 +155,7 @@ pub enum LayerStackError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::template::artifact::{ArtifactMediaType, CapabilityDescriptor, TemplateArtifact, ToolDescriptor, VerificationStep};
+    use crate::template::artifact::{ArtifactMediaType, CapabilityDescriptor, Category, TemplateArtifact, ToolDescriptor};
 
     fn make_jvm_layer() -> LayerArtifact {
         let template = TemplateArtifact::builder("bastion/jvm-build", "v1")
@@ -166,7 +166,7 @@ mod tests {
             .add_capability(CapabilityDescriptor {
                 name: "jvm-build".into(),
                 tools: vec![
-                    ToolDescriptor { name: "java".into(), version: "17".into() },
+                    ToolDescriptor { name: "java".into(), version: "17".into(), category: Category::Generic, manager_preference: vec![] },
                 ],
                 verification: vec![],
             })

@@ -1177,10 +1177,10 @@ impl SandboxProvider for FirecrackerProvider {
             };
 
             // Apply status filter
-            if let Some(ref filter_status) = filter.status {
-                if status != *filter_status {
-                    continue;
-                }
+            if let Some(ref filter_status) = filter.status
+                && status != *filter_status
+            {
+                continue;
             }
 
             // Build a minimal Sandbox entity

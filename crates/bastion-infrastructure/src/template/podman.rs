@@ -231,7 +231,7 @@ impl<S: ArtifactStore + Sync + Send> ProviderMaterializer for PodmanOptimizedMat
         match mode {
             MaterializationMode::MountReadonly | MaterializationMode::Auto => {
                 // Step 1: Extract to host cache (once)
-                let (host_dir, cache_hit) =
+                let (host_dir, _cache_hit) =
                     self.ensure_host_cache(artifact).await?;
 
                 // Step 2: Copy to sandbox via podman cp
@@ -241,7 +241,7 @@ impl<S: ArtifactStore + Sync + Send> ProviderMaterializer for PodmanOptimizedMat
             MaterializationMode::Extract => {
                 // Fallback: use extraction inside sandbox (already implemented in UniversalMaterializer)
                 // For now, we do the same copy approach
-                let (host_dir, cache_hit) =
+                let (host_dir, _cache_hit) =
                     self.ensure_host_cache(artifact).await?;
                 self.copy_to_sandbox(sandbox_id, &host_dir, &mount_path)
                     .await?;

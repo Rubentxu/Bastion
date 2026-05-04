@@ -70,6 +70,11 @@ impl ProviderFactory {
     pub fn default_name(&self) -> &str {
         &self.default
     }
+
+    /// Extract the underlying providers map (consumes the factory).
+    pub fn into_providers(self) -> HashMap<String, Arc<dyn SandboxProvider>> {
+        self.providers
+    }
 }
 
 #[cfg(test)]

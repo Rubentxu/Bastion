@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use crate::shared::id::SandboxId;
 use crate::shared::DomainError;
 
@@ -90,6 +91,19 @@ pub enum SupportLevel {
     Partial,
     /// Fully supports this request.
     Full,
+}
+
+/// Tool manager type for preference ordering.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagerType {
+    #[default]
+    CaStore,
+    Apt,
+    Asdf,
+    Sdkman,
+    Brew,
+    Nix,
 }
 
 /// A tool manager adapter — knows how to install specific tools.

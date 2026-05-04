@@ -6,7 +6,9 @@
 pub mod execution;
 pub mod file_ops;
 pub mod sandbox;
+pub mod template;
 
 pub use execution::*;
 pub use file_ops::*;
 pub use sandbox::*;
+pub use template::*;

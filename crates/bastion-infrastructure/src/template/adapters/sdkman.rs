@@ -77,7 +77,7 @@ impl ToolManagerAdapter for SdkmanAdapter {
         env.insert("JAVA_HOME".into(), java_home.clone());
         env.insert("SDKMAN_DIR".into(), "/root/.sdkman".into());
 
-        let mut verification = vec![
+        let verification = vec![
             ToolVerifyStep {
                 label: "Java version".into(),
                 command: format!("{SDKMAN_SOURCE} && java -version"),

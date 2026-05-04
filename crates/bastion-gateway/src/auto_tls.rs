@@ -2,7 +2,7 @@
 //!
 //! Generates and manages CA and server/client certificates for mTLS.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Context, Result};
 
@@ -21,8 +21,10 @@ static AUTO_TLS: OnceCell<AutoTls> = OnceCell::const_new();
 pub struct AutoTls {
     base_dir: PathBuf,
     ca_cert_pem: String,
+    #[allow(dead_code)]
     ca_key_pem: String,
     /// Parsed CA certificate for signing (wrapped in Arc for cloneability)
+    #[allow(dead_code)]
     ca_cert: Arc<Certificate>,
 }
 
@@ -53,7 +55,7 @@ pub async fn init_or_load(base_dir: PathBuf) -> Result<&'static AutoTls> {
 impl AutoTls {
     /// Initialize or load TLS certificates from the given base directory.
     /// Creates the directory structure if it doesn't exist.
-    pub async fn init_or_load(base_dir: &PathBuf) -> Result<Self> {
+    pub async fn init_or_load(base_dir: &Path) -> Result<Self> {
         let tls_dir = base_dir.join("tls");
         std::fs::create_dir_all(&tls_dir).context("Failed to create TLS directory")?;
 
@@ -96,11 +98,13 @@ impl AutoTls {
 
     /// Issue a client certificate for a worker with the given sandbox_id.
     /// Returns (cert_pem, key_pem).
+    #[allow(dead_code)]
     pub fn issue_worker_cert(&self, sandbox_id: &str) -> Result<(String, String)> {
         generate_worker_cert(sandbox_id, &self.ca_cert, &self.ca_key_pem)
     }
 
     /// Get the path to the worker CA certificate
+    #[allow(dead_code)]
     pub fn worker_ca_cert_path(&self) -> PathBuf {
         self.base_dir.join("ca-cert.pem")
     }
@@ -124,6 +128,7 @@ impl AutoTls {
     }
 
     /// Get a tonic ClientTlsConfig for workers connecting to the gateway
+    #[allow(dead_code)]
     pub fn client_config(&self) -> Result<ClientTlsConfig> {
         let ca_cert = TonicCertificate::from_pem(self.ca_cert_pem.as_bytes());
 
@@ -133,6 +138,7 @@ impl AutoTls {
     }
 
     /// Get the base TLS directory
+    #[allow(dead_code)]
     pub fn base_dir(&self) -> &PathBuf {
         &self.base_dir
     }
@@ -214,6 +220,7 @@ fn generate_gateway_cert(ca_cert: &Certificate, ca_key_pem: &str) -> Result<(Str
 }
 
 /// Generate a worker client certificate signed by the CA
+#[allow(dead_code)]
 fn generate_worker_cert(
     sandbox_id: &str,
     ca_cert: &Certificate,
@@ -245,7 +252,7 @@ fn generate_worker_cert(
     Ok((cert.pem(), key_pair.serialize_pem()))
 }
 
-fn set_file_permissions(path: &PathBuf, mode: u32) -> Result<()> {
+fn set_file_permissions(path: &Path, mode: u32) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
