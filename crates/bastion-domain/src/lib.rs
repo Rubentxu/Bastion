@@ -17,5 +17,6 @@ pub mod execution;
 pub mod file_ops;
 pub mod provider;
 pub mod sandbox;
+pub mod secret;
 pub mod shared;
 pub mod template;

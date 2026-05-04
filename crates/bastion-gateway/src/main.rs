@@ -18,12 +18,14 @@ use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
+use bastion_domain::secret::SecretResolver;
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
 use bastion_infrastructure::metrics::GatewayMetrics;
-use bastion_infrastructure::persistence::InMemorySandboxRepository;
+use bastion_infrastructure::persistence::SqliteSandboxRepository;
 use bastion_infrastructure::pool::{PoolConfig, SandboxPoolManager};
 use bastion_infrastructure::provider::{PodmanProvider, ProviderFactory};
+use bastion_infrastructure::secret::EnvSecretResolver;
 use bastion_infrastructure::template::CapabilityRegistry;
 
 use rmcp::{ServiceExt, service::RoleServer};
@@ -113,6 +115,10 @@ struct Args {
     /// Enable hot-reload of TOML configs (watch for file changes)
     #[arg(long, default_value_t = false)]
     watch_config: bool,
+
+    /// Path to the SQLite database for sandbox persistence (default: ~/.bastion/sandboxes.db)
+    #[arg(long)]
+    db_path: Option<PathBuf>,
 }
 
 /// Run HTTP transport server using StreamableHttpService
@@ -184,8 +190,19 @@ async fn main() -> Result<()> {
     let transport_mode = args.transport.clone();
     let _http_port = args.http_port;
 
-    // Initialize repository
-    let repository: Arc<dyn SandboxRepository> = Arc::new(InMemorySandboxRepository::new());
+    // Determine sandbox DB path
+    let db_path = args.db_path.clone().unwrap_or_else(|| {
+        dirs::home_dir()
+            .map(|h| h.join(".bastion").join("sandboxes.db"))
+            .unwrap_or_else(|| PathBuf::from(".bastion/sandboxes.db"))
+    });
+
+    // Initialize SQLite repository (keep concrete type for sync_from_provider)
+    let sqlite_repo = SqliteSandboxRepository::new(&db_path)
+        .map_err(|e| anyhow::anyhow!("Failed to initialize SQLite repository: {}", e))?;
+
+    // Initialize secret resolver (reads from environment variables)
+    let secret_resolver: Arc<dyn SecretResolver> = Arc::new(EnvSecretResolver::new());
 
     // Determine config directory path
     let bastion_config_dir = args.config_dir.clone().unwrap_or_else(|| {
@@ -265,6 +282,16 @@ async fn main() -> Result<()> {
     };
     factory.register("podman", podman.clone());
 
+    // Sync repository with provider state BEFORE wrapping in Arc (sync_from_provider needs concrete type)
+    if let Err(e) = sqlite_repo.sync_from_provider(podman.as_ref()).await {
+        tracing::warn!(error = %e, "Failed to sync sandboxes from provider — continuing anyway");
+    } else {
+        tracing::info!("Sandbox repository synced with provider");
+    }
+
+    // Wrap sqlite_repo as Arc<dyn SandboxRepository> for gateway use
+    let repository: Arc<dyn SandboxRepository> = Arc::new(sqlite_repo);
+
     // Optionally create pool manager — pool fill is deferred to background
     let pool_manager: Option<Arc<SandboxPoolManager>> = if args.pool_enabled {
         let pool_config = PoolConfig {
@@ -333,7 +360,7 @@ async fn main() -> Result<()> {
     let default_provider = factory.default().clone();
     let providers_map = factory.into_providers();
     let gateway =
-        server::BastionGateway::new(default_provider, providers_map, repository.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()), capability_registry);
+        server::BastionGateway::new(default_provider, providers_map, repository.clone(), secret_resolver.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()), capability_registry);
 
     // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS)
     let registry_addr: std::net::SocketAddr = args.registry_addr.parse()

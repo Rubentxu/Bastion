@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::secret::SecretSource;
+
 /// Specification for a command to execute in a sandbox.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandSpec {
@@ -11,6 +13,10 @@ pub struct CommandSpec {
     pub working_dir: Option<String>,
     pub env_vars: HashMap<String, String>,
     pub timeout_ms: Option<u64>,
+    /// Secrets to inject into the command environment.
+    /// Map of env-var-name → SecretSource (Ref or Inline).
+    #[serde(default)]
+    pub secrets: HashMap<String, SecretSource>,
 }
 
 impl CommandSpec {
@@ -21,6 +27,7 @@ impl CommandSpec {
             working_dir: None,
             env_vars: HashMap::new(),
             timeout_ms: None,
+            secrets: HashMap::new(),
         }
     }
 

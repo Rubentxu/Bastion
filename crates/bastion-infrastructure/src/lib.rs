@@ -9,4 +9,5 @@ pub mod persistence;
 pub mod pool;
 pub mod provider;
 pub mod sandbox;
+pub mod secret;
 pub mod template;

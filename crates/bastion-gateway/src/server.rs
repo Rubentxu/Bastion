@@ -24,7 +24,8 @@ use bastion_domain::execution::command::CommandSpec;
 use bastion_domain::execution::stream::ChunkType;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::sandbox::repository::SandboxRepository;
-use bastion_domain::shared::id::SandboxId;
+use bastion_domain::secret::{parse_secret_ref, SecretResolver, SecretSource};
+use bastion_domain::shared::{DomainError, id::SandboxId};
 use bastion_domain::template::{
     ArtifactCatalog, CapabilityDescriptor, MaterializationMode, ProviderMaterializer,
     TemplateArtifact, ToolDescriptor, ToolchainRequest, ToolchainStrategy, ToolResolver,
@@ -57,6 +58,7 @@ pub struct BastionGateway {
     /// All registered providers (keyed by name: "podman", "firecracker", "gvisor")
     providers: Arc<std::collections::HashMap<String, Arc<dyn SandboxProvider>>>,
     repository: Arc<dyn SandboxRepository>,
+    secret_resolver: Arc<dyn SecretResolver>,
     pool_manager: Option<Arc<SandboxPoolManager>>,
     metrics: GatewayMetrics,
     artifact_catalog: Arc<RwLock<ArtifactCatalog>>,
@@ -113,6 +115,7 @@ impl BastionGateway {
         provider: Arc<dyn SandboxProvider>,
         providers: std::collections::HashMap<String, Arc<dyn SandboxProvider>>,
         repository: Arc<dyn SandboxRepository>,
+        secret_resolver: Arc<dyn SecretResolver>,
         pool_manager: Option<Arc<SandboxPoolManager>>,
         metrics: GatewayMetrics,
         auto_tls: Arc<crate::auto_tls::AutoTls>,
@@ -122,6 +125,7 @@ impl BastionGateway {
             provider,
             providers: Arc::new(providers),
             repository,
+            secret_resolver,
             pool_manager,
             metrics,
             artifact_catalog: Arc::new(RwLock::new(ArtifactCatalog::new())),
@@ -146,6 +150,27 @@ impl BastionGateway {
                 "hint": "Reduce request frequency"
             }).to_string())
         }
+    }
+
+    /// Resolve secrets in a map of environment variables.
+    ///
+    /// Values matching `${{secret:KEY}}` are resolved via the secret resolver.
+    /// All other values are passed through unchanged.
+    async fn resolve_secrets(
+        &self,
+        env_vars: &std::collections::HashMap<String, String>,
+    ) -> Result<std::collections::HashMap<String, String>, DomainError> {
+        let mut resolved = std::collections::HashMap::new();
+        for (key, value) in env_vars {
+            if let Some(secret_key) = parse_secret_ref(value) {
+                let secret = self.secret_resolver.resolve(secret_key).await?;
+                tracing::debug!(key = %key, source = %secret.source, "Secret resolved");
+                resolved.insert(key.clone(), secret.value);
+            } else {
+                resolved.insert(key.clone(), value.clone());
+            }
+        }
+        Ok(resolved)
     }
 
     /// Generate worker TLS certificates for a sandbox
@@ -441,6 +466,32 @@ impl BastionGateway {
             }
         }
 
+        // Resolve secrets: collect resolved values first to avoid borrow conflict
+        let secrets_to_inject: Vec<(String, String)> = {
+            let mut results = Vec::new();
+            for (key, secret_source) in command_spec.secrets.iter() {
+                let resolved_value = match secret_source {
+                    SecretSource::Inline(value) => value.clone(),
+                    SecretSource::Ref(secret_key) => {
+                        match self.secret_resolver.resolve(secret_key).await {
+                            Ok(secret) => {
+                                tracing::debug!(key = %key, source = %secret.source, "Secret resolved");
+                                secret.value
+                            }
+                            Err(e) => {
+                                return serde_json::json!({"error": format!("Failed to resolve secret '{}': {}", secret_key, e)}).to_string();
+                            }
+                        }
+                    }
+                };
+                results.push((key.clone(), resolved_value));
+            }
+            results
+        };
+        for (k, v) in secrets_to_inject {
+            command_spec = command_spec.with_env(k, v);
+        }
+
         match use_case
             .execute(&sandbox_id, &command_spec, self.provider.as_ref())
             .await
@@ -498,6 +549,32 @@ impl BastionGateway {
                     command_spec = command_spec.with_env(key, value);
                 }
             }
+        }
+
+        // Resolve secrets: collect resolved values first to avoid borrow conflict
+        let secrets_to_inject: Vec<(String, String)> = {
+            let mut results = Vec::new();
+            for (key, secret_source) in command_spec.secrets.iter() {
+                let resolved_value = match secret_source {
+                    SecretSource::Inline(value) => value.clone(),
+                    SecretSource::Ref(secret_key) => {
+                        match self.secret_resolver.resolve(secret_key).await {
+                            Ok(secret) => {
+                                tracing::debug!(key = %key, source = %secret.source, "Secret resolved");
+                                secret.value
+                            }
+                            Err(e) => {
+                                return serde_json::json!({"error": format!("Failed to resolve secret '{}': {}", secret_key, e)}).to_string();
+                            }
+                        }
+                    }
+                };
+                results.push((key.clone(), resolved_value));
+            }
+            results
+        };
+        for (k, v) in secrets_to_inject {
+            command_spec = command_spec.with_env(k, v);
         }
 
         let use_case = RunCommandStreamUseCase::new(self.repository.clone());
@@ -968,7 +1045,17 @@ impl BastionGateway {
                 let mut cmd = CommandSpec::new(&step.command)
                     .with_timeout(step.timeout_ms);
                 for (k, v) in &step.env {
-                    cmd = cmd.with_env(k.as_str(), v.as_str());
+                    // Resolve secret refs in env var values (e.g., "${{secret:GITHUB_TOKEN}}")
+                    let mut env_map: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
+                    env_map.insert(k.clone(), v.clone());
+                    let resolved = match self.resolve_secrets(&env_map).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return serde_json::json!({"error": format!("Failed to resolve secrets: {}", e)}).to_string();
+                        }
+                    };
+                    cmd = cmd.with_env(k.as_str(), resolved.get(k).cloned().unwrap_or_else(|| v.clone()));
                 }
 
                 match self.provider.run_command(&sandbox_id, &cmd).await {
@@ -1069,7 +1156,17 @@ impl BastionGateway {
                     let mut cmd = CommandSpec::new(&step.command)
                         .with_timeout(step.timeout_ms);
                     for (k, v) in &step.env {
-                        cmd = cmd.with_env(k.as_str(), v.as_str());
+                        // Resolve secret refs in env var values (e.g., "${{secret:GITHUB_TOKEN}}")
+                        let mut env_map: std::collections::HashMap<String, String> =
+                            std::collections::HashMap::new();
+                        env_map.insert(k.clone(), v.clone());
+                        let resolved = match self.resolve_secrets(&env_map).await {
+                            Ok(r) => r,
+                            Err(e) => {
+                                return serde_json::json!({"error": format!("Failed to resolve secrets: {}", e)}).to_string();
+                            }
+                        };
+                        cmd = cmd.with_env(k.as_str(), resolved.get(k).cloned().unwrap_or_else(|| v.clone()));
                     }
 
                     match self.provider.run_command(&sandbox_id, &cmd).await {
