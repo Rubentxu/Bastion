@@ -25,7 +25,15 @@ use bastion_infrastructure::persistence::InMemorySandboxRepository;
 use bastion_infrastructure::pool::{PoolConfig, SandboxPoolManager};
 use bastion_infrastructure::provider::{PodmanProvider, ProviderFactory};
 
-use rmcp::ServiceExt;
+use rmcp::{ServiceExt, service::RoleServer};
+
+// HTTP transport imports
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpService, StreamableHttpServerConfig,
+    session::local::LocalSessionManager,
+};
+use hyper_util::service::TowerToHyperService;
+use hyper::server::conn::http1;
 
 mod registry;
 mod sandbox;
@@ -34,6 +42,12 @@ mod tls;
 
 use registry::{RegistryService, WorkerRegistryServer};
 use tonic::codec::CompressionEncoding;
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum TransportMode {
+    Stdio,
+    Http,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "bastion-gateway", version, about = "Bastion MCP Gateway")]
@@ -89,6 +103,14 @@ struct Args {
     /// TLS private key path (optional, enables TLS for registry)
     #[arg(long)]
     tls_key: Option<String>,
+
+    /// Transport mode: stdio (default) or http
+    #[arg(long, default_value_t = TransportMode::Stdio, value_enum)]
+    transport: TransportMode,
+
+    /// HTTP server port (only used when --transport=http)
+    #[arg(long, default_value_t = 8080)]
+    http_port: u16,
 }
 
 impl Args {
@@ -100,6 +122,40 @@ impl Args {
             }),
             _ => None,
         }
+    }
+}
+
+/// Run HTTP transport server using StreamableHttpService
+async fn run_http_transport<S>(gateway: S, port: u16) -> Result<()>
+where
+    S: ServiceExt<RoleServer> + Clone + Send + 'static,
+{
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("HTTP server listening on {}", addr);
+
+    let session_manager = Arc::new(LocalSessionManager::default());
+    let config = StreamableHttpServerConfig::default();
+    let mcp_service = StreamableHttpService::new(
+        move || Ok(gateway.clone()),
+        session_manager,
+        config,
+    );
+    // Wrap with TowerToHyperService for hyper compatibility
+    let service = TowerToHyperService::new(mcp_service);
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let mut service = service.clone();
+        tokio::spawn(async move {
+            let io = hyper_util::rt::TokioIo::new(stream);
+            if let Err(e) = http1::Builder::new()
+                .serve_connection(io, &mut service)
+                .await
+            {
+                tracing::warn!("HTTP serve error: {}", e);
+            }
+        });
     }
 }
 
@@ -118,6 +174,10 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     tracing::info!("Bastion MCP Gateway starting...");
+
+    // Extract transport config before async blocks (args will be moved)
+    let transport_mode = args.transport.clone();
+    let _http_port = args.http_port;
 
     // Initialize repository
     let repository: Arc<dyn SandboxRepository> = Arc::new(InMemorySandboxRepository::new());
@@ -207,6 +267,9 @@ async fn main() -> Result<()> {
     let registry_addr: std::net::SocketAddr = args.registry_addr.parse()
         .expect("Invalid registry address");
 
+    // Extract TLS config before async move
+    let tls_config = args.tls_config();
+
     let registry_for_grpc = Arc::clone(&registry);
     let registry_handle = tokio::spawn(async move {
         // Create service with gzip compression enabled
@@ -214,7 +277,7 @@ async fn main() -> Result<()> {
             .accept_compressed(CompressionEncoding::Gzip)
             .send_compressed(CompressionEncoding::Gzip);
 
-        if let Some(ref tls_cfg) = args.tls_config()
+        if let Some(ref tls_cfg) = tls_config
             && tls_cfg.files_exist()
         {
             match tls_cfg.load_identity() {
@@ -255,28 +318,52 @@ async fn main() -> Result<()> {
     });
     tracing::info!("Worker registry listening on {}", registry_addr);
 
-    tracing::info!("MCP Gateway ready — serving on stdio");
+    // Transport selection based on CLI argument
+    match transport_mode {
+        TransportMode::Stdio => {
+            tracing::info!("MCP Gateway ready — serving on stdio");
 
-    // Run MCP server and registry in parallel
-    let mcp_future = async {
-        let service = gateway
-            .serve(rmcp::transport::stdio())
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {e}"))?;
-        let _ = service.waiting().await;
-        Ok::<(), anyhow::Error>(())
-    };
+            // Run MCP server on stdio and registry in parallel
+            let mcp_future = async {
+                let service = gateway
+                    .serve(rmcp::transport::stdio())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {e}"))?;
+                let _ = service.waiting().await;
+                Ok::<(), anyhow::Error>(())
+            };
 
-    // Wait for either to finish
-    tokio::select! {
-        result = mcp_future => {
-            if let Err(e) = result {
-                tracing::error!("MCP server error: {}", e);
+            // Wait for either to finish
+            tokio::select! {
+                result = mcp_future => {
+                    if let Err(e) = result {
+                        tracing::error!("MCP server error: {}", e);
+                    }
+                }
+                result = registry_handle => {
+                    if let Err(e) = result {
+                        tracing::error!("Registry server error: {}", e);
+                    }
+                }
             }
         }
-        result = registry_handle => {
-            if let Err(e) = result {
-                tracing::error!("Registry server error: {}", e);
+        TransportMode::Http => {
+            tracing::info!("MCP Gateway ready — serving on HTTP transport");
+
+            // Run HTTP transport and registry in parallel
+            let http_future = run_http_transport(gateway, args.http_port);
+
+            tokio::select! {
+                result = http_future => {
+                    if let Err(e) = result {
+                        tracing::error!("HTTP transport error: {}", e);
+                    }
+                }
+                result = registry_handle => {
+                    if let Err(e) = result {
+                        tracing::error!("Registry server error: {}", e);
+                    }
+                }
             }
         }
     }

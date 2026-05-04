@@ -2,6 +2,7 @@
 //!
 //! Implements the rmcp ServerHandler with sandbox tools.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -11,6 +12,7 @@ use rmcp::service::RequestContext;
 use rmcp::{schemars, tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tokio::sync::RwLock;
 
 use bastion_application::execution::{RunCommandStreamUseCase, RunCommandUseCase};
 use bastion_application::file_ops::{ListFilesUseCase, ReadFileUseCase, WriteFileUseCase};
@@ -22,18 +24,27 @@ use bastion_domain::execution::stream::ChunkType;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::shared::id::SandboxId;
+use bastion_domain::template::{
+    ArtifactCatalog, CapabilityDescriptor, MaterializationMode, ProviderMaterializer,
+    TemplateArtifact, ToolDescriptor, ToolchainRequest, ToolchainStrategy, ToolResolver,
+};
 use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::pool::SandboxPoolManager;
+use bastion_infrastructure::template::{
+    AptAdapter, AsdfAdapter, FsArtifactStore, PodmanOptimizedMaterializer,
+};
 
 /// Bastion MCP Gateway server.
 ///
 /// Exposes sandbox management tools to AI agents via MCP protocol.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BastionGateway {
     provider: Arc<dyn SandboxProvider>,
     repository: Arc<dyn SandboxRepository>,
     pool_manager: Option<Arc<SandboxPoolManager>>,
     metrics: GatewayMetrics,
+    artifact_catalog: Arc<RwLock<ArtifactCatalog>>,
+    artifact_store: Arc<FsArtifactStore>,
 }
 
 impl BastionGateway {
@@ -48,6 +59,8 @@ impl BastionGateway {
             repository,
             pool_manager,
             metrics,
+            artifact_catalog: Arc::new(RwLock::new(ArtifactCatalog::new())),
+            artifact_store: Arc::new(FsArtifactStore::new(PathBuf::from("/tmp/bastion-artifacts"))),
         }
     }
 }
@@ -110,6 +123,22 @@ pub struct SandboxRunStreamParams {
     pub sandbox_id: String,
     /// Command to execute
     pub command: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RegisterArtifactParams {
+    pub name: String,
+    pub version: String,
+    pub digest: String,
+    pub capability: String,
+    #[serde(default)]
+    pub tools: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SandboxPrepareParams {
+    pub sandbox_id: String,
+    pub capability: String,
 }
 
 #[tool_router(server_handler)]
@@ -538,6 +567,149 @@ impl BastionGateway {
     async fn sandbox_metrics(&self) -> String {
         tracing::debug!("Getting metrics");
         self.metrics.prometheus_export()
+    }
+
+    #[tool(description = "Register a template artifact that provides a capability")]
+    async fn sandbox_register_artifact(
+        &self,
+        Parameters(params): Parameters<RegisterArtifactParams>,
+    ) -> String {
+        let tools: Vec<ToolDescriptor> = params
+            .tools
+            .unwrap_or_default()
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                let parts: Vec<&str> = s.trim().split(':').collect();
+                ToolDescriptor {
+                    name: parts.first().unwrap_or(&"").to_string(),
+                    version: parts.get(1).unwrap_or(&"any").to_string(),
+                }
+            })
+            .collect();
+
+        let artifact = TemplateArtifact::builder(&params.name, &params.version)
+            .digest(&params.digest)
+            .add_capability(CapabilityDescriptor {
+                name: params.capability.clone(),
+                tools,
+                verification: vec![],
+            })
+            .build();
+
+        {
+            let mut catalog = self.artifact_catalog.write().await;
+            catalog.register(artifact);
+        }
+
+        serde_json::json!({
+            "status": "registered",
+            "name": params.name,
+            "capability": params.capability
+        })
+        .to_string()
+    }
+
+    #[tool(description = "Prepare a sandbox with a specific capability (e.g. jvm-build)")]
+    async fn sandbox_prepare(
+        &self,
+        Parameters(params): Parameters<SandboxPrepareParams>,
+    ) -> String {
+        let sandbox_id = SandboxId::new(&params.sandbox_id);
+        let capability = &params.capability;
+
+        // Try artifact catalog first
+        let artifact = {
+            let catalog = self.artifact_catalog.read().await;
+            catalog.resolve(capability).cloned()
+        };
+
+        // If artifact found, use materializer
+        if let Ok(artifact) = artifact {
+            let materializer = PodmanOptimizedMaterializer::new(
+                self.provider.clone(),
+                self.artifact_store.clone(),
+                PathBuf::from("/tmp/bastion-cache"),
+            );
+            match materializer
+                .materialize(&sandbox_id, &artifact, MaterializationMode::Auto)
+                .await
+            {
+                Ok(result) => {
+                    return serde_json::json!({
+                        "status": "ready",
+                        "method": "artifact",
+                        "env_ref": result.env_ref,
+                        "cache_hit": result.cache_hit,
+                        "duration_ms": result.duration_ms
+                    })
+                    .to_string();
+                }
+                Err(e) => {
+                    tracing::warn!("Artifact materialization failed: {}, falling back to resolver", e);
+                }
+            }
+        }
+
+        // Fallback: use ToolResolver with adapters
+        let mut resolver = ToolResolver::new();
+        resolver.register(Box::new(AptAdapter));
+        resolver.register(Box::new(AsdfAdapter));
+
+        let req = ToolchainRequest {
+            sandbox_id: sandbox_id.clone(),
+            capability: capability.clone(),
+            constraints: std::collections::HashMap::new(),
+            strategy: ToolchainStrategy::Auto,
+        };
+
+        match resolver.resolve(&req).await {
+            Ok(plan) => {
+                // Execute the plan steps in the sandbox
+                use bastion_domain::execution::command::CommandSpec;
+                let t0 = std::time::Instant::now();
+
+                for step in &plan.steps {
+                    let mut cmd = CommandSpec::new(&step.command)
+                        .with_timeout(step.timeout_ms);
+                    for (k, v) in &step.env {
+                        cmd = cmd.with_env(k.as_str(), v.as_str());
+                    }
+
+                    match self.provider.run_command(&sandbox_id, &cmd).await {
+                        Ok(result) => {
+                            if result.exit_code != step.expected_exit_code {
+                                return serde_json::json!({
+                                    "error": format!("Step '{}' failed: exit {} (expected {})",
+                                        step.description, result.exit_code, step.expected_exit_code)
+                                }).to_string();
+                            }
+                        }
+                        Err(e) => {
+                            return serde_json::json!({
+                                "error": format!("Step '{}' error: {}", step.description, e)
+                            }).to_string();
+                        }
+                    }
+                }
+
+                let duration_ms = t0.elapsed().as_millis() as u64;
+
+                serde_json::json!({
+                    "status": "ready",
+                    "method": "resolver",
+                    "adapter_used": plan.adapter_used,
+                    "capability": capability,
+                    "env": plan.env,
+                    "path_prefix": plan.path_prefix,
+                    "duration_ms": duration_ms
+                })
+                .to_string()
+            }
+            Err(e) => {
+                serde_json::json!({"error": format!("{}", e)}).to_string()
+            }
+        }
     }
 
     /// Send a progress notification to the MCP client.

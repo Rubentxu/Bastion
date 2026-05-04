@@ -18,3 +18,4 @@ pub mod file_ops;
 pub mod provider;
 pub mod sandbox;
 pub mod shared;
+pub mod template;
