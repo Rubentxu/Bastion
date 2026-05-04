@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use bastion_domain::shared::DomainError;
-use bastion_domain::template::{SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep, ToolVerifyStep};
+use bastion_domain::template::{ManagerType, SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep, ToolVerifyStep};
 
 /// Adapter for SDKMAN! based JVM tool installation.
 pub struct SdkmanAdapter;
@@ -16,6 +16,7 @@ const SDKMAN_SOURCE: &str = "source ~/.sdkman/bin/sdkman-init.sh";
 impl ToolManagerAdapter for SdkmanAdapter {
     fn id(&self) -> &'static str { "sdkman" }
     fn name(&self) -> &'static str { "SDKMAN! Java Version Manager" }
+    fn manager_type(&self) -> ManagerType { ManagerType::Sdkman }
 
     fn supports(&self, req: &ToolchainRequest) -> SupportLevel {
         match req.capability.as_str() {

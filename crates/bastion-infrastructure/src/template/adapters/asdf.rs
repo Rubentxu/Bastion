@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use bastion_domain::shared::DomainError;
-use bastion_domain::template::{SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep, ToolVerifyStep};
+use bastion_domain::template::{ManagerType, SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep, ToolVerifyStep};
 
 /// Adapter for asdf-vm based tool installation.
 pub struct AsdfAdapter;
@@ -16,6 +16,7 @@ const ASDF_SOURCE: &str = "source ~/.asdf/asdf.sh";
 impl ToolManagerAdapter for AsdfAdapter {
     fn id(&self) -> &'static str { "asdf" }
     fn name(&self) -> &'static str { "asdf Version Manager" }
+    fn manager_type(&self) -> ManagerType { ManagerType::Asdf }
 
     fn supports(&self, req: &ToolchainRequest) -> SupportLevel {
         match req.capability.as_str() {

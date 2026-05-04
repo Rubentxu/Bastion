@@ -32,7 +32,7 @@ use bastion_domain::template::{
 use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::pool::SandboxPoolManager;
 use bastion_infrastructure::template::{
-    AptAdapter, AsdfAdapter, FsArtifactStore, PodmanOptimizedMaterializer,
+    AptAdapter, AsdfAdapter, SdkmanAdapter, FsArtifactStore, PodmanOptimizedMaterializer,
     SnapshotManager,
 };
 /// Sync backend selection for sandbox file transfer.
@@ -266,6 +266,14 @@ pub struct SandboxPrepareParams {
     /// Timeout in ms for the entire prepare operation (default: 600s for network-heavy ops)
     #[serde(default = "default_prepare_timeout")]
     pub timeout_ms: u64,
+    /// Toolchain strategy override (default: auto)
+    ///
+    /// - "auto": Let the resolver pick the best approach
+    /// - "system_package": Prefer system package managers (apt)
+    /// - "version_manager": Prefer version managers (asdf, sdkman)
+    /// - "content_addressed": Use pre-packaged artifacts from CA store
+    #[serde(default)]
+    pub strategy: ToolchainStrategy,
 }
 
 fn default_prepare_timeout() -> u64 {
@@ -950,12 +958,13 @@ impl BastionGateway {
         let mut resolver = ToolResolver::new();
         resolver.register(Box::new(AptAdapter));
         resolver.register(Box::new(AsdfAdapter));
+        resolver.register(Box::new(SdkmanAdapter));
 
         let req = ToolchainRequest {
             sandbox_id: sandbox_id.clone(),
             capability: capability.clone(),
             constraints: std::collections::HashMap::new(),
-            strategy: ToolchainStrategy::Auto,
+            strategy: params.strategy,
         };
 
         match resolver.resolve(&req).await {

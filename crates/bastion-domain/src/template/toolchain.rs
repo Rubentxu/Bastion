@@ -20,9 +20,11 @@ pub struct ToolchainRequest {
 }
 
 /// Strategy for toolchain resolution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolchainStrategy {
     /// Let the resolver pick the best approach.
+    #[default]
     Auto,
     /// Prefer system package managers (apt, dnf, etc.).
     SystemPackage,
@@ -30,6 +32,18 @@ pub enum ToolchainStrategy {
     VersionManager,
     /// Use pre-packaged artifacts from content-addressed store.
     ContentAddressed,
+}
+
+impl ToolchainStrategy {
+    /// Check if a given ManagerType matches this strategy.
+    pub fn accepts(&self, mt: &ManagerType) -> bool {
+        match self {
+            ToolchainStrategy::Auto => true,
+            ToolchainStrategy::SystemPackage => matches!(mt, ManagerType::Apt | ManagerType::Brew),
+            ToolchainStrategy::VersionManager => matches!(mt, ManagerType::Asdf | ManagerType::Sdkman),
+            ToolchainStrategy::ContentAddressed => matches!(mt, ManagerType::CaStore),
+        }
+    }
 }
 
 /// A step in a toolchain execution plan.
@@ -115,6 +129,8 @@ pub trait ToolManagerAdapter: Send + Sync {
     fn id(&self) -> &'static str;
     /// Human-readable name.
     fn name(&self) -> &'static str;
+    /// Manager type for strategy filtering.
+    fn manager_type(&self) -> ManagerType;
     /// Whether this adapter supports the given request.
     fn supports(&self, req: &ToolchainRequest) -> SupportLevel;
     /// Generate an installation plan for this request.
@@ -137,24 +153,27 @@ impl ToolResolver {
     }
 
     /// Resolve the best adapter for a request and generate a plan.
+    /// Respects the strategy field in ToolchainRequest to filter adapters.
     pub async fn resolve(&self, req: &ToolchainRequest) -> Result<ToolchainPlan, DomainError> {
-        // Try to find an adapter with full support
+        let strategy = &req.strategy;
+
+        // Try to find an adapter with full support, filtered by strategy
         for adapter in &self.adapters {
-            if adapter.supports(req) == SupportLevel::Full {
+            if strategy.accepts(&adapter.manager_type()) && adapter.supports(req) == SupportLevel::Full {
                 return adapter.plan(req).await;
             }
         }
 
-        // Fallback: try any adapter with partial support
+        // Fallback: try any adapter with partial support, filtered by strategy
         for adapter in &self.adapters {
-            if adapter.supports(req) == SupportLevel::Partial {
+            if strategy.accepts(&adapter.manager_type()) && adapter.supports(req) == SupportLevel::Partial {
                 return adapter.plan(req).await;
             }
         }
 
         Err(DomainError::NotFound(format!(
-            "No tool manager available for capability '{}'",
-            req.capability
+            "No tool manager available for capability '{}' with strategy {:?}",
+            req.capability, strategy
         )))
     }
 

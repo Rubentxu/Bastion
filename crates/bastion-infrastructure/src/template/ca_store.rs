@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use bastion_domain::shared::DomainError;
 use bastion_domain::template::{
-    SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep,
+    ManagerType, SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep,
     ToolVerifyStep,
 };
 
@@ -85,6 +85,10 @@ impl ToolManagerAdapter for CaStoreAdapter {
 
     fn name(&self) -> &'static str {
         "Content-Addressed Store"
+    }
+
+    fn manager_type(&self) -> ManagerType {
+        ManagerType::CaStore
     }
 
     fn supports(&self, req: &ToolchainRequest) -> SupportLevel {

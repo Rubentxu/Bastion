@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use bastion_domain::shared::DomainError;
-use bastion_domain::template::{SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep, ToolVerifyStep};
+use bastion_domain::template::{ManagerType, SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep, ToolVerifyStep};
 
 /// Adapter for apt-get based tool installation.
 pub struct AptAdapter;
@@ -13,6 +13,7 @@ pub struct AptAdapter;
 impl ToolManagerAdapter for AptAdapter {
     fn id(&self) -> &'static str { "apt" }
     fn name(&self) -> &'static str { "APT Package Manager" }
+    fn manager_type(&self) -> ManagerType { ManagerType::Apt }
 
     fn supports(&self, req: &ToolchainRequest) -> SupportLevel {
         match req.capability.as_str() {
