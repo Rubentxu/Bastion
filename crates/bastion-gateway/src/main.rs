@@ -24,6 +24,7 @@ use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::persistence::InMemorySandboxRepository;
 use bastion_infrastructure::pool::{PoolConfig, SandboxPoolManager};
 use bastion_infrastructure::provider::{PodmanProvider, ProviderFactory};
+use bastion_infrastructure::template::CapabilityRegistry;
 
 use rmcp::{ServiceExt, service::RoleServer};
 
@@ -104,6 +105,14 @@ struct Args {
     /// HTTP server port (only used when --transport=http)
     #[arg(long, default_value_t = 8080)]
     http_port: u16,
+
+    /// Path to bastion config directory (default: .bastion in current dir or ~/.bastion)
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
+
+    /// Enable hot-reload of TOML configs (watch for file changes)
+    #[arg(long, default_value_t = false)]
+    watch_config: bool,
 }
 
 /// Run HTTP transport server using StreamableHttpService
@@ -178,17 +187,53 @@ async fn main() -> Result<()> {
     // Initialize repository
     let repository: Arc<dyn SandboxRepository> = Arc::new(InMemorySandboxRepository::new());
 
-    // Create provider factory and register Podman
+    // Determine config directory path
+    let bastion_config_dir = args.config_dir.clone().unwrap_or_else(|| {
+        // Check current dir first, then home dir
+        let local = PathBuf::from(".bastion");
+        if local.exists() {
+            local
+        } else {
+            dirs::home_dir()
+                .map(|h| h.join(".bastion"))
+                .unwrap_or_else(|| PathBuf::from(".bastion"))
+        }
+    });
+
+    // Create provider factory and register Podman (backward compat)
     let mut factory = ProviderFactory::new("podman");
 
-    // Create the RegistryService with JWT + auto_tls support
-    let registry: Arc<RegistryService> = Arc::new(RegistryService::new(
+    // Load provider configs from .bastion/providers/ if directory exists
+    let providers_dir = bastion_config_dir.join("providers");
+    let loaded_provider_count = if providers_dir.exists() {
+        match std::fs::read_dir(&providers_dir) {
+            Ok(entries) => {
+                let toml_files: Vec<_> = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("toml"))
+                    .collect();
+                toml_files.len()
+            }
+            Err(_) => 0,
+        }
+    } else {
+        0
+    };
+
+    if loaded_provider_count > 0 {
+        tracing::info!(count = loaded_provider_count, path = %providers_dir.display(), "Found TOML provider configs");
+    } else {
+        tracing::info!("No TOML provider configs found, using hardcoded defaults");
+    }
+
+    // Create the RegistryService (gRPC) with JWT + auto_tls support
+    let grpc_registry: Arc<RegistryService> = Arc::new(RegistryService::new(
         jwt_manager.clone(),
         Arc::new(auto_tls::get_auto_tls().clone()),
     ));
 
     // Start watchdog to detect dead workers (10s heartbeat, 30s watchdog timeout)
-    registry.start_watchdog(10000);
+    grpc_registry.start_watchdog(10000);
 
     // Create PodmanProvider WITHOUT doing network I/O yet (ping is deferred).
     // This is fast — no socket connection involved.
@@ -199,7 +244,7 @@ async fn main() -> Result<()> {
     // Pool start is the slow one (deferred below).
     let podman: Arc<dyn SandboxProvider> = match podman_result {
         Ok(mut p) => {
-            p.set_command_router(registry.clone() as Arc<dyn CommandRouter>);
+            p.set_command_router(grpc_registry.clone() as Arc<dyn CommandRouter>);
 
             // Quick ping to verify Podman is reachable
             match p.ping().await {
@@ -264,17 +309,37 @@ async fn main() -> Result<()> {
     // Clone pool_manager for potential cleanup after server exits
     let pool_manager_cleanup = pool_manager.clone();
 
+    // Create capability registry and load TOML configs from .bastion/capabilities/
+    let capability_registry = CapabilityRegistry::new();
+    let capabilities_dir = bastion_config_dir.join("capabilities");
+    if capabilities_dir.exists() {
+        match capability_registry.load_from_dir(&capabilities_dir) {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(count, path = %capabilities_dir.display(), "Loaded TOML capability configs");
+                } else {
+                    tracing::info!("No capability TOMLs found in {}, using hardcoded resolvers", capabilities_dir.display());
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, path = %capabilities_dir.display(), "Failed to load capability configs, using hardcoded resolvers");
+            }
+        }
+    } else {
+        tracing::info!("No capabilities directory at {}, using hardcoded resolvers", capabilities_dir.display());
+    }
+
     // Create gateway — ready to serve MCP immediately
     let default_provider = factory.default().clone();
     let providers_map = factory.into_providers();
     let gateway =
-        server::BastionGateway::new(default_provider, providers_map, repository.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()));
+        server::BastionGateway::new(default_provider, providers_map, repository.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()), capability_registry);
 
     // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS)
     let registry_addr: std::net::SocketAddr = args.registry_addr.parse()
         .expect("Invalid registry address");
 
-    let registry_for_grpc = Arc::clone(&registry);
+    let registry_for_grpc = Arc::clone(&grpc_registry);
     let registry_handle = tokio::spawn(async move {
         let svc = WorkerRegistryServer::new((*registry_for_grpc).clone())
             .accept_compressed(CompressionEncoding::Gzip)

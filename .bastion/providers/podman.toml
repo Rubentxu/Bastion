@@ -1,0 +1,18 @@
+# Embedded default podman provider configuration
+# This is embedded via include_str! and used when .bastion/providers/ is empty
+
+name = "podman"
+kind = "podman"
+plugin = "builtin"
+default = true
+socket = "/run/user/1000/podman/podman.sock"
+image = "debian:bookworm-slim"
+worker_binary = "target/debug/bastion-worker"
+
+[capabilities]
+supports_snapshots = false
+supports_streaming = true
+avg_startup_ms = 1500
+max_memory_mb = 16384
+max_cpu_count = 16
+requires_kvm = false

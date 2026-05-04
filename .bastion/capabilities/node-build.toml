@@ -1,0 +1,43 @@
+# Node.js build environment capability definition
+# Supports asdf (preferred) for version management
+
+name = "node-build"
+description = "Node.js build environment with npm/yarn/pnpm"
+
+# Primary toolchain: asdf (for version management)
+[[toolchains]]
+manager = "asdf"
+priority = 10
+
+[[toolchains.steps]]
+description = "Install Node.js via asdf"
+command = '. "$HOME/.asdf/asdf.sh" && asdf plugin add nodejs && asdf install nodejs 20.0.0 && asdf global nodejs 20.0.0'
+timeout_ms = 600000
+expected_exit_code = 0
+
+[[toolchains.verification]]
+label = "Check Node.js version"
+command = "node --version"
+expected_output_contains = "v20"
+expected_exit_code = 0
+
+[[toolchains.verification]]
+label = "Check npm version"
+command = "npm --version"
+expected_exit_code = 0
+
+# Fallback: apt-based installation
+[[toolchains]]
+manager = "apt"
+priority = 100
+packages = ["nodejs", "npm"]
+
+[[toolchains.verification]]
+label = "Check Node.js version (apt)"
+command = "node --version"
+expected_exit_code = 0
+
+[[toolchains.verification]]
+label = "Check npm version (apt)"
+command = "npm --version"
+expected_exit_code = 0

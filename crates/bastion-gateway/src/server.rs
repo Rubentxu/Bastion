@@ -32,8 +32,8 @@ use bastion_domain::template::{
 use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::pool::SandboxPoolManager;
 use bastion_infrastructure::template::{
-    AptAdapter, AsdfAdapter, SdkmanAdapter, FsArtifactStore, PodmanOptimizedMaterializer,
-    SnapshotManager,
+    AptAdapter, AsdfAdapter, CapabilityRegistry, SdkmanAdapter, FsArtifactStore,
+    PodmanOptimizedMaterializer, SnapshotManager,
 };
 /// Sync backend selection for sandbox file transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +71,8 @@ pub struct BastionGateway {
     rate_limiter: Arc<Mutex<RateLimiter>>,
     #[allow(dead_code)]
     auto_tls: Arc<crate::auto_tls::AutoTls>,
+    /// TOML-driven capability registry (tried before ToolResolver)
+    capability_registry: Arc<RwLock<CapabilityRegistry>>,
 }
 
 /// Simple token bucket rate limiter for MCP layer
@@ -114,6 +116,7 @@ impl BastionGateway {
         pool_manager: Option<Arc<SandboxPoolManager>>,
         metrics: GatewayMetrics,
         auto_tls: Arc<crate::auto_tls::AutoTls>,
+        capability_registry: CapabilityRegistry,
     ) -> Self {
         Self {
             provider,
@@ -128,6 +131,7 @@ impl BastionGateway {
             sync_backend: SyncBackend::Auto,
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100.0, 20.0))),
             auto_tls,
+            capability_registry: Arc::new(RwLock::new(capability_registry)),
         }
     }
 
@@ -954,7 +958,95 @@ impl BastionGateway {
             }
         }
 
-        // Fallback: use ToolResolver with adapters
+        // Try TOML-driven CapabilityRegistry first (if capability is registered)
+        if let Some(plan) = self.capability_registry.read().await.resolve(capability, params.strategy.clone()) {
+            // Execute the TOML-defined plan steps in the sandbox
+            use bastion_domain::execution::command::CommandSpec;
+            let t0 = std::time::Instant::now();
+
+            for step in &plan.steps {
+                let mut cmd = CommandSpec::new(&step.command)
+                    .with_timeout(step.timeout_ms);
+                for (k, v) in &step.env {
+                    cmd = cmd.with_env(k.as_str(), v.as_str());
+                }
+
+                match self.provider.run_command(&sandbox_id, &cmd).await {
+                    Ok(result) => {
+                        if result.exit_code != step.expected_exit_code {
+                            return serde_json::json!({
+                                "error": format!("Step '{}' failed: exit {} (expected {})",
+                                    step.description, result.exit_code, step.expected_exit_code)
+                            }).to_string();
+                        }
+                    }
+                    Err(e) => {
+                        return serde_json::json!({
+                            "error": format!("Step '{}' error: {}", step.description, e)
+                        }).to_string();
+                    }
+                }
+            }
+
+            // Run verification steps if present
+            for verify in &plan.verification {
+                let cmd = CommandSpec::new(&verify.command)
+                    .with_timeout(60000); // 60s timeout for verification
+
+                match self.provider.run_command(&sandbox_id, &cmd).await {
+                    Ok(result) => {
+                        if result.exit_code != verify.expected_exit_code {
+                            return serde_json::json!({
+                                "error": format!("Verification '{}' failed: exit {} (expected {})",
+                                    verify.label, result.exit_code, verify.expected_exit_code)
+                            }).to_string();
+                        }
+                        if let Some(expected) = &verify.expected_output_contains {
+                            let stdout_str = String::from_utf8_lossy(&result.stdout);
+                            if !stdout_str.contains(expected) {
+                                return serde_json::json!({
+                                    "error": format!("Verification '{}' output mismatch", verify.label)
+                                }).to_string();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return serde_json::json!({
+                            "error": format!("Verification '{}' error: {}", verify.label, e)
+                        }).to_string();
+                    }
+                }
+            }
+
+            let duration_ms = t0.elapsed().as_millis() as u64;
+
+            // Generate env_ref and store the environment for later use by sandbox_run
+            let env_ref = format!("registry:{}:{}", sandbox_id, capability);
+            {
+                let mut envs = self.prepared_environments.write().await;
+                envs.insert(env_ref.clone(), plan.env.clone());
+            }
+            // Auto-inject: register this env_ref as the default for this sandbox
+            {
+                let mut last_refs = self.last_env_ref.write().await;
+                last_refs.insert(sandbox_id.to_string(), env_ref.clone());
+            }
+
+            tracing::info!(capability = %capability, adapter = %plan.adapter_used, "Sandbox prepared via TOML capability registry");
+            return serde_json::json!({
+                "status": "ready",
+                "method": "registry",
+                "adapter_used": plan.adapter_used,
+                "capability": capability,
+                "env_ref": env_ref,
+                "env": plan.env,
+                "path_prefix": plan.path_prefix,
+                "duration_ms": duration_ms
+            })
+            .to_string();
+        }
+
+        // Fallback: use ToolResolver with adapters (hardcoded)
         let mut resolver = ToolResolver::new();
         resolver.register(Box::new(AptAdapter));
         resolver.register(Box::new(AsdfAdapter));

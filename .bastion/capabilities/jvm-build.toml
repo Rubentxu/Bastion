@@ -1,0 +1,52 @@
+# JVM build environment capability definition
+# Supports both apt (fallback) and asdf (preferred) toolchains
+
+name = "jvm-build"
+description = "Java build environment with Maven/Gradle"
+
+# Primary toolchain: apt (most compatible)
+[[toolchains]]
+manager = "apt"
+priority = 10
+packages = ["openjdk-17-jdk", "maven"]
+
+[[toolchains.verification]]
+label = "Check Java version"
+command = "java -version 2>&1"
+expected_output_contains = "17"
+expected_exit_code = 0
+
+[[toolchains.verification]]
+label = "Check Maven version"
+command = "mvn --version 2>&1"
+expected_output_contains = "Apache"
+expected_exit_code = 0
+
+# Secondary toolchain: asdf (for custom versions)
+[[toolchains]]
+manager = "asdf"
+priority = 20
+
+[[toolchains.steps]]
+description = "Install Java 17 via asdf"
+command = '. "$HOME/.asdf/asdf.sh" && asdf plugin add java && asdf install java adoptopenjdk-17.0.8+7 && asdf global java adoptopenjdk-17.0.8+7'
+timeout_ms = 600000
+expected_exit_code = 0
+
+[[toolchains.steps]]
+description = "Install Maven via asdf"
+command = '. "$HOME/.asdf/asdf.sh" && asdf plugin add maven && asdf install maven 3.9.5 && asdf global maven 3.9.5'
+timeout_ms = 300000
+expected_exit_code = 0
+
+[[toolchains.verification]]
+label = "Check Java version (asdf)"
+command = "java -version 2>&1"
+expected_output_contains = "17.0"
+expected_exit_code = 0
+
+[[toolchains.verification]]
+label = "Check Maven version (asdf)"
+command = "mvn --version 2>&1"
+expected_output_contains = "3.9"
+expected_exit_code = 0

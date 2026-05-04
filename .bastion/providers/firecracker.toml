@@ -1,0 +1,17 @@
+# Embedded default firecracker provider configuration
+
+name = "firecracker"
+kind = "firecracker"
+plugin = "builtin"
+default = false
+socket = "/tmp/firecracker.sock"
+image = "bastion/firecracker:latest"
+worker_binary = "target/debug/bastion-worker"
+
+[capabilities]
+supports_snapshots = true
+supports_streaming = false
+avg_startup_ms = 500
+max_memory_mb = 4096
+max_cpu_count = 4
+requires_kvm = true
