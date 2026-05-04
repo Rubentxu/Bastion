@@ -15,7 +15,7 @@ mod store;
 mod toolchain;
 
 pub use artifact::{
-    ArtifactId, ArtifactMediaType, ArtifactSecurityMetadata, CapabilityDescriptor,
+    ArtifactId, ArtifactMediaType, ArtifactSecurityMetadata, CapabilityDescriptor, Category,
     PreparedEnvironmentSpec, TemplateArtifact, ToolDescriptor, VerificationStep,
 };
 pub use catalog::{ArtifactCatalog, CatalogEntry};
@@ -25,6 +25,7 @@ pub use materializer::{
 };
 pub use store::ArtifactStore;
 pub use toolchain::{
-    PreparedEnvironment, SupportLevel, ToolManagerAdapter, ToolResolver, ToolchainPlan,
-    ToolchainRequest, ToolchainStep, ToolchainStrategy, ToolVerifyResult, ToolVerifyStep,
+    ManagerType, PreparedEnvironment, SupportLevel, ToolManagerAdapter, ToolResolver,
+    ToolchainPlan, ToolchainRequest, ToolchainStep, ToolchainStrategy, ToolVerifyResult,
+    ToolVerifyStep,
 };

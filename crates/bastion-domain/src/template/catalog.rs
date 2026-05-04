@@ -112,7 +112,7 @@ impl ArtifactCatalog {
 mod tests {
     use super::*;
     use crate::template::artifact::{
-        ArtifactMediaType, CapabilityDescriptor, TemplateArtifact, ToolDescriptor,
+        ArtifactMediaType, CapabilityDescriptor, Category, TemplateArtifact, ToolDescriptor,
         VerificationStep,
     };
 
@@ -123,8 +123,8 @@ mod tests {
             .add_capability(CapabilityDescriptor {
                 name: "jvm-build".into(),
                 tools: vec![
-                    ToolDescriptor { name: "java".into(), version: "17".into() },
-                    ToolDescriptor { name: "maven".into(), version: "3.9".into() },
+                    ToolDescriptor { name: "java".into(), version: "17".into(), category: Category::Generic, manager_preference: vec![] },
+                    ToolDescriptor { name: "maven".into(), version: "3.9".into(), category: Category::Generic, manager_preference: vec![] },
                 ],
                 verification: vec![VerificationStep {
                     label: "java -version".into(),
@@ -143,8 +143,8 @@ mod tests {
             .add_capability(CapabilityDescriptor {
                 name: "node-build".into(),
                 tools: vec![
-                    ToolDescriptor { name: "node".into(), version: "20".into() },
-                    ToolDescriptor { name: "npm".into(), version: "10".into() },
+                    ToolDescriptor { name: "node".into(), version: "20".into(), category: Category::Generic, manager_preference: vec![] },
+                    ToolDescriptor { name: "npm".into(), version: "10".into(), category: Category::Generic, manager_preference: vec![] },
                 ],
                 verification: vec![],
             })

@@ -3,8 +3,9 @@
 //! Implements the rmcp ServerHandler with sandbox tools.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use base64::Engine;
 use futures::StreamExt;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ProgressNotificationParam, ProgressToken};
@@ -32,7 +33,20 @@ use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::pool::SandboxPoolManager;
 use bastion_infrastructure::template::{
     AptAdapter, AsdfAdapter, FsArtifactStore, PodmanOptimizedMaterializer,
+    SnapshotManager,
 };
+/// Sync backend selection for sandbox file transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncBackend {
+    /// Use tar piped via podman exec (most compatible)
+    Tar,
+    /// Use rsync (fastest for large trees, requires rsync in sandbox)
+    Rsync,
+    /// Use podman cp (simplest, but limited)
+    PodmanCp,
+    /// Auto-detect best backend
+    Auto,
+}
 
 /// Bastion MCP Gateway server.
 ///
@@ -40,17 +54,62 @@ use bastion_infrastructure::template::{
 #[derive(Clone)]
 pub struct BastionGateway {
     provider: Arc<dyn SandboxProvider>,
+    /// All registered providers (keyed by name: "podman", "firecracker", "gvisor")
+    providers: Arc<std::collections::HashMap<String, Arc<dyn SandboxProvider>>>,
     repository: Arc<dyn SandboxRepository>,
     pool_manager: Option<Arc<SandboxPoolManager>>,
     metrics: GatewayMetrics,
     artifact_catalog: Arc<RwLock<ArtifactCatalog>>,
     artifact_store: Arc<FsArtifactStore>,
+    /// Prepared environments keyed by env_ref
+    prepared_environments: Arc<RwLock<std::collections::HashMap<String, std::collections::HashMap<String, String>>>>,
+    /// Tracks the last env_ref per sandbox for auto-injection in sandbox_run
+    last_env_ref: Arc<RwLock<std::collections::HashMap<String, String>>>,
+    /// Sync backend preference
+    sync_backend: SyncBackend,
+    /// Rate limiter for MCP tool calls: 100 burst, 20 req/s
+    rate_limiter: Arc<Mutex<RateLimiter>>,
+    #[allow(dead_code)]
     auto_tls: Arc<crate::auto_tls::AutoTls>,
+}
+
+/// Simple token bucket rate limiter for MCP layer
+struct RateLimiter {
+    tokens: f64,
+    max_tokens: f64,
+    refill_rate: f64, // tokens per second
+    last_refill: std::time::Instant,
+}
+
+impl RateLimiter {
+    fn new(max_tokens: f64, refill_rate: f64) -> Self {
+        Self {
+            tokens: max_tokens,
+            max_tokens,
+            refill_rate,
+            last_refill: std::time::Instant::now(),
+        }
+    }
+
+    fn try_consume(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let elapsed = (now - self.last_refill).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.max_tokens);
+        self.last_refill = now;
+
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl BastionGateway {
     pub fn new(
         provider: Arc<dyn SandboxProvider>,
+        providers: std::collections::HashMap<String, Arc<dyn SandboxProvider>>,
         repository: Arc<dyn SandboxRepository>,
         pool_manager: Option<Arc<SandboxPoolManager>>,
         metrics: GatewayMetrics,
@@ -58,16 +117,35 @@ impl BastionGateway {
     ) -> Self {
         Self {
             provider,
+            providers: Arc::new(providers),
             repository,
             pool_manager,
             metrics,
             artifact_catalog: Arc::new(RwLock::new(ArtifactCatalog::new())),
             artifact_store: Arc::new(FsArtifactStore::new(PathBuf::from("/tmp/bastion-artifacts"))),
+            prepared_environments: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            last_env_ref: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            sync_backend: SyncBackend::Auto,
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100.0, 20.0))),
             auto_tls,
         }
     }
 
+    /// Check rate limit and return error response if exceeded
+    fn check_rate_limit(&self) -> Option<String> {
+        let mut limiter = self.rate_limiter.lock().unwrap();
+        if limiter.try_consume() {
+            None // OK
+        } else {
+            Some(serde_json::json!({
+                "error": "Rate limit exceeded",
+                "hint": "Reduce request frequency"
+            }).to_string())
+        }
+    }
+
     /// Generate worker TLS certificates for a sandbox
+    #[allow(dead_code)]
     fn generate_worker_certs(&self, sandbox_id: &str) -> Result<WorkerCerts, anyhow::Error> {
         let (cert_pem, key_pem) = self.auto_tls.issue_worker_cert(sandbox_id)
             .map_err(|e| anyhow::anyhow!("Failed to issue worker cert: {}", e))?;
@@ -90,6 +168,7 @@ impl BastionGateway {
     }
 }
 
+#[allow(dead_code)]
 struct WorkerCerts {
     cert_path: PathBuf,
     key_path: PathBuf,
@@ -104,10 +183,17 @@ pub struct SandboxCreateParams {
     /// Timeout in milliseconds
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+    /// Provider to use: podman, firecracker, gvisor (default: podman)
+    #[serde(default = "default_provider_name")]
+    pub provider: String,
 }
 
 fn default_timeout() -> u64 {
     3_600_000
+}
+
+fn default_provider_name() -> String {
+    "podman".to_string()
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -116,6 +202,9 @@ pub struct SandboxRunParams {
     pub sandbox_id: String,
     /// Command to execute
     pub command: String,
+    /// Optional environment reference from sandbox_prepare
+    #[serde(default)]
+    pub env_ref: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -154,6 +243,10 @@ pub struct SandboxRunStreamParams {
     pub sandbox_id: String,
     /// Command to execute
     pub command: String,
+    /// Optional environment reference from sandbox_prepare
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub env_ref: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -170,13 +263,61 @@ pub struct RegisterArtifactParams {
 pub struct SandboxPrepareParams {
     pub sandbox_id: String,
     pub capability: String,
+    /// Timeout in ms for the entire prepare operation (default: 600s for network-heavy ops)
+    #[serde(default = "default_prepare_timeout")]
+    pub timeout_ms: u64,
+}
+
+fn default_prepare_timeout() -> u64 {
+    600_000 // 10 minutes — covers apt-get install + downloads
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SandboxSnapshotParams {
+    pub action: String, // "create", "restore", "list", "delete"
+    pub sandbox_id: Option<String>,
+    pub name: Option<String>,
+    pub snapshot_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SandboxSyncParams {
+    pub sandbox_id: String,
+    pub mode: String, // "push", "pull", "auto"
+    pub source: String,
+    pub target: String,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// Optional sync backend override: tar, rsync, podman-cp, auto
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// Timeout in ms (default: 300s for large transfers)
+    #[serde(default = "default_sync_timeout")]
+    pub timeout_ms: u64,
+}
+
+fn default_sync_timeout() -> u64 {
+    300_000 // 5 minutes
 }
 
 #[tool_router(server_handler)]
 impl BastionGateway {
+    /// Resolve a provider by name, falling back to default
+    fn resolve_provider(&self, name: &str) -> Arc<dyn SandboxProvider> {
+        let name_lower = name.to_lowercase();
+        self.providers
+            .get(&name_lower)
+            .cloned()
+            .unwrap_or_else(|| {
+                tracing::warn!(requested = name, "Provider not found, falling back to default");
+                self.provider.clone()
+            })
+    }
+
     #[tool(description = "Create a new isolated sandbox environment")]
     async fn sandbox_create(&self, Parameters(params): Parameters<SandboxCreateParams>) -> String {
-        tracing::info!(template = %params.template, "Creating sandbox");
+        let selected_provider = self.resolve_provider(&params.provider);
+        tracing::info!(template = %params.template, provider = %params.provider, "Creating sandbox");
 
         // Try pool checkout first if pool is available
         if let Some(ref pool) = self.pool_manager {
@@ -206,7 +347,7 @@ impl BastionGateway {
         // Direct creation (fallback or when pool is disabled)
         let use_case = CreateSandboxUseCase::new(
             self.repository.clone(),
-            bastion_domain::shared::id::ProviderId::new("podman"),
+            bastion_domain::shared::id::ProviderId::new(&params.provider),
         );
 
         let input = bastion_application::sandbox::create::CreateSandboxInput {
@@ -218,7 +359,7 @@ impl BastionGateway {
             timeout_ms: params.timeout_ms,
         };
 
-        match use_case.execute(input, self.provider.as_ref()).await {
+        match use_case.execute(input, selected_provider.as_ref()).await {
             Ok(sandbox) => {
                 self.metrics.record_sandbox_created();
                 serde_json::json!({
@@ -231,20 +372,62 @@ impl BastionGateway {
             }
             Err(e) => {
                 self.metrics.record_error();
-                serde_json::json!({"error": e.to_string()}).to_string()
+                let mut msg = e.to_string();
+                // Improve error messages with helpful suggestions
+                if msg.contains("no such image") || msg.contains("image not known") {
+                    let suggestion = if !params.template.contains(':') {
+                        format!(
+                            ". Use format 'os:version' (e.g. 'debian:bookworm-slim', not '{}'). \
+                             Try sandbox_list_templates to see available images.",
+                            params.template
+                        )
+                    } else {
+                        format!(
+                            ". Image '{}' not available. Try 'debian:bookworm-slim' or run \
+                             sandbox_list_templates to see available images.",
+                            params.template
+                        )
+                    };
+                    msg.push_str(&suggestion);
+                }
+                serde_json::json!({"error": msg}).to_string()
             }
         }
     }
 
     #[tool(description = "Execute a command in a sandbox")]
     async fn sandbox_run(&self, Parameters(params): Parameters<SandboxRunParams>) -> String {
+        // Check rate limit
+        if let Some(rate_limit_error) = self.check_rate_limit() {
+            return rate_limit_error;
+        }
+
         tracing::info!(sandbox_id = %params.sandbox_id, command = %params.command, "Running command");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
 
         let use_case = RunCommandUseCase::new(self.repository.clone());
 
-        let command_spec = CommandSpec::new(&params.command);
+        let mut command_spec = CommandSpec::new(&params.command);
+
+        // Resolve env_ref: explicit parameter takes priority, otherwise auto-inject from sandbox_prepare
+        let resolved_env_ref = if let Some(ref env_ref) = params.env_ref {
+            Some(env_ref.clone())
+        } else {
+            // Auto-inject: check if this sandbox has a registered env_ref from sandbox_prepare
+            let last_refs = self.last_env_ref.read().await;
+            last_refs.get(&params.sandbox_id).cloned()
+        };
+
+        if let Some(ref env_ref) = resolved_env_ref {
+            tracing::debug!(sandbox_id = %sandbox_id, env_ref = %env_ref, "Merging environment from env_ref");
+            let envs = self.prepared_environments.read().await;
+            if let Some(env) = envs.get(env_ref) {
+                for (key, value) in env {
+                    command_spec = command_spec.with_env(key, value);
+                }
+            }
+        }
 
         match use_case
             .execute(&sandbox_id, &command_spec, self.provider.as_ref())
@@ -283,7 +466,27 @@ impl BastionGateway {
         tracing::info!(sandbox_id = %params.sandbox_id, command = %params.command, "Running streaming command");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
-        let command_spec = CommandSpec::new(&params.command);
+        let mut command_spec = CommandSpec::new(&params.command);
+
+        // Auto-inject env_ref (same logic as sandbox_run)
+        let resolved_env_ref = params.env_ref.clone().or_else(|| {
+            // Can't async in closure, handle inline:
+            None
+        });
+        let resolved_env_ref = if let Some(ref env_ref) = resolved_env_ref {
+            Some(env_ref.clone())
+        } else {
+            let last_refs = self.last_env_ref.read().await;
+            last_refs.get(&params.sandbox_id).cloned()
+        };
+        if let Some(ref env_ref) = resolved_env_ref {
+            let envs = self.prepared_environments.read().await;
+            if let Some(env) = envs.get(env_ref) {
+                for (key, value) in env {
+                    command_spec = command_spec.with_env(key, value);
+                }
+            }
+        }
 
         let use_case = RunCommandStreamUseCase::new(self.repository.clone());
         let start_time = std::time::Instant::now();
@@ -391,8 +594,9 @@ impl BastionGateway {
             .await
         {
             Ok(content) => serde_json::json!({
-                "content": String::from_utf8_lossy(&content).to_string(),
-                "encoding": "utf-8"
+                "content": base64::engine::general_purpose::STANDARD.encode(&content),
+                "encoding": "base64",
+                "size_bytes": content.len()
             })
             .to_string(),
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
@@ -434,6 +638,59 @@ impl BastionGateway {
             }
             Err(e) => serde_json::json!({"error": e.to_string()}).to_string(),
         }
+    }
+
+    #[tool(description = "List available sandbox templates (container images)")]
+    async fn sandbox_list_templates(&self) -> String {
+        tracing::info!("Listing available templates");
+
+        let mut templates: Vec<serde_json::Value> = Vec::new();
+
+        // Query podman for available images
+        match tokio::process::Command::new("podman")
+            .args(["images", "--format", "{{.Repository}}:{{.Tag}}"])
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let image = line.trim().to_string();
+                    if image.is_empty() || image == "<none>:<none>" {
+                        continue;
+                    }
+                    // Suggest as template
+                    templates.push(serde_json::json!({
+                        "image": image,
+                        "suggested_name": image.trim_start_matches("localhost/").trim_start_matches("docker.io/"),
+                    }));
+                }
+            }
+            Ok(_) => {
+                tracing::warn!("podman images returned non-zero exit");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to list podman images");
+            }
+        }
+
+        // Add default templates known to work
+        let defaults = ["debian:bookworm-slim", "ubuntu:22.04", "fedora:39", "alpine:3.19"];
+        for d in &defaults {
+            if !templates.iter().any(|t| t["image"].as_str() == Some(d)) {
+                templates.push(serde_json::json!({
+                    "image": d,
+                    "suggested_name": d,
+                    "note": "default — may need to be pulled first"
+                }));
+            }
+        }
+
+        serde_json::json!({
+            "count": templates.len(),
+            "templates": templates
+        })
+        .to_string()
     }
 
     #[tool(description = "Terminate and destroy a sandbox")]
@@ -615,6 +872,8 @@ impl BastionGateway {
                 ToolDescriptor {
                     name: parts.first().unwrap_or(&"").to_string(),
                     version: parts.get(1).unwrap_or(&"any").to_string(),
+                    category: bastion_domain::template::Category::Generic,
+                    manager_preference: vec![],
                 }
             })
             .collect();
@@ -667,6 +926,11 @@ impl BastionGateway {
                 .await
             {
                 Ok(result) => {
+                    // Auto-inject: register this env_ref as default for this sandbox
+                    if let Some(ref env_ref) = result.env_ref {
+                        let mut last_refs = self.last_env_ref.write().await;
+                        last_refs.insert(sandbox_id.to_string(), env_ref.clone());
+                    }
                     return serde_json::json!({
                         "status": "ready",
                         "method": "artifact",
@@ -726,11 +990,24 @@ impl BastionGateway {
 
                 let duration_ms = t0.elapsed().as_millis() as u64;
 
+                // Generate env_ref and store the environment for later use by sandbox_run
+                let env_ref = format!("resolver:{}:{}", sandbox_id, capability);
+                {
+                    let mut envs = self.prepared_environments.write().await;
+                    envs.insert(env_ref.clone(), plan.env.clone());
+                }
+                // Auto-inject: register this env_ref as the default for this sandbox
+                {
+                    let mut last_refs = self.last_env_ref.write().await;
+                    last_refs.insert(sandbox_id.to_string(), env_ref.clone());
+                }
+
                 serde_json::json!({
                     "status": "ready",
                     "method": "resolver",
                     "adapter_used": plan.adapter_used,
                     "capability": capability,
+                    "env_ref": env_ref,
                     "env": plan.env,
                     "path_prefix": plan.path_prefix,
                     "duration_ms": duration_ms
@@ -739,6 +1016,231 @@ impl BastionGateway {
             }
             Err(e) => {
                 serde_json::json!({"error": format!("{}", e)}).to_string()
+            }
+        }
+    }
+
+    #[tool(description = "Manage sandbox snapshots (create, restore, list, delete)")]
+    async fn sandbox_snapshot(
+        &self,
+        Parameters(params): Parameters<SandboxSnapshotParams>,
+    ) -> String {
+        let snapshot_manager = SnapshotManager::new(bastion_domain::template::ProviderKind::Podman);
+
+        match params.action.as_str() {
+            "create" => {
+                let sandbox_id = match &params.sandbox_id {
+                    Some(id) => SandboxId::new(id),
+                    None => return serde_json::json!({"error": "sandbox_id required for create"}).to_string(),
+                };
+                let name = match &params.name {
+                    Some(n) => n.as_str(),
+                    None => return serde_json::json!({"error": "name required for create"}).to_string(),
+                };
+
+                match snapshot_manager.create_snapshot(&sandbox_id, name).await {
+                    Ok(info) => serde_json::json!({
+                        "status": "created",
+                        "snapshot_id": info.snapshot_id,
+                        "sandbox_id": info.sandbox_id,
+                        "name": info.name,
+                        "created_at": info.created_at.to_rfc3339(),
+                        "size_bytes": info.size_bytes
+                    }).to_string(),
+                    Err(e) => serde_json::json!({"error": format!("{}", e)}).to_string(),
+                }
+            }
+            "restore" => {
+                let snapshot_id = match &params.snapshot_id {
+                    Some(id) => id.as_str(),
+                    None => return serde_json::json!({"error": "snapshot_id required for restore"}).to_string(),
+                };
+
+                match snapshot_manager.restore_snapshot(snapshot_id).await {
+                    Ok(sandbox) => {
+                        // Register the restored sandbox in the gateway's repository
+                        // so it's visible to sandbox_run, sandbox_info, etc.
+                        if let Err(e) = self.repository.save(&sandbox).await {
+                            tracing::error!(sandbox_id = %sandbox.id, error = %e, "Failed to register restored sandbox");
+                        }
+                        self.metrics.record_sandbox_created();
+                        serde_json::json!({
+                            "status": "restored",
+                            "sandbox_id": sandbox.id.to_string(),
+                            "snapshot_id": snapshot_id
+                        }).to_string()
+                    },
+                    Err(e) => serde_json::json!({"error": format!("{}", e)}).to_string(),
+                }
+            }
+            "list" => {
+                match snapshot_manager.list_snapshots().await {
+                    Ok(list) => serde_json::json!({
+                        "status": "ok",
+                        "snapshots": list.iter().map(|s| {
+                            serde_json::json!({
+                                "snapshot_id": s.snapshot_id,
+                                "name": s.name,
+                                "created_at": s.created_at.to_rfc3339(),
+                                "size_bytes": s.size_bytes
+                            })
+                        }).collect::<Vec<_>>(),
+                        "count": list.len()
+                    }).to_string(),
+                    Err(e) => serde_json::json!({"error": format!("{}", e)}).to_string(),
+                }
+            }
+            "delete" => {
+                let snapshot_id = match &params.snapshot_id {
+                    Some(id) => id.as_str(),
+                    None => return serde_json::json!({"error": "snapshot_id required for delete"}).to_string(),
+                };
+
+                match snapshot_manager.delete_snapshot(snapshot_id).await {
+                    Ok(()) => serde_json::json!({
+                        "status": "deleted",
+                        "snapshot_id": snapshot_id
+                    }).to_string(),
+                    Err(e) => serde_json::json!({"error": format!("{}", e)}).to_string(),
+                }
+            }
+            _ => serde_json::json!({"error": format!("Unknown action: {}", params.action)}).to_string(),
+        }
+    }
+
+    #[tool(description = "Sync files between host and sandbox (push/pull)")]
+    async fn sandbox_sync(
+        &self,
+        Parameters(params): Parameters<SandboxSyncParams>,
+    ) -> String {
+        let sandbox_id = SandboxId::new(params.sandbox_id.clone());
+        let mode = params.mode.as_str();
+        let source = params.source.as_str();
+        let target = params.target.as_str();
+        let timeout_ms = params.timeout_ms;
+
+        // Determine backend: explicit override > gateway default > auto
+        let backend: SyncBackend = params
+            .backend
+            .as_deref()
+            .and_then(|b| match b {
+                "tar" => Some(SyncBackend::Tar),
+                "rsync" => Some(SyncBackend::Rsync),
+                "podman-cp" | "podman_cp" => Some(SyncBackend::PodmanCp),
+                "auto" => Some(SyncBackend::Auto),
+                _ => None,
+            })
+            .unwrap_or(self.sync_backend);
+
+        // Auto-detect best backend for Podman
+        let effective_backend = if backend == SyncBackend::Auto {
+            // tar is most compatible for rootless podman
+            SyncBackend::Tar
+        } else {
+            backend
+        };
+
+        let container_name = sandbox_id.to_string();
+
+        tracing::info!(
+            sandbox_id = %sandbox_id,
+            mode = mode,
+            backend = ?effective_backend,
+            source = source,
+            target = target,
+            "Syncing files"
+        );
+
+        let result = match (mode, effective_backend) {
+            ("push", SyncBackend::Tar) | ("push", SyncBackend::Auto) => {
+                // tar pipe: local tar -> podman exec tar
+                let cmd = format!(
+                    "tar czf - -C \"$(dirname '{}')\" \"$(basename '{}')\" 2>/dev/null | podman exec -i {} tar xzf - -C \"{}\"",
+                    source, source, container_name, target
+                );
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    tokio::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&cmd)
+                        .output(),
+                )
+                .await
+            }
+            ("pull", SyncBackend::Tar) | ("pull", SyncBackend::Auto) => {
+                // tar pipe: podman exec tar -> local tar
+                let cmd = format!(
+                    "podman exec {} tar czf - -C \"$(dirname '{}')\" \"$(basename '{}')\" 2>/dev/null | tar xzf - -C \"{}\"",
+                    container_name, source, source, target
+                );
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    tokio::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&cmd)
+                        .output(),
+                )
+                .await
+            }
+            ("push", SyncBackend::PodmanCp) => {
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    tokio::process::Command::new("podman")
+                        .args(["cp", source, &format!("{}:{}", container_name, target)])
+                        .output(),
+                )
+                .await
+            }
+            ("pull", SyncBackend::PodmanCp) => {
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    tokio::process::Command::new("podman")
+                        .args(["cp", &format!("{}:{}", container_name, source), target])
+                        .output(),
+                )
+                .await
+            }
+            ("push" | "pull", SyncBackend::Rsync) => {
+                // rsync requires rsync in the sandbox; fall back with clear error
+                return serde_json::json!({
+                    "error": "rsync backend requires rsync installed in the sandbox. Use 'tar' or 'podman-cp' instead.",
+                    "hint": "Set backend to 'tar' or 'podman-cp'"
+                }).to_string();
+            }
+            _ => {
+                return serde_json::json!({
+                    "error": format!("Unknown mode '{}' or backend combination", mode)
+                }).to_string();
+            }
+        };
+
+        match result {
+            Ok(Ok(output)) if output.status.success() => {
+                serde_json::json!({
+                    "status": "synced",
+                    "mode": mode,
+                    "backend": format!("{:?}", effective_backend).to_lowercase(),
+                    "sandbox_id": params.sandbox_id,
+                    "source": source,
+                    "target": target
+                }).to_string()
+            }
+            Ok(Ok(output)) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                serde_json::json!({
+                    "error": format!("Sync failed: {}", stderr.lines().next().unwrap_or("unknown error")),
+                    "mode": mode,
+                    "backend": format!("{:?}", effective_backend).to_lowercase(),
+                }).to_string()
+            }
+            Ok(Err(e)) => {
+                serde_json::json!({"error": format!("Sync command error: {}", e)}).to_string()
+            }
+            Err(_) => {
+                serde_json::json!({
+                    "error": format!("Sync timed out after {}ms. Increase timeout_ms for large transfers.", timeout_ms),
+                    "timeout_ms": timeout_ms,
+                }).to_string()
             }
         }
     }

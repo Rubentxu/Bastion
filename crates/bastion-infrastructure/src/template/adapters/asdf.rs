@@ -61,7 +61,7 @@ impl ToolManagerAdapter for AsdfAdapter {
                 });
                 steps.push(ToolchainStep {
                     description: "Install Java 17 via asdf".into(),
-                    command: format!("{ASDF_SOURCE} && asdf plugin add java && asdf install java openjdk-17.0.8+7 && asdf global java openjdk-17.0.8+7"),
+                    command: format!("{ASDF_SOURCE} && asdf plugin add java && asdf install java adoptopenjdk-17.0.8+7 && asdf global java adoptopenjdk-17.0.8+7"),
                     env: HashMap::new(),
                     timeout_ms: 600_000,
                     expected_exit_code: 0,

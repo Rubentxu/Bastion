@@ -62,7 +62,8 @@ message RegisterResponse {
 }
 
 message ChallengeProof {
-  bytes proof = 1;                         // HMAC-SHA256(secret, worker_nonce || gateway_nonce)
+  string sandbox_id = 1;                   // Sandbox ID for looking up the secret
+  bytes proof = 2;                         // HMAC-SHA256(secret, worker_nonce || gateway_nonce)
 }
 
 // ═══ Gateway → Worker (Commands) ═══

@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 /// JWT claims for worker sessions
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct SessionClaims {
     /// Subject (sandbox_id)
     pub sub: String,
@@ -28,7 +29,9 @@ pub struct SessionClaims {
 /// JWT Manager for issuing and verifying session tokens
 #[derive(Clone)]
 pub struct JwtManager {
+    #[allow(dead_code)]
     encoding_key: EncodingKey,
+    #[allow(dead_code)]
     decoding_key: DecodingKey,
 }
 
@@ -52,7 +55,7 @@ impl JwtManager {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::Permissions::from_mode(0o600);
+                let perms = std::fs::Permissions::from_mode(0o600);
                 std::fs::set_permissions(&key_path, perms)?;
             }
             secret
@@ -65,6 +68,7 @@ impl JwtManager {
     }
 
     /// Issue a new JWT token for a sandbox
+    #[allow(dead_code)]
     pub fn issue(&self, sandbox_id: &str, cap_hash: Option<String>) -> Result<String> {
         let now = OffsetDateTime::now_utc();
         let claims = SessionClaims {
@@ -82,6 +86,7 @@ impl JwtManager {
     }
 
     /// Verify a JWT token and return the claims if valid
+    #[allow(dead_code)]
     pub fn verify(&self, token: &str) -> Result<SessionClaims> {
         let validation = Validation::default();
         let token_data = decode::<SessionClaims>(token, &self.decoding_key, &validation)

@@ -207,7 +207,10 @@ async fn run_worker_session(args: &Args) -> Result<ExitReason> {
                 &worker_nonce,
                 &reg_response.gateway_nonce,
             );
-            let challenge_resp = client.challenge_response(ChallengeProof { proof })
+            let challenge_resp = client.challenge_response(ChallengeProof {
+                sandbox_id: args.sandbox_id.clone(),
+                proof,
+            })
                 .await?
                 .into_inner();
 
@@ -297,25 +300,27 @@ fn validate_path(path: &str) -> Result<String> {
         "/var/tmp",
     ];
 
-    // Reject obviously malicious paths
-    if path.contains("..") {
-        anyhow::bail!("Path traversal detected: '{}' contains '..'", path);
-    }
-
     // Must be absolute
     if !path.starts_with('/') {
         anyhow::bail!("Relative paths not allowed: '{}'", path);
     }
 
-    // Must be under an allowed prefix
+    // Use canonicalize to resolve symlinks and get the real path
+    // This handles cases like /workspace/../etc/passwd which would escape
+    let canonical_path = std::fs::canonicalize(path)
+        .map_err(|e| anyhow::anyhow!("Failed to canonicalize path '{}': {}", path, e))?;
+
+    let canonical_str = canonical_path.to_string_lossy();
+
+    // Check if the canonicalized path starts with an allowed prefix
     let allowed = ALLOWED_PREFIXES.iter()
-        .any(|prefix| path.starts_with(prefix));
+        .any(|prefix| canonical_str.starts_with(prefix));
 
     if !allowed {
-        anyhow::bail!("Path '{}' is outside allowed directories", path);
+        anyhow::bail!("Path '{}' (canonical: '{}') is outside allowed directories", path, canonical_str);
     }
 
-    Ok(path.to_string())
+    Ok(canonical_str.to_string())
 }
 
 async fn run_command_loop(

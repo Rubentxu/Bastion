@@ -30,8 +30,14 @@ use crate::sandbox::v2::*;
 
 type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
-/// Verify HMAC proof from worker (currently unused but available for future challenge verification)
-#[allow(dead_code)]
+/// Pending challenge data stored when CHALLENGE is sent, used during challenge_response verification
+#[derive(Clone)]
+struct PendingChallenge {
+    worker_nonce: Vec<u8>,
+    gateway_nonce: Vec<u8>,
+}
+
+/// Verify HMAC proof from worker
 fn verify_hmac_proof(secret: &str, worker_nonce: &[u8], gateway_nonce: &[u8], proof: &[u8]) -> bool {
     let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
         Ok(m) => m,
@@ -88,17 +94,38 @@ pub(crate) struct WorkerHandle {
     circuit_open_until: Arc<Mutex<Option<Instant>>>,
 }
 
+/// Circuit breaker states for WorkerHandle
+#[derive(PartialEq)]
+enum CircuitState {
+    Closed,      // Normal operation
+    HalfOpen,   // Testing with reduced load
+    Open,       // Failing fast, no requests
+}
+
 impl WorkerHandle {
-    fn is_circuit_open(&self) -> bool {
+    fn get_circuit_state(&self) -> CircuitState {
         if let Ok(guard) = self.circuit_open_until.lock()
             && let Some(until) = *guard
         {
-            return Instant::now() < until;
+            if Instant::now() < until {
+                return CircuitState::Open;
+            }
+            // Timeout expired - transition to HalfOpen
+            return CircuitState::HalfOpen;
         }
-        false
+        CircuitState::Closed
+    }
+
+    fn is_circuit_open(&self) -> bool {
+        matches!(self.get_circuit_state(), CircuitState::Open)
     }
 
     fn record_success(&self) {
+        let state = self.get_circuit_state();
+        if state == CircuitState::HalfOpen {
+            // Successful probe in HalfOpen state → close the circuit
+            tracing::info!("Circuit breaker closing after successful probe");
+        }
         self.consecutive_failures.store(0, Ordering::Relaxed);
         if let Ok(mut guard) = self.circuit_open_until.lock() {
             *guard = None;
@@ -106,17 +133,31 @@ impl WorkerHandle {
     }
 
     fn record_failure(&self) {
+        let state = self.get_circuit_state();
         let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
-        if failures >= 3 {
-            // Open circuit for 30 seconds
-            if let Ok(mut guard) = self.circuit_open_until.lock() {
-                *guard = Some(Instant::now() + Duration::from_secs(30));
+
+        match state {
+            CircuitState::HalfOpen => {
+                // Failure in HalfOpen → reopen circuit
+                if let Ok(mut guard) = self.circuit_open_until.lock() {
+                    *guard = Some(Instant::now() + Duration::from_secs(30));
+                }
+                tracing::warn!("Circuit breaker reopened after probe failure");
             }
-            tracing::warn!(
-                failures,
-                "Circuit breaker opened for 30s after {} consecutive failures",
-                failures
-            );
+            CircuitState::Closed if failures >= 3 => {
+                // Open circuit for 30 seconds
+                if let Ok(mut guard) = self.circuit_open_until.lock() {
+                    *guard = Some(Instant::now() + Duration::from_secs(30));
+                }
+                tracing::warn!(
+                    failures,
+                    "Circuit breaker opened for 30s after {} consecutive failures",
+                    failures
+                );
+            }
+            _ => {
+                // In Closed state but not yet at threshold - just increment
+            }
         }
     }
 }
@@ -132,9 +173,13 @@ pub struct RegistryService {
     secrets: Arc<DashMap<String, String>>,
     /// Rate limiters per sandbox (token bucket)
     rate_limiters: Arc<DashMap<String, Mutex<TokenBucket>>>,
+    /// Pending challenge data: stored when CHALLENGE is sent, keyed by sandbox_id
+    pending_challenges: Arc<DashMap<String, PendingChallenge>>,
     /// JWT manager for session tokens
+    #[allow(dead_code)]
     jwt_manager: crate::auth::JwtManager,
     /// AutoTLS instance for worker certificate generation
+    #[allow(dead_code)]
     auto_tls: Arc<crate::auto_tls::AutoTls>,
 }
 
@@ -148,6 +193,7 @@ impl RegistryService {
             pending_multi: Arc::new(DashMap::new()),
             secrets: Arc::new(DashMap::new()),
             rate_limiters: Arc::new(DashMap::new()),
+            pending_challenges: Arc::new(DashMap::new()),
             jwt_manager,
             auto_tls,
         }
@@ -728,8 +774,12 @@ impl WorkerRegistry for RegistryService {
             }));
         }
 
-        // Challenge mode: generate gateway nonce
+        // Challenge mode: generate gateway nonce and store both nonces for later verification
         let gateway_nonce = generate_nonce();
+        self.pending_challenges.insert(req.sandbox_id.clone(), PendingChallenge {
+            worker_nonce: req.worker_nonce,
+            gateway_nonce: gateway_nonce.clone(),
+        });
 
         Ok(Response::new(RegisterResponse {
             status: i32::from(register_response::Status::Challenge),
@@ -745,13 +795,65 @@ impl WorkerRegistry for RegistryService {
 
     async fn challenge_response(
         &self,
-        _request: Request<ChallengeProof>,
+        request: Request<ChallengeProof>,
     ) -> Result<Response<RegisterResponse>, Status> {
-        // Note: challenge_response doesn't carry sandbox_id, so we can't verify HMAC here.
-        // The HMAC proof will be validated when the worker opens CommandStream with ReadySignal.
-        // For now, accept and issue a session token. The worker will validate the session
-        // when it opens the bidirectional stream.
-        tracing::info!("Challenge response received, issuing session token");
+        let req = request.into_inner();
+        let sandbox_id = &req.sandbox_id;
+
+        tracing::info!(sandbox_id = %sandbox_id, "Challenge response received");
+
+        // Look up pending challenge data
+        let pending = match self.pending_challenges.remove(sandbox_id) {
+            Some((_, p)) => p,
+            None => {
+                tracing::warn!(sandbox_id = %sandbox_id, "No pending challenge found for sandbox");
+                return Ok(Response::new(RegisterResponse {
+                    status: i32::from(register_response::Status::Rejected),
+                    gateway_nonce: Vec::new(),
+                    session_token: String::new(),
+                    negotiated_version: None,
+                    heartbeat_interval_ms: 10000,
+                    command_timeout_ms: 30000,
+                    session_expiry_ms: 3600000,
+                    gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+                }));
+            }
+        };
+
+        // Look up the secret for this sandbox
+        let secret = match self.get_secret(sandbox_id) {
+            Some(s) => s,
+            None => {
+                tracing::warn!(sandbox_id = %sandbox_id, "No secret found for sandbox");
+                return Ok(Response::new(RegisterResponse {
+                    status: i32::from(register_response::Status::Rejected),
+                    gateway_nonce: Vec::new(),
+                    session_token: String::new(),
+                    negotiated_version: None,
+                    heartbeat_interval_ms: 10000,
+                    command_timeout_ms: 30000,
+                    session_expiry_ms: 3600000,
+                    gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+                }));
+            }
+        };
+
+        // Verify HMAC proof
+        if !verify_hmac_proof(&secret, &pending.worker_nonce, &pending.gateway_nonce, &req.proof) {
+            tracing::warn!(sandbox_id = %sandbox_id, "HMAC verification failed");
+            return Ok(Response::new(RegisterResponse {
+                status: i32::from(register_response::Status::Rejected),
+                gateway_nonce: Vec::new(),
+                session_token: String::new(),
+                negotiated_version: None,
+                heartbeat_interval_ms: 10000,
+                command_timeout_ms: 30000,
+                session_expiry_ms: 3600000,
+                gateway_version: env!("CARGO_PKG_VERSION").to_string(),
+            }));
+        }
+
+        tracing::info!(sandbox_id = %sandbox_id, "HMAC verification succeeded, issuing session token");
 
         Ok(Response::new(RegisterResponse {
             status: i32::from(register_response::Status::Accepted),

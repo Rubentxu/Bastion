@@ -143,13 +143,15 @@ where
 #[tokio::main]
 async fn main() -> Result<()> {
     // Logs to stderr to keep stdout clean for MCP JSON-RPC protocol
+    // Use default env filter but always write to stderr
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("bastion=debug"));
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("bastion=debug".parse()?),
-        )
-        .json()
+        .with_env_filter(env_filter)
+        .with_target(true)
+        .with_level(true)
         .with_writer(std::io::stderr)
+        .with_ansi(false)
         .init();
 
     let args = Args::parse();
@@ -179,7 +181,7 @@ async fn main() -> Result<()> {
     // Create provider factory and register Podman
     let mut factory = ProviderFactory::new("podman");
 
-    // First create the RegistryService with JWT + auto_tls support
+    // Create the RegistryService with JWT + auto_tls support
     let registry: Arc<RegistryService> = Arc::new(RegistryService::new(
         jwt_manager.clone(),
         Arc::new(auto_tls::get_auto_tls().clone()),
@@ -188,23 +190,22 @@ async fn main() -> Result<()> {
     // Start watchdog to detect dead workers (10s heartbeat, 30s watchdog timeout)
     registry.start_watchdog(10000);
 
-    // Try to connect to Podman — degrade gracefully if unavailable
+    // Create PodmanProvider WITHOUT doing network I/O yet (ping is deferred).
+    // This is fast — no socket connection involved.
     let podman_result =
         PodmanProvider::new(&args.socket, &args.image, PathBuf::from(&args.worker_binary));
 
+    // Build the provider — ping is fast (~500ms) and we want it ready before serve.
+    // Pool start is the slow one (deferred below).
     let podman: Arc<dyn SandboxProvider> = match podman_result {
         Ok(mut p) => {
-            // Wire the command router so PodmanProvider can route commands through the registry
             p.set_command_router(registry.clone() as Arc<dyn CommandRouter>);
 
-            // Verify connection to Podman
+            // Quick ping to verify Podman is reachable
             match p.ping().await {
                 Ok(pong) => tracing::info!(pong = %pong, "Connected to Podman"),
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to ping Podman, containers may not be reachable")
-                }
+                Err(e) => tracing::warn!(error = %e, "Failed to ping Podman, containers may not be reachable"),
             }
-
             tracing::info!("Podman provider initialized");
             Arc::new(p)
         }
@@ -212,17 +213,14 @@ async fn main() -> Result<()> {
             tracing::warn!(
                 error = %e,
                 socket = %args.socket,
-                "Podman not available — sandbox operations will fail. \
-                 Start Podman or set --socket to the correct path."
+                "Podman not available — sandbox operations will fail."
             );
-            // Create a "null" provider that errors on all operations
-            // This allows the gateway to start for health checks and tool listing
             Arc::new(NullProvider::new(e.to_string())) as Arc<dyn SandboxProvider>
         }
     };
     factory.register("podman", podman.clone());
 
-    // Optionally create pool manager
+    // Optionally create pool manager — pool fill is deferred to background
     let pool_manager: Option<Arc<SandboxPoolManager>> = if args.pool_enabled {
         let pool_config = PoolConfig {
             min_idle: args.pool_min_idle,
@@ -232,13 +230,23 @@ async fn main() -> Result<()> {
             refill_interval_ms: args.pool_refill_interval_ms,
         };
 
-        let manager = SandboxPoolManager::new(podman.clone(), repository.clone(), pool_config);
-
-        // Register the default template with the pool
+        let manager = Arc::new(SandboxPoolManager::new(
+            podman.clone(),
+            repository.clone(),
+            pool_config,
+        ));
         manager.register_template(&args.image);
 
-        manager.start().await?;
-        Some(Arc::new(manager))
+        // Defer pool fill to background so MCP serve starts quickly
+        let pool_for_start = Arc::clone(&manager);
+        tokio::spawn(async move {
+            if let Err(e) = pool_for_start.start().await {
+                tracing::warn!(error = %e, "Pool manager failed to start");
+            } else {
+                tracing::info!("Sandbox pool initialized");
+            }
+        });
+        Some(manager)
     } else {
         None
     };
@@ -250,15 +258,17 @@ async fn main() -> Result<()> {
         tracing::info!("Sandbox pooling disabled");
     }
 
-    // Clone pool_manager for potential cleanup after server exits
-    let pool_manager_cleanup = pool_manager.clone();
-
     // Create gateway metrics
     let metrics = GatewayMetrics::default();
 
-    // Create gateway and start MCP server
+    // Clone pool_manager for potential cleanup after server exits
+    let pool_manager_cleanup = pool_manager.clone();
+
+    // Create gateway — ready to serve MCP immediately
+    let default_provider = factory.default().clone();
+    let providers_map = factory.into_providers();
     let gateway =
-        server::BastionGateway::new(podman.clone(), repository.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()));
+        server::BastionGateway::new(default_provider, providers_map, repository.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()));
 
     // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS)
     let registry_addr: std::net::SocketAddr = args.registry_addr.parse()
@@ -294,7 +304,9 @@ async fn main() -> Result<()> {
         TransportMode::Stdio => {
             tracing::info!("MCP Gateway ready — serving on stdio");
 
-            // Run MCP server on stdio and registry in parallel
+            // Run MCP server on stdio, registry in parallel.
+            // serve() now starts immediately because provider construction is fast
+            // (no network I/O in constructors — ping/pool-start are deferred).
             let mcp_future = async {
                 let service = gateway
                     .serve(rmcp::transport::stdio())

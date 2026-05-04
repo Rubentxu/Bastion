@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::toolchain::ManagerType;
+
 /// Unique identifier for a template artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ArtifactId(pub String);
@@ -55,11 +57,30 @@ pub enum ArtifactMediaType {
     Custom(String),
 }
 
+/// Programming language or system category for tool classification.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Category {
+    #[default]
+    Generic,
+    Java,
+    Node,
+    Python,
+    Ruby,
+    Go,
+    Rust,
+    System,
+}
+
 /// A tool provided as part of a capability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDescriptor {
     pub name: String,
     pub version: String,
+    #[serde(default)]
+    pub category: Category,
+    #[serde(default)]
+    pub manager_preference: Vec<ManagerType>,
 }
 
 /// A verification step to run after materializing a capability.
@@ -261,9 +282,9 @@ mod tests {
             .add_capability(CapabilityDescriptor {
                 name: "jvm-build".into(),
                 tools: vec![
-                    ToolDescriptor { name: "java".into(), version: "17".into() },
-                    ToolDescriptor { name: "maven".into(), version: "3.9".into() },
-                    ToolDescriptor { name: "git".into(), version: "any".into() },
+                    ToolDescriptor { name: "java".into(), version: "17".into(), category: Category::Generic, manager_preference: vec![] },
+                    ToolDescriptor { name: "maven".into(), version: "3.9".into(), category: Category::Generic, manager_preference: vec![] },
+                    ToolDescriptor { name: "git".into(), version: "any".into(), category: Category::Generic, manager_preference: vec![] },
                 ],
                 verification: vec![
                     VerificationStep {
@@ -287,5 +308,83 @@ mod tests {
         assert_eq!(artifact.capabilities.len(), 1);
         assert_eq!(artifact.capabilities[0].name, "jvm-build");
         assert!(artifact.security.readonly);
+    }
+
+    #[test]
+    fn test_legacy_tool_descriptor_json_deserializes_generic_category() {
+        // Legacy JSON without category field should default to Generic
+        let json = r#"{"name": "java", "version": "17"}"#;
+        let tool: ToolDescriptor = serde_json::from_str(json).unwrap();
+        assert_eq!(tool.name, "java");
+        assert_eq!(tool.version, "17");
+        assert_eq!(tool.category, Category::Generic);
+        assert!(tool.manager_preference.is_empty());
+    }
+
+    #[test]
+    fn test_tool_descriptor_with_category_and_manager_preference_round_trip() {
+        // New format with category and manager_preference
+        let tool = ToolDescriptor {
+            name: "java".into(),
+            version: "17".into(),
+            category: Category::Java,
+            manager_preference: vec![ManagerType::Apt, ManagerType::Asdf],
+        };
+
+        // Serialize
+        let json = serde_json::to_string(&tool).unwrap();
+        assert!(json.contains("\"category\":\"java\""));
+        assert!(json.contains("\"manager_preference\":[\"apt\",\"asdf\"]"));
+
+        // Deserialize back
+        let deserialized: ToolDescriptor = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "java");
+        assert_eq!(deserialized.version, "17");
+        assert_eq!(deserialized.category, Category::Java);
+        assert_eq!(deserialized.manager_preference.len(), 2);
+        assert_eq!(deserialized.manager_preference[0], ManagerType::Apt);
+        assert_eq!(deserialized.manager_preference[1], ManagerType::Asdf);
+    }
+
+    #[test]
+    fn test_category_serialization_all_variants() {
+        // Test all category variants serialize correctly
+        let categories = vec![
+            (Category::Generic, "generic"),
+            (Category::Java, "java"),
+            (Category::Node, "node"),
+            (Category::Python, "python"),
+            (Category::Ruby, "ruby"),
+            (Category::Go, "go"),
+            (Category::Rust, "rust"),
+            (Category::System, "system"),
+        ];
+
+        for (cat, expected_str) in categories {
+            let json = serde_json::to_string(&cat).unwrap();
+            assert_eq!(json, format!("\"{}\"", expected_str), "Category {:?} serialization failed", cat);
+            let deserialized: Category = serde_json::from_str(&json).unwrap();
+            assert_eq!(deserialized, cat);
+        }
+    }
+
+    #[test]
+    fn test_manager_type_serialization_all_variants() {
+        // Test all manager type variants serialize correctly
+        let types = vec![
+            (ManagerType::CaStore, "ca_store"),
+            (ManagerType::Apt, "apt"),
+            (ManagerType::Asdf, "asdf"),
+            (ManagerType::Sdkman, "sdkman"),
+            (ManagerType::Brew, "brew"),
+            (ManagerType::Nix, "nix"),
+        ];
+
+        for (mt, expected_str) in types {
+            let json = serde_json::to_string(&mt).unwrap();
+            assert_eq!(json, format!("\"{}\"", expected_str), "ManagerType {:?} serialization failed", mt);
+            let deserialized: ManagerType = serde_json::from_str(&json).unwrap();
+            assert_eq!(deserialized, mt);
+        }
     }
 }
