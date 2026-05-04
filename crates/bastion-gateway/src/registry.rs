@@ -132,15 +132,24 @@ pub struct RegistryService {
     secrets: Arc<DashMap<String, String>>,
     /// Rate limiters per sandbox (token bucket)
     rate_limiters: Arc<DashMap<String, Mutex<TokenBucket>>>,
+    /// JWT manager for session tokens
+    jwt_manager: crate::auth::JwtManager,
+    /// AutoTLS instance for worker certificate generation
+    auto_tls: Arc<crate::auto_tls::AutoTls>,
 }
 
 impl RegistryService {
-    pub fn new() -> Self {
+    pub fn new(
+        jwt_manager: crate::auth::JwtManager,
+        auto_tls: Arc<crate::auto_tls::AutoTls>,
+    ) -> Self {
         Self {
             workers: Arc::new(DashMap::new()),
             pending_multi: Arc::new(DashMap::new()),
             secrets: Arc::new(DashMap::new()),
             rate_limiters: Arc::new(DashMap::new()),
+            jwt_manager,
+            auto_tls,
         }
     }
 

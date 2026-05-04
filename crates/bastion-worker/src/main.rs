@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::{mpsc, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Channel;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 mod sandbox;
 
@@ -119,10 +119,46 @@ fn next_backoff(attempt: u32, base: std::time::Duration, max: std::time::Duratio
     total.min(max)
 }
 
+/// Load TLS configuration from sandbox certs (injected by the gateway).
+/// Falls back to plaintext if certs are not found (for development).
+fn load_tls_config(args: &Args) -> Result<(ClientTlsConfig, String)> {
+    let cert_path = std::path::Path::new("/sandbox/worker-cert.pem");
+    let key_path = std::path::Path::new("/sandbox/worker-key.pem");
+    let ca_path = std::path::Path::new("/sandbox/ca-cert.pem");
+
+    if cert_path.exists() && key_path.exists() && ca_path.exists() {
+        tracing::info!("Loading mTLS certs from /sandbox/");
+        let cert_pem = std::fs::read_to_string(cert_path)?;
+        let key_pem = std::fs::read_to_string(key_path)?;
+        let ca_pem = std::fs::read_to_string(ca_path)?;
+
+        let identity = Identity::from_pem(&cert_pem, &key_pem);
+        let ca = Certificate::from_pem(&ca_pem);
+
+        let tls = ClientTlsConfig::new()
+            .identity(identity)
+            .ca_certificate(ca)
+            .domain_name("bastion-gateway");
+
+        // Convert http:// to https://
+        let url = args.gateway_addr.replace("http://", "https://");
+        Ok((tls, url))
+    } else {
+        tracing::warn!("No TLS certs found in /sandbox/ — using plaintext (dev mode)");
+        let tls = ClientTlsConfig::new();
+        Ok((tls, args.gateway_addr.clone()))
+    }
+}
+
 async fn run_worker_session(args: &Args) -> Result<ExitReason> {
-    // Connect to Gateway (outbound)
-    let channel = Channel::from_shared(args.gateway_addr.clone())
+    // Load TLS identity from sandbox certs (injected by gateway)
+    let (tls_config, gateway_url) = load_tls_config(args)?;
+
+    // Connect to Gateway (outbound) with mTLS
+    let channel = Channel::from_shared(gateway_url.clone())
         .map_err(|e| anyhow::anyhow!("Invalid gateway address: {e}"))?
+        .tls_config(tls_config)
+        .map_err(|e| anyhow::anyhow!("TLS config error: {e}"))?
         .connect()
         .await
         .map_err(|e| anyhow::anyhow!("Cannot connect to gateway: {e}"))?;

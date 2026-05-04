@@ -25,6 +25,8 @@ clap = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 dashmap = "6.1"
+rustls-pemfile = { workspace = true }
+tokio-rustls = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

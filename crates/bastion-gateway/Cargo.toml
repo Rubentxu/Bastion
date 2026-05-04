@@ -34,6 +34,12 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+jsonwebtoken = "9"
+dirs = "6"
+time = "0.3"
+hex = "0.4"
+rustls = { version = "0.23", features = ["ring"] }
 
 # ── HTTP transport ─────────────────────────────────────────────
 hyper = { version = "1", features = ["http1"] }

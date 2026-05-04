@@ -45,6 +45,7 @@ pub struct BastionGateway {
     metrics: GatewayMetrics,
     artifact_catalog: Arc<RwLock<ArtifactCatalog>>,
     artifact_store: Arc<FsArtifactStore>,
+    auto_tls: Arc<crate::auto_tls::AutoTls>,
 }
 
 impl BastionGateway {
@@ -53,6 +54,7 @@ impl BastionGateway {
         repository: Arc<dyn SandboxRepository>,
         pool_manager: Option<Arc<SandboxPoolManager>>,
         metrics: GatewayMetrics,
+        auto_tls: Arc<crate::auto_tls::AutoTls>,
     ) -> Self {
         Self {
             provider,
@@ -61,8 +63,37 @@ impl BastionGateway {
             metrics,
             artifact_catalog: Arc::new(RwLock::new(ArtifactCatalog::new())),
             artifact_store: Arc::new(FsArtifactStore::new(PathBuf::from("/tmp/bastion-artifacts"))),
+            auto_tls,
         }
     }
+
+    /// Generate worker TLS certificates for a sandbox
+    fn generate_worker_certs(&self, sandbox_id: &str) -> Result<WorkerCerts, anyhow::Error> {
+        let (cert_pem, key_pem) = self.auto_tls.issue_worker_cert(sandbox_id)
+            .map_err(|e| anyhow::anyhow!("Failed to issue worker cert: {}", e))?;
+
+        let certs_dir = dirs::home_dir()
+            .map(|h| h.join(".bastion").join("tls").join("workers").join(sandbox_id))
+            .unwrap_or_else(|| PathBuf::from(".bastion/tls/workers").join(sandbox_id));
+        std::fs::create_dir_all(&certs_dir)
+            .map_err(|e| anyhow::anyhow!("Failed to create cert dir: {}", e))?;
+        std::fs::write(certs_dir.join("worker-cert.pem"), &cert_pem)
+            .map_err(|e| anyhow::anyhow!("Failed to write cert: {}", e))?;
+        std::fs::write(certs_dir.join("worker-key.pem"), &key_pem)
+            .map_err(|e| anyhow::anyhow!("Failed to write key: {}", e))?;
+
+        Ok(WorkerCerts {
+            cert_path: certs_dir.join("worker-cert.pem"),
+            key_path: certs_dir.join("worker-key.pem"),
+            ca_path: self.auto_tls.worker_ca_cert_path(),
+        })
+    }
+}
+
+struct WorkerCerts {
+    cert_path: PathBuf,
+    key_path: PathBuf,
+    ca_path: PathBuf,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

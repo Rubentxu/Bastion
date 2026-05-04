@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use bastion_domain::execution::command::{CommandResult, CommandSpec};
@@ -35,10 +35,11 @@ use rmcp::transport::streamable_http_server::{
 use hyper_util::service::TowerToHyperService;
 use hyper::server::conn::http1;
 
+mod auth;
+mod auto_tls;
 mod registry;
 mod sandbox;
 mod server;
-mod tls;
 
 use registry::{RegistryService, WorkerRegistryServer};
 use tonic::codec::CompressionEncoding;
@@ -96,14 +97,6 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:50052")]
     registry_addr: String,
 
-    /// TLS certificate path (optional, enables TLS for registry)
-    #[arg(long)]
-    tls_cert: Option<String>,
-
-    /// TLS private key path (optional, enables TLS for registry)
-    #[arg(long)]
-    tls_key: Option<String>,
-
     /// Transport mode: stdio (default) or http
     #[arg(long, default_value_t = TransportMode::Stdio, value_enum)]
     transport: TransportMode,
@@ -111,18 +104,6 @@ struct Args {
     /// HTTP server port (only used when --transport=http)
     #[arg(long, default_value_t = 8080)]
     http_port: u16,
-}
-
-impl Args {
-    fn tls_config(&self) -> Option<tls::TlsConfig> {
-        match (&self.tls_cert, &self.tls_key) {
-            (Some(cert), Some(key)) => Some(tls::TlsConfig {
-                cert_path: cert.clone(),
-                key_path: key.clone(),
-            }),
-            _ => None,
-        }
-    }
 }
 
 /// Run HTTP transport server using StreamableHttpService
@@ -175,6 +156,19 @@ async fn main() -> Result<()> {
 
     tracing::info!("Bastion MCP Gateway starting...");
 
+    // Install rustls crypto provider BEFORE any TLS code runs
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Create ~/.bastion directory structure and initialize security
+    let bastion_home = dirs::home_dir()
+        .map(|h| h.join(".bastion"))
+        .unwrap_or_else(|| PathBuf::from(".bastion"));
+    std::fs::create_dir_all(&bastion_home)
+        .context("Failed to create ~/.bastion directory")?;
+
+    let jwt_manager = auth::JwtManager::init_or_load(&bastion_home)?;
+    auto_tls::init_or_load(bastion_home.clone()).await?;
+
     // Extract transport config before async blocks (args will be moved)
     let transport_mode = args.transport.clone();
     let _http_port = args.http_port;
@@ -185,8 +179,11 @@ async fn main() -> Result<()> {
     // Create provider factory and register Podman
     let mut factory = ProviderFactory::new("podman");
 
-    // First create the RegistryService (before PodmanProvider so we can wire it)
-    let registry: Arc<RegistryService> = Arc::new(RegistryService::new());
+    // First create the RegistryService with JWT + auto_tls support
+    let registry: Arc<RegistryService> = Arc::new(RegistryService::new(
+        jwt_manager.clone(),
+        Arc::new(auto_tls::get_auto_tls().clone()),
+    ));
 
     // Start watchdog to detect dead workers (10s heartbeat, 30s watchdog timeout)
     registry.start_watchdog(10000);
@@ -261,56 +258,30 @@ async fn main() -> Result<()> {
 
     // Create gateway and start MCP server
     let gateway =
-        server::BastionGateway::new(podman.clone(), repository.clone(), pool_manager, metrics);
+        server::BastionGateway::new(podman.clone(), repository.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()));
 
-    // Start the Worker Registry gRPC server (with optional TLS)
+    // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS)
     let registry_addr: std::net::SocketAddr = args.registry_addr.parse()
         .expect("Invalid registry address");
 
-    // Extract TLS config before async move
-    let tls_config = args.tls_config();
-
     let registry_for_grpc = Arc::clone(&registry);
     let registry_handle = tokio::spawn(async move {
-        // Create service with gzip compression enabled
         let svc = WorkerRegistryServer::new((*registry_for_grpc).clone())
             .accept_compressed(CompressionEncoding::Gzip)
             .send_compressed(CompressionEncoding::Gzip);
 
-        if let Some(ref tls_cfg) = tls_config
-            && tls_cfg.files_exist()
-        {
-            match tls_cfg.load_identity() {
-                Ok(identity) => {
-                    tracing::info!("Starting registry with TLS + gzip compression");
-                    let tls_config = tonic::transport::ServerTlsConfig::new()
-                        .identity(identity);
-                    tonic::transport::Server::builder()
-                        .http2_adaptive_window(Some(true))
-                        .initial_stream_window_size(1024 * 1024)  // 1MB
-                        .initial_connection_window_size(4 * 1024 * 1024) // 4MB
-                        .max_frame_size(4 * 1024 * 1024)  // 4MB
-                        .tls_config(tls_config)
-                        .expect("TLS config failed")
-                        .add_service(svc)
-                        .serve(registry_addr)
-                        .await
-                        .expect("TLS registry server failed");
-                    return;
-                }
-                Err(e) => {
-                    tracing::error!("Failed to load TLS identity: {}, falling back to plaintext", e);
-                }
-            }
-        }
+        let tls_config = auto_tls::get_auto_tls()
+            .server_config()
+            .expect("Failed to get AutoTLS server config");
 
-        // Plaintext fallback with HTTP/2 tuning
-        tracing::info!("Starting registry without TLS (plaintext) + gzip compression");
+        tracing::info!("Starting registry with AutoTLS (mTLS) + gzip compression");
         tonic::transport::Server::builder()
             .http2_adaptive_window(Some(true))
-            .initial_stream_window_size(1024 * 1024)  // 1MB
-            .initial_connection_window_size(4 * 1024 * 1024) // 4MB
-            .max_frame_size(4 * 1024 * 1024)  // 4MB
+            .initial_stream_window_size(1024 * 1024)
+            .initial_connection_window_size(4 * 1024 * 1024)
+            .max_frame_size(4 * 1024 * 1024)
+            .tls_config(tls_config)
+            .expect("TLS config failed")
             .add_service(svc)
             .serve(registry_addr)
             .await
