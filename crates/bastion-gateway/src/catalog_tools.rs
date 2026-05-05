@@ -59,7 +59,7 @@ impl BastionGateway {
     /// List experience records by trace ID, sorted by started_at descending.
     #[tool(description = "List experience records filtered by trace_id")]
     async fn experience_list(&self, Parameters(params): Parameters<ExperienceListParams>) -> String {
-        let store = match &self.experience_store {
+        let store = match &self.catalog_config.experience_store {
             Some(s) => s,
             None => {
                 return serde_json::json!({
@@ -87,7 +87,7 @@ impl BastionGateway {
     /// Get a single experience record by ID.
     #[tool(description = "Get a single experience record by ID")]
     async fn experience_get(&self, Parameters(params): Parameters<ExperienceGetParams>) -> String {
-        let store = match &self.experience_store {
+        let store = match &self.catalog_config.experience_store {
             Some(s) => s,
             None => {
                 return serde_json::json!({
@@ -118,7 +118,7 @@ impl BastionGateway {
     /// List all available assertions.
     #[tool(description = "List all loaded assertion descriptors")]
     async fn assertion_list(&self) -> String {
-        let registry = match &self.assertion_registry {
+        let registry = match &self.catalog_config.assertion_registry {
             Some(r) => r,
             None => {
                 return serde_json::json!({
@@ -138,7 +138,7 @@ impl BastionGateway {
     /// Run an assertion against an experience record.
     #[tool(description = "Evaluate an assertion against an experience record")]
     async fn assertion_run(&self, Parameters(params): Parameters<AssertionRunParams>) -> String {
-        let store = match &self.experience_store {
+        let store = match &self.catalog_config.experience_store {
             Some(s) => s,
             None => {
                 return serde_json::json!({
@@ -147,7 +147,7 @@ impl BastionGateway {
             }
         };
 
-        let registry = match &self.assertion_registry {
+        let registry = match &self.catalog_config.assertion_registry {
             Some(r) => r,
             None => {
                 return serde_json::json!({
@@ -208,7 +208,7 @@ impl BastionGateway {
         &self,
         Parameters(params): Parameters<AssertionDryRunParams>,
     ) -> String {
-        let registry = match &self.assertion_registry {
+        let registry = match &self.catalog_config.assertion_registry {
             Some(r) => r,
             None => {
                 return serde_json::json!({

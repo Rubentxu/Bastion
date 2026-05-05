@@ -1,0 +1,21 @@
+schema_version = "1.0"
+
+[advice]
+id = "maven.build.failure"
+name = "Maven Build Failure"
+description = "Triggered when a Maven build assertion fails"
+category = "maven"
+severity = "warning"
+
+[[advice.triggers]]
+type = "assertion_failed"
+assertion_id = "maven.build.success"
+
+message = "Maven build failed. Check the output for compilation errors."
+suggested_actions = [
+    "Review Maven output for compilation errors",
+    "Ensure all dependencies are available",
+    "Check for syntax errors in recent changes",
+    "Run `mvn clean` to clear cached artifacts"
+]
+hint = "Check the full build log for the first error — subsequent errors are often cascading"

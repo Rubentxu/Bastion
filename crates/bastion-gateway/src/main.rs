@@ -28,6 +28,7 @@ use bastion_infrastructure::provider::{PodmanProvider, ProviderFactory, Provider
 use bastion_infrastructure::secret::EnvSecretResolver;
 use bastion_infrastructure::template::CapabilityRegistry;
 use bastion_infrastructure::catalog::sqlite_experience_store::SqliteExperienceStore;
+use bastion_infrastructure::catalog::toml_advice_parser::{AdviceConfigStore, AdviceRegistry};
 use bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry;
 use bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry;
 
@@ -41,6 +42,7 @@ use rmcp::transport::streamable_http_server::{
 use hyper_util::service::TowerToHyperService;
 use hyper::server::conn::http1;
 
+mod advice_tools;
 mod auth;
 mod auto_tls;
 mod catalog_tools;
@@ -458,11 +460,48 @@ async fn main() -> Result<()> {
         registry
     });
 
+    // Create advice registry and load TOML files
+    let advice_registry = Arc::new({
+        let registry = AdviceRegistry::new();
+        let advice_dir = bastion_config_dir.join("catalog").join("advice");
+        if advice_dir.exists() {
+            match registry.load_from_dir(&advice_dir) {
+                Ok(count) => {
+                    tracing::info!(count, path = %advice_dir.display(), "Loaded advice files");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %advice_dir.display(), "Failed to load advice");
+                }
+            }
+        } else {
+            tracing::info!("No advice directory at {}, using empty registry", advice_dir.display());
+        }
+        registry
+    });
+
+    // Create advice config store (`.bastion/advice.toml`)
+    let advice_config = Arc::new({
+        let config_path = bastion_config_dir.join("advice.toml");
+        AdviceConfigStore::new(config_path)
+    });
+
     // Create gateway — ready to serve MCP immediately
     let default_provider = registry.default().clone();
     let providers_map = registry.into_providers();
+    let gateway_config = server::GatewayConfig {
+        pool_manager,
+        metrics,
+        auto_tls: Arc::new(auto_tls::get_auto_tls().clone()),
+    };
+    let catalog_config = server::CatalogConfig {
+        experience_store,
+        assertion_registry: Some(assertion_registry),
+        doctor_registry: Some(doctor_registry),
+        advice_registry: Some(advice_registry),
+        advice_config: Some(advice_config),
+    };
     let gateway =
-        server::BastionGateway::new(default_provider, providers_map, repository.clone(), secret_resolver.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()), capability_registry, experience_store, Some(assertion_registry), Some(doctor_registry));
+        server::BastionGateway::new(default_provider, providers_map, repository.clone(), secret_resolver.clone(), gateway_config, capability_registry, catalog_config);
 
     // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS)
     let registry_addr: std::net::SocketAddr = args.registry_addr.parse()

@@ -33,6 +33,7 @@ use bastion_domain::template::{
     ArtifactCatalog, CapabilityDescriptor, MaterializationMode, ProviderMaterializer,
     TemplateArtifact, ToolDescriptor, ToolchainRequest, ToolchainStrategy, ToolResolver,
 };
+use bastion_infrastructure::catalog::toml_advice_parser::{AdviceConfigStore, AdviceRegistry};
 use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::pool::SandboxPoolManager;
 use bastion_infrastructure::template::{
@@ -52,6 +53,54 @@ pub enum SyncBackend {
     Auto,
 }
 
+/// Configuration for catalog-related components (experience, assertions, doctors, advice).
+/// Wraps multiple optional catalog registries into a single config struct to reduce
+/// the argument count in `BastionGateway::new()`.
+#[derive(Clone, Default)]
+pub struct CatalogConfig {
+    /// Optional experience store for catalog recording (Phase 2)
+    pub experience_store: Option<Arc<dyn bastion_domain::catalog::experience::ExperienceStore>>,
+    /// Optional assertion registry loaded from TOML (Phase 3)
+    pub assertion_registry: Option<Arc<bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry>>,
+    /// Optional doctor registry loaded from TOML (Phase 4)
+    pub doctor_registry: Option<Arc<bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry>>,
+    /// Optional advice registry loaded from TOML (advice-catalog-engine)
+    pub advice_registry: Option<Arc<AdviceRegistry>>,
+    /// Optional advice config store (`.bastion/advice.toml`)
+    pub advice_config: Option<Arc<AdviceConfigStore>>,
+}
+
+impl CatalogConfig {
+    /// Create a new CatalogConfig with all fields set to None.
+    #[allow(dead_code)]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+}
+
+/// Configuration for gateway operational settings (pool, metrics, TLS).
+/// Groups operational/runtime config to reduce argument count in `BastionGateway::new()`.
+#[derive(Clone)]
+pub struct GatewayConfig {
+    /// Optional sandbox pool manager
+    pub pool_manager: Option<Arc<SandboxPoolManager>>,
+    /// Gateway metrics collector
+    pub metrics: GatewayMetrics,
+    /// AutoTLS manager for mTLS
+    #[allow(dead_code)]
+    pub auto_tls: Arc<crate::auto_tls::AutoTls>,
+}
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self {
+            pool_manager: None,
+            metrics: GatewayMetrics::default(),
+            auto_tls: Arc::new(crate::auto_tls::get_auto_tls().clone()),
+        }
+    }
+}
+
 /// Bastion MCP Gateway server.
 ///
 /// Exposes sandbox management tools to AI agents via MCP protocol.
@@ -62,8 +111,8 @@ pub struct BastionGateway {
     providers: Arc<std::collections::HashMap<String, Arc<dyn SandboxProvider>>>,
     repository: Arc<dyn SandboxRepository>,
     secret_resolver: Arc<dyn SecretResolver>,
-    pub(crate) pool_manager: Option<Arc<SandboxPoolManager>>,
-    metrics: GatewayMetrics,
+    /// Gateway operational config (pool, metrics, TLS)
+    pub(crate) gateway_config: GatewayConfig,
     artifact_catalog: Arc<RwLock<ArtifactCatalog>>,
     artifact_store: Arc<FsArtifactStore>,
     /// Prepared environments keyed by env_ref
@@ -76,18 +125,12 @@ pub struct BastionGateway {
     rate_limiter: Arc<Mutex<RateLimiter>>,
     /// Per-client rate limiter: each client gets its own token bucket
     per_client_rate_limiter: Arc<PerClientRateLimiter>,
-    #[allow(dead_code)]
-    auto_tls: Arc<crate::auto_tls::AutoTls>,
     /// TOML-driven capability registry (tried before ToolResolver)
     capability_registry: Arc<RwLock<CapabilityRegistry>>,
     /// Cancel tokens for running commands: sandbox_id → cancel flag
     cancel_tokens: Arc<DashMap<String, Arc<AtomicBool>>>,
-    /// Optional experience store for catalog recording (Phase 2)
-    pub(crate) experience_store: Option<Arc<dyn bastion_domain::catalog::experience::ExperienceStore>>,
-    /// Optional assertion registry loaded from TOML (Phase 3)
-    pub(crate) assertion_registry: Option<Arc<bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry>>,
-    /// Optional doctor registry loaded from TOML (Phase 4)
-    pub(crate) doctor_registry: Option<Arc<bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry>>,
+    /// Catalog configuration (experience, assertions, doctors, advice)
+    pub(crate) catalog_config: CatalogConfig,
 }
 
 /// Simple token bucket rate limiter for MCP layer
@@ -172,21 +215,16 @@ impl BastionGateway {
         providers: std::collections::HashMap<String, Arc<dyn SandboxProvider>>,
         repository: Arc<dyn SandboxRepository>,
         secret_resolver: Arc<dyn SecretResolver>,
-        pool_manager: Option<Arc<SandboxPoolManager>>,
-        metrics: GatewayMetrics,
-        auto_tls: Arc<crate::auto_tls::AutoTls>,
+        gateway_config: GatewayConfig,
         capability_registry: CapabilityRegistry,
-        experience_store: Option<Arc<dyn bastion_domain::catalog::experience::ExperienceStore>>,
-        assertion_registry: Option<Arc<bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry>>,
-        doctor_registry: Option<Arc<bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry>>,
+        catalog_config: CatalogConfig,
     ) -> Self {
         Self {
             provider,
             providers: Arc::new(providers),
             repository,
             secret_resolver,
-            pool_manager,
-            metrics,
+            gateway_config,
             artifact_catalog: Arc::new(RwLock::new(ArtifactCatalog::new())),
             artifact_store: Arc::new(FsArtifactStore::new(PathBuf::from("/tmp/bastion-artifacts"))),
             prepared_environments: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -194,12 +232,9 @@ impl BastionGateway {
             sync_backend: SyncBackend::Auto,
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(500.0, 100.0))),
             per_client_rate_limiter: Arc::new(PerClientRateLimiter::new(100.0, 20.0, 1000)),
-            auto_tls,
             capability_registry: Arc::new(RwLock::new(capability_registry)),
             cancel_tokens: Arc::new(DashMap::new()),
-            experience_store,
-            assertion_registry,
-            doctor_registry,
+            catalog_config,
         }
     }
 
@@ -229,7 +264,7 @@ impl BastionGateway {
 
     /// Record an experience if the store is configured.
     async fn record_experience(&self, record: ExperienceRecord) {
-        let Some(ref store) = self.experience_store else {
+        let Some(ref store) = self.catalog_config.experience_store else {
             return;
         };
         if let Err(e) = store.save(&record).await {
@@ -261,7 +296,7 @@ impl BastionGateway {
     /// Generate worker TLS certificates for a sandbox
     #[allow(dead_code)]
     fn generate_worker_certs(&self, sandbox_id: &str) -> Result<WorkerCerts, anyhow::Error> {
-        let (cert_pem, key_pem) = self.auto_tls.issue_worker_cert(sandbox_id)
+        let (cert_pem, key_pem) = self.gateway_config.auto_tls.issue_worker_cert(sandbox_id)
             .map_err(|e| anyhow::anyhow!("Failed to issue worker cert: {}", e))?;
 
         let certs_dir = dirs::home_dir()
@@ -277,7 +312,7 @@ impl BastionGateway {
         Ok(WorkerCerts {
             cert_path: certs_dir.join("worker-cert.pem"),
             key_path: certs_dir.join("worker-key.pem"),
-            ca_path: self.auto_tls.worker_ca_cert_path(),
+            ca_path: self.gateway_config.auto_tls.worker_ca_cert_path(),
         })
     }
 }
@@ -480,7 +515,7 @@ impl BastionGateway {
         tracing::info!(template = %params.template, provider = %params.provider, "Creating sandbox");
 
         // Try pool checkout first if pool is available
-        if let Some(ref pool) = self.pool_manager {
+        if let Some(ref pool) = self.gateway_config.pool_manager {
             match pool.checkout(&params.template, params.timeout_ms).await {
                 Ok(sandbox) => {
                     tracing::debug!(
@@ -488,7 +523,7 @@ impl BastionGateway {
                         template = %params.template,
                         "Sandbox created via pool checkout"
                     );
-                    self.metrics.record_sandbox_created();
+                    self.gateway_config.metrics.record_sandbox_created();
                     return serde_json::json!({
                         "sandbox_id": sandbox.id.to_string(),
                         "status": sandbox.status.to_string(),
@@ -521,7 +556,7 @@ impl BastionGateway {
 
         match use_case.execute(input, selected_provider.as_ref()).await {
             Ok(sandbox) => {
-                self.metrics.record_sandbox_created();
+                self.gateway_config.metrics.record_sandbox_created();
                 serde_json::json!({
                     "sandbox_id": sandbox.id.to_string(),
                     "status": sandbox.status.to_string(),
@@ -531,7 +566,7 @@ impl BastionGateway {
                 .to_string()
             }
 Err(e) => {
-                self.metrics.record_error();
+                self.gateway_config.metrics.record_error();
                 serde_json::json!({"error": e.to_string()}).to_string()
             }
 }
@@ -610,7 +645,7 @@ Err(e) => {
         {
             Ok(result) => {
                 let duration_us = t0.elapsed().as_micros() as u64;
-                self.metrics.record_command(duration_us);
+                self.gateway_config.metrics.record_command(duration_us);
 
                 // Record successful experience
                 experience = experience
@@ -632,7 +667,7 @@ Err(e) => {
                 .to_string()
             }
             Err(e) => {
-                self.metrics.record_error();
+                self.gateway_config.metrics.record_error();
 
                 // Record failed experience
                 experience = experience.cancelled();
@@ -666,10 +701,7 @@ Err(e) => {
         let mut command_spec = CommandSpec::new(&params.command);
 
         // Auto-inject env_ref (same logic as sandbox_run)
-        let resolved_env_ref = params.env_ref.clone().or_else(|| {
-            // Can't async in closure, handle inline:
-            None
-        });
+        let resolved_env_ref = params.env_ref.clone().or(None);
         let resolved_env_ref = if let Some(ref env_ref) = resolved_env_ref {
             Some(env_ref.clone())
         } else {
@@ -780,7 +812,7 @@ Err(e) => {
                 }
 
                 let duration_us = start_time.elapsed().as_micros() as u64;
-                self.metrics.record_command(duration_us);
+                self.gateway_config.metrics.record_command(duration_us);
 
                 // Record successful experience
                 let stdout_bytes = stdout_parts.join("").into_bytes();
@@ -808,7 +840,7 @@ Err(e) => {
                 .to_string()
             }
             Err(e) => {
-                self.metrics.record_error();
+                self.gateway_config.metrics.record_error();
 
                 // Record failed experience
                 let mut experience = ExperienceRecord::new("sandbox_run_stream")
@@ -968,11 +1000,11 @@ Err(e) => {
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
 
         // Try to return to pool first if pool is available
-        if let Some(ref pool) = self.pool_manager {
+        if let Some(ref pool) = self.gateway_config.pool_manager {
             match pool.checkin(&sandbox_id).await {
                 Ok(()) => {
                     tracing::debug!(sandbox_id = %params.sandbox_id, "Sandbox returned to pool");
-                    self.metrics.record_sandbox_terminated();
+                    self.gateway_config.metrics.record_sandbox_terminated();
                     return serde_json::json!({
                         "status": "pooled",
                         "sandbox_id": params.sandbox_id
@@ -990,11 +1022,11 @@ Err(e) => {
 
         match use_case.execute(&sandbox_id, self.provider.as_ref()).await {
             Ok(()) => {
-                self.metrics.record_sandbox_terminated();
+                self.gateway_config.metrics.record_sandbox_terminated();
                 serde_json::json!({"status": "terminated"}).to_string()
             }
             Err(e) => {
-                self.metrics.record_error();
+                self.gateway_config.metrics.record_error();
                 serde_json::json!({"error": e.to_string()}).to_string()
             }
         }
@@ -1036,7 +1068,7 @@ Err(e) => {
                 .to_string()
             }
             Err(e) => {
-                self.metrics.record_error();
+                self.gateway_config.metrics.record_error();
 
                 // Record failed experience
                 experience = experience.cancelled();
@@ -1101,7 +1133,7 @@ Err(e) => {
     async fn sandbox_pool_stats(&self) -> String {
         tracing::trace!("Getting pool statistics");
 
-        if let Some(ref pool) = self.pool_manager {
+        if let Some(ref pool) = self.gateway_config.pool_manager {
             let stats = pool.stats().await;
             serde_json::json!({
                 "enabled": true,
@@ -1139,7 +1171,7 @@ Err(e) => {
         }));
 
         // Check pool status
-        if let Some(ref pool) = self.pool_manager {
+        if let Some(ref pool) = self.gateway_config.pool_manager {
             let stats = pool.stats().await;
             checks.push(serde_json::json!({
                 "component": "pool",
@@ -1166,7 +1198,7 @@ Err(e) => {
     #[tool(description = "Get gateway metrics in Prometheus format")]
     async fn sandbox_metrics(&self) -> String {
         tracing::debug!("Getting metrics");
-        self.metrics.prometheus_export()
+        self.gateway_config.metrics.prometheus_export()
     }
 
     #[tool(description = "Register a template artifact that provides a capability")]
@@ -1505,7 +1537,7 @@ Err(e) => {
                         if let Err(e) = self.repository.save(&sandbox).await {
                             tracing::error!(sandbox_id = %sandbox.id, error = %e, "Failed to register restored sandbox");
                         }
-                        self.metrics.record_sandbox_created();
+                        self.gateway_config.metrics.record_sandbox_created();
                         serde_json::json!({
                             "status": "restored",
                             "sandbox_id": sandbox.id.to_string(),
@@ -1778,6 +1810,6 @@ Err(e) => {
     }
 }
 
-/// Combine server_handler, catalog_tools, and doctor_tools routers into a single ServerHandler impl.
-#[tool_handler(router = (Self::server_handler() + crate::catalog_tools::catalog_tools() + crate::doctor_tools::doctor_tools()))]
+/// Combine server_handler, catalog_tools, doctor_tools, and advice_tools routers into a single ServerHandler impl.
+#[tool_handler(router = (Self::server_handler() + crate::catalog_tools::catalog_tools() + crate::doctor_tools::doctor_tools() + crate::advice_tools::advice_tools()))]
 impl ServerHandler for BastionGateway {}

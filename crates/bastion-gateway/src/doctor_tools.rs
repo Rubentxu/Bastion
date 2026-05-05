@@ -48,7 +48,7 @@ impl BastionGateway {
     /// List all registered doctors.
     #[tool(description = "List all registered doctor descriptors")]
     async fn doctor_list(&self, Parameters(_params): Parameters<DoctorListParams>) -> String {
-        let registry = match &self.doctor_registry {
+        let registry = match &self.catalog_config.doctor_registry {
             Some(r) => r,
             None => {
                 return serde_json::json!({
@@ -69,7 +69,7 @@ impl BastionGateway {
     /// Run a doctor against a sandbox.
     #[tool(description = "Run a doctor against a sandbox")]
     async fn doctor_run(&self, Parameters(params): Parameters<DoctorRunParams>) -> String {
-        let registry = match &self.doctor_registry {
+        let registry = match &self.catalog_config.doctor_registry {
             Some(r) => r,
             None => {
                 return serde_json::json!({
@@ -148,7 +148,7 @@ impl BastionGateway {
     /// Get doctor descriptor and TOML source.
     #[tool(description = "Get doctor descriptor and TOML source")]
     async fn doctor_explain(&self, Parameters(params): Parameters<DoctorExplainParams>) -> String {
-        let registry = match &self.doctor_registry {
+        let registry = match &self.catalog_config.doctor_registry {
             Some(r) => r,
             None => {
                 return serde_json::json!({
@@ -212,21 +212,21 @@ impl BastionGateway {
                 max_total,
                 max_idle_per_template,
             } => {
-                if let Some(ref pool) = self.pool_manager {
+                if let Some(ref pool) = self.gateway_config.pool_manager {
                     let stats = pool.stats().await;
 
                     // Check max_total
-                    if let Some(max) = max_total {
-                        if stats.total > *max {
-                            return AssertionCheckResult {
-                                check: "Resources".to_string(),
-                                passed: false,
-                                reason: Some(format!(
-                                    "Total sandboxes {} exceeds max {}",
-                                    stats.total, max
-                                )),
-                            };
-                        }
+                    if let Some(max) = max_total
+                        && stats.total > *max
+                    {
+                        return AssertionCheckResult {
+                            check: "Resources".to_string(),
+                            passed: false,
+                            reason: Some(format!(
+                                "Total sandboxes {} exceeds max {}",
+                                stats.total, max
+                            )),
+                        };
                     }
 
                     // Check max_idle_per_template
@@ -261,6 +261,7 @@ impl BastionGateway {
             DoctorCheck::AssertionDriven { assertion_id } => {
                 // Get the assertion
                 let assertion = match self
+                    .catalog_config
                     .assertion_registry
                     .as_ref()
                     .and_then(|r| r.get(assertion_id))
@@ -276,7 +277,7 @@ impl BastionGateway {
                 };
 
                 // Find an experience record to evaluate against
-                let experience = if let Some(ref store) = self.experience_store {
+                let experience = if let Some(ref store) = self.catalog_config.experience_store {
                     match store.find_by_trace_id(sandbox_id).await {
                         Ok(mut records) => {
                             records.sort_by(|a, b| b.started_at.cmp(&a.started_at));

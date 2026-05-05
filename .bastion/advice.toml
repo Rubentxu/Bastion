@@ -1,0 +1,14 @@
+# Advice configuration for Bastion
+# Controls global advice enable/disable and per-ID suppression.
+
+schema_version = "1.0"
+
+[advice]
+enabled = true
+# List of advice IDs to suppress (by id string)
+disabled = []
+
+[mcp]
+enabled = true
+# Automatically suggest advice when failures are detected (future feature)
+auto_suggest_on_failure = false

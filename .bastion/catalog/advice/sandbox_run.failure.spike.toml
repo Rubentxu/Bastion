@@ -1,0 +1,23 @@
+schema_version = "1.0"
+
+[advice]
+id = "sandbox_run.failure.spike"
+name = "Sandbox Run Failure Spike"
+description = "Triggered when 3+ consecutive sandbox_run experiences fail"
+category = "sandbox"
+severity = "critical"
+
+[[advice.triggers]]
+type = "experience_pattern"
+tool_name = "sandbox_run"
+status = "failure"
+threshold = 3
+
+message = "Multiple consecutive sandbox_run failures detected. There may be a systemic issue."
+suggested_actions = [
+    "Check the sandbox template for configuration drift",
+    "Verify the container runtime is healthy",
+    "Review recent changes to sandbox provisioning",
+    "Check for resource exhaustion in the host system"
+]
+hint = "Use sandbox_list to see all active sandboxes and their states"

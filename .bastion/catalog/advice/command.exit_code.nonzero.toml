@@ -1,0 +1,20 @@
+schema_version = "1.0"
+
+[advice]
+id = "command.exit_code.nonzero"
+name = "Command Exit Code Non-Zero"
+description = "Triggered when a command exits with a non-zero exit code"
+category = "command"
+severity = "warning"
+
+[[advice.triggers]]
+type = "assertion_failed"
+assertion_id = "command.exit_code.zero"
+
+message = "Command exited with a non-zero exit code, indicating failure."
+suggested_actions = [
+    "Check the stderr output for error messages",
+    "Review the command's documentation for expected exit codes",
+    "Verify all required parameters and environment variables"
+]
+hint = "Exit codes: 0 = success, 1 = general error, 2 = misuse, 126 = not executable, 127 = command not found"

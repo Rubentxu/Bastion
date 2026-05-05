@@ -1,0 +1,21 @@
+schema_version = "1.0"
+
+[advice]
+id = "sandbox.alive.failure"
+name = "Sandbox Alive Check Failed"
+description = "Triggered when a sandbox health check fails"
+category = "sandbox"
+severity = "critical"
+
+[[advice.triggers]]
+type = "doctor_failed"
+doctor_id = "sandbox.alive"
+
+message = "Sandbox health check failed. The sandbox may be unresponsive or have crashed."
+suggested_actions = [
+    "Check sandbox logs for crash signals",
+    "Verify the sandbox process is still running",
+    "Consider terminating and recreating the sandbox",
+    "Check resource usage (CPU/memory) for exhaustion"
+]
+hint = "Use sandbox_info to check current sandbox state"
