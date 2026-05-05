@@ -133,3 +133,5 @@ Pre-digested rules per skill. Delegators copy matching blocks into sub-agent pro
 | CONTRIBUTING.md | /home/rubentxu/Proyectos/rust/Bastion/CONTRIBUTING.md | Commit conventions (feat/fix/docs/refactor/test), PR checklist, code style |
 | .cargo/config.toml | /home/rubentxu/Proyectos/rust/Bastion/.cargo/config.toml | Build profiles: MUSL static linking, release opt-level=s, LTO, strip, panic=abort |
 | docs/architecture.md | /home/rubentxu/Proyectos/rust/Bastion/docs/architecture.md | DDD + Clean Architecture reference, worker protocol v2, security & reliability models |
+| AGENTS.md | ~/.config/opencode/AGENTS.md | Engram persistent memory protocol (mandatory) |
+| .github/workflows/ci.yml | /home/rubentxu/Proyectos/rust/Bastion/.github/workflows/ci.yml | CI: fmt → check → clippy → unit tests → build → integration (Podman E2E) |
