@@ -1,0 +1,20 @@
+# Local provider configuration
+# WARNING: This provider runs commands directly on the host!
+# It requires DANGEROUS_ALLOW_LOCAL=1 environment variable to be enabled.
+#
+# DO NOT use in production environments.
+
+name = "local"
+kind = "local"
+plugin = "builtin"
+# Base directory for sandbox workspaces (defaults to system temp dir)
+# socket is used as base_dir path for local provider
+socket = "/tmp/bastion-local"
+
+[capabilities]
+supports_snapshots = false
+supports_streaming = true
+avg_startup_ms = 10
+max_memory_mb = 0  # Unlimited
+max_cpu_count = 0  # Unlimited
+requires_kvm = false

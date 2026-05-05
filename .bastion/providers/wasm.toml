@@ -1,0 +1,17 @@
+# WebAssembly sandbox provider configuration
+# Uses wasmtime with WASI preview2 for isolated execution
+#
+# This provider is feature-gated and only available when
+# the `wasm-sandbox` feature is enabled.
+
+name = "wasm"
+kind = "wasm"
+plugin = "builtin"
+
+[capabilities]
+supports_snapshots = false
+supports_streaming = true
+avg_startup_ms = 100
+max_memory_mb = 4096
+max_cpu_count = 4
+requires_kvm = false

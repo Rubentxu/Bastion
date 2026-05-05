@@ -127,7 +127,7 @@ impl ProviderRegistry {
     /// Instantiate a provider based on its kind.
     ///
     /// For "builtin" kinds, this would look up the appropriate factory method.
-    /// Currently supports: podman (via PodmanProvider::new).
+    /// Currently supports: podman, local, and wasm.
     fn instantiate_provider(&self, config: &ProviderConfig) -> Result<Arc<dyn SandboxProvider>, RegistryError> {
         match config.kind.as_str() {
             "podman" => {
@@ -139,6 +139,30 @@ impl ProviderRegistry {
                 let podman = crate::provider::PodmanProvider::new(&socket, &image, PathBuf::from(&worker_binary))
                     .map_err(|e| RegistryError::Watcher(e.to_string()))?;
                 Ok(Arc::new(podman) as Arc<dyn SandboxProvider>)
+            }
+            "local" => {
+                // LocalProvider: uses temp directory for workspaces
+                // Requires DANGEROUS_ALLOW_LOCAL=1 env var to be set
+                let base_dir = config
+                    .socket
+                    .clone()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| std::env::temp_dir().join("bastion-local"));
+
+                let local = crate::provider::LocalProvider::new(base_dir)
+                    .map_err(|e| RegistryError::Watcher(e.to_string()))?;
+                Ok(Arc::new(local) as Arc<dyn SandboxProvider>)
+            }
+            #[cfg(feature = "wasm-sandbox")]
+            "wasm" => {
+                let wasm = crate::provider::WasmSandboxProvider::new();
+                Ok(Arc::new(wasm) as Arc<dyn SandboxProvider>)
+            }
+            #[cfg(not(feature = "wasm-sandbox"))]
+            "wasm" => {
+                Err(RegistryError::Watcher(
+                    "wasm-sandbox feature not enabled. Rebuild with --features wasm-sandbox".into(),
+                ))
             }
             _ => {
                 Err(RegistryError::Watcher(format!("Unknown provider kind: {}", config.kind)))

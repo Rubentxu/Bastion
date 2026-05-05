@@ -68,7 +68,7 @@ impl MaterializationStrategyResolver {
     pub fn is_local_provider(provider_kind: ProviderKind) -> bool {
         matches!(
             provider_kind,
-            ProviderKind::Podman | ProviderKind::Docker
+            ProviderKind::Podman | ProviderKind::Docker | ProviderKind::Local
         )
     }
 
@@ -172,8 +172,19 @@ mod tests {
     fn test_is_local_provider() {
         assert!(MaterializationStrategyResolver::is_local_provider(ProviderKind::Podman));
         assert!(MaterializationStrategyResolver::is_local_provider(ProviderKind::Docker));
+        assert!(MaterializationStrategyResolver::is_local_provider(ProviderKind::Local));
         assert!(!MaterializationStrategyResolver::is_local_provider(ProviderKind::Kubernetes));
         assert!(!MaterializationStrategyResolver::is_local_provider(ProviderKind::Firecracker));
+        assert!(!MaterializationStrategyResolver::is_local_provider(ProviderKind::Wasm));
+    }
+
+    #[test]
+    fn test_provider_kind_display() {
+        use bastion_domain::template::ProviderKind;
+        assert_eq!(format!("{}", ProviderKind::Podman), "podman");
+        assert_eq!(format!("{}", ProviderKind::Docker), "docker");
+        assert_eq!(format!("{}", ProviderKind::Local), "local");
+        assert_eq!(format!("{}", ProviderKind::Wasm), "wasm");
     }
 
     #[test]

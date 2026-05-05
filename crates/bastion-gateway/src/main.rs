@@ -119,6 +119,10 @@ struct Args {
     /// Path to the SQLite database for sandbox persistence (default: ~/.bastion/sandboxes.db)
     #[arg(long)]
     db_path: Option<PathBuf>,
+
+    /// Allow LocalProvider (DANGEROUS: runs commands directly on host filesystem)
+    #[arg(long, default_value_t = false)]
+    dangerous_allow_local: bool,
 }
 
 /// Run HTTP transport server using StreamableHttpService
@@ -170,6 +174,14 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Set DANGEROUS_ALLOW_LOCAL if flag is present
+    if args.dangerous_allow_local {
+        // SAFETY: This modifies process-global state but is intentional
+        // when the user explicitly enables the dangerous local provider.
+        unsafe { std::env::set_var("DANGEROUS_ALLOW_LOCAL", "1") };
+        tracing::warn!("DANGEROUS: LocalProvider is enabled. Commands will run on host filesystem!");
+    }
 
     tracing::info!("Bastion MCP Gateway starting...");
 

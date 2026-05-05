@@ -37,6 +37,10 @@ pub enum ProviderKind {
     VirtualMachine,
     FaaS,
     Custom,
+    /// WebAssembly-based sandbox provider.
+    Wasm,
+    /// Local provider that runs commands directly on host (DANGEROUS).
+    Local,
 }
 
 impl std::fmt::Display for ProviderKind {
@@ -51,6 +55,8 @@ impl std::fmt::Display for ProviderKind {
             ProviderKind::VirtualMachine => write!(f, "vm"),
             ProviderKind::FaaS => write!(f, "faas"),
             ProviderKind::Custom => write!(f, "custom"),
+            ProviderKind::Wasm => write!(f, "wasm"),
+            ProviderKind::Local => write!(f, "local"),
         }
     }
 }
