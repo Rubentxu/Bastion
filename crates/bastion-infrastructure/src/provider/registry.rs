@@ -58,6 +58,11 @@ impl ProviderRegistry {
         }
     }
 
+    /// Register a provider by name.
+    pub fn register(&self, name: &str, provider: Arc<dyn SandboxProvider>) {
+        self.factory.write().unwrap().register(name, provider);
+    }
+
     /// Load all provider TOMLs from a directory.
     ///
     /// Returns the number of providers successfully loaded.

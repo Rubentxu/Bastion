@@ -24,9 +24,11 @@ use bastion_domain::shared::id::SandboxId;
 use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::persistence::SqliteSandboxRepository;
 use bastion_infrastructure::pool::{PoolConfig, SandboxPoolManager};
-use bastion_infrastructure::provider::{PodmanProvider, ProviderFactory};
+use bastion_infrastructure::provider::{PodmanProvider, ProviderFactory, ProviderRegistry};
 use bastion_infrastructure::secret::EnvSecretResolver;
 use bastion_infrastructure::template::CapabilityRegistry;
+use bastion_infrastructure::catalog::sqlite_experience_store::SqliteExperienceStore;
+use bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry;
 
 use rmcp::{ServiceExt, service::RoleServer};
 
@@ -40,6 +42,7 @@ use hyper::server::conn::http1;
 
 mod auth;
 mod auto_tls;
+mod catalog_tools;
 mod registry;
 mod sandbox;
 mod server;
@@ -72,8 +75,8 @@ struct Args {
     #[arg(short, long, default_value = "config/sandbox-gateway.toml")]
     config: String,
 
-    /// Enable sandbox pooling
-    #[arg(long, default_value_t = false)]
+    /// Enable sandbox pooling (default: enabled for high-performance pipelines)
+    #[arg(long, default_value_t = true)]
     pool_enabled: bool,
 
     /// Minimum idle sandboxes per template (when pooling enabled)
@@ -134,7 +137,11 @@ where
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("HTTP server listening on {}", addr);
 
-    let session_manager = Arc::new(LocalSessionManager::default());
+    // Configure session with 30-minute keep-alive for long-running pipelines (Maven builds, etc.)
+    // Default is 5 minutes (300s) which kills long operations.
+    let mut session_manager = LocalSessionManager::default();
+    session_manager.session_config.keep_alive = Some(std::time::Duration::from_secs(1800));
+    let session_manager = Arc::new(session_manager);
     let config = StreamableHttpServerConfig::default();
     let mcp_service = StreamableHttpService::new(
         move || Ok(gateway.clone()),
@@ -229,30 +236,22 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Create provider factory and register Podman (backward compat)
-    let mut factory = ProviderFactory::new("podman");
+    // Create provider registry and register Podman (backward compat)
+    let registry = ProviderRegistry::new(ProviderFactory::new("podman"));
 
     // Load provider configs from .bastion/providers/ if directory exists
     let providers_dir = bastion_config_dir.join("providers");
-    let loaded_provider_count = if providers_dir.exists() {
-        match std::fs::read_dir(&providers_dir) {
-            Ok(entries) => {
-                let toml_files: Vec<_> = entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("toml"))
-                    .collect();
-                toml_files.len()
+    match registry.load_from_dir(&providers_dir) {
+        Ok(count) => {
+            if count > 0 {
+                tracing::info!(count, path = %providers_dir.display(), "Loaded TOML provider configs");
+            } else {
+                tracing::info!("No TOML provider configs found in {}, using hardcoded defaults", providers_dir.display());
             }
-            Err(_) => 0,
         }
-    } else {
-        0
-    };
-
-    if loaded_provider_count > 0 {
-        tracing::info!(count = loaded_provider_count, path = %providers_dir.display(), "Found TOML provider configs");
-    } else {
-        tracing::info!("No TOML provider configs found, using hardcoded defaults");
+        Err(e) => {
+            tracing::warn!(error = %e, path = %providers_dir.display(), "Failed to load provider configs, using hardcoded defaults");
+        }
     }
 
     // Create the RegistryService (gRPC) with JWT + auto_tls support
@@ -292,7 +291,7 @@ async fn main() -> Result<()> {
             Arc::new(NullProvider::new(e.to_string())) as Arc<dyn SandboxProvider>
         }
     };
-    factory.register("podman", podman.clone());
+    registry.register("podman", podman.clone());
 
     // Sync repository with provider state BEFORE wrapping in Arc (sync_from_provider needs concrete type)
     if let Err(e) = sqlite_repo.sync_from_provider(podman.as_ref()).await {
@@ -342,6 +341,44 @@ async fn main() -> Result<()> {
         tracing::info!("Sandbox pooling disabled");
     }
 
+    // Start background expiration enforcer: terminates expired sandboxes every 60s
+    {
+        let repo_for_expiry = repository.clone();
+        let provider_for_expiry = podman.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                match repo_for_expiry.find_expired().await {
+                    Ok(expired) => {
+                        if !expired.is_empty() {
+                            tracing::info!(count = expired.len(), "Found expired sandboxes, terminating...");
+                            for sandbox in expired {
+                                tracing::info!(sandbox_id = %sandbox.id, "Terminating expired sandbox");
+                                match provider_for_expiry.terminate(&sandbox.id).await {
+                                    Ok(()) => {
+                                        if let Err(e) = repo_for_expiry.update(&Sandbox {
+                                            status: bastion_domain::sandbox::value_objects::SandboxStatus::Stopped,
+                                            ..sandbox
+                                        }).await {
+                                            tracing::warn!(error = %e, "Failed to update expired sandbox status");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "Failed to terminate expired sandbox");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to query expired sandboxes");
+                    }
+                }
+            }
+        });
+    }
+
     // Create gateway metrics
     let metrics = GatewayMetrics::default();
 
@@ -368,11 +405,43 @@ async fn main() -> Result<()> {
         tracing::info!("No capabilities directory at {}, using hardcoded resolvers", capabilities_dir.display());
     }
 
+    // Create experience store (SQLite-backed)
+    let experience_db_path = bastion_home.join("experiences.db");
+    let experience_store = match SqliteExperienceStore::new(&experience_db_path) {
+        Ok(store) => {
+            tracing::info!(path = %experience_db_path.display(), "Experience store initialized");
+            Some(Arc::new(store) as Arc<dyn bastion_domain::catalog::experience::ExperienceStore>)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to initialize experience store, catalog features disabled");
+            None
+        }
+    };
+
+    // Create assertion registry and load TOML files
+    let assertion_registry = Arc::new({
+        let registry = AssertionRegistry::new();
+        let assertions_dir = bastion_config_dir.join("catalog").join("assertions");
+        if assertions_dir.exists() {
+            match registry.load_from_dir(&assertions_dir) {
+                Ok(count) => {
+                    tracing::info!(count, path = %assertions_dir.display(), "Loaded assertion files");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %assertions_dir.display(), "Failed to load assertions");
+                }
+            }
+        } else {
+            tracing::info!("No assertions directory at {}, using empty registry", assertions_dir.display());
+        }
+        registry
+    });
+
     // Create gateway — ready to serve MCP immediately
-    let default_provider = factory.default().clone();
-    let providers_map = factory.into_providers();
+    let default_provider = registry.default().clone();
+    let providers_map = registry.into_providers();
     let gateway =
-        server::BastionGateway::new(default_provider, providers_map, repository.clone(), secret_resolver.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()), capability_registry);
+        server::BastionGateway::new(default_provider, providers_map, repository.clone(), secret_resolver.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()), capability_registry, experience_store, Some(assertion_registry));
 
     // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS)
     let registry_addr: std::net::SocketAddr = args.registry_addr.parse()

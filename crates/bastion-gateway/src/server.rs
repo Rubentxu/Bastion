@@ -4,16 +4,18 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine;
 use futures::StreamExt;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ProgressNotificationParam, ProgressToken};
 use rmcp::service::RequestContext;
-use rmcp::{schemars, tool, tool_router, RoleServer};
+use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::sync::RwLock;
+use dashmap::DashMap;
 
 use bastion_application::execution::{RunCommandStreamUseCase, RunCommandUseCase};
 use bastion_application::file_ops::{ListFilesUseCase, ReadFileUseCase, WriteFileUseCase};
@@ -22,6 +24,7 @@ use bastion_application::sandbox::{
 };
 use bastion_domain::execution::command::CommandSpec;
 use bastion_domain::execution::stream::ChunkType;
+use bastion_domain::catalog::experience::ExperienceRecord;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::secret::{parse_secret_ref, SecretResolver, SecretSource};
@@ -69,12 +72,20 @@ pub struct BastionGateway {
     last_env_ref: Arc<RwLock<std::collections::HashMap<String, String>>>,
     /// Sync backend preference
     sync_backend: SyncBackend,
-    /// Rate limiter for MCP tool calls: 100 burst, 20 req/s
+    /// Rate limiter for MCP tool calls: global limit (legacy fallback)
     rate_limiter: Arc<Mutex<RateLimiter>>,
+    /// Per-client rate limiter: each client gets its own token bucket
+    per_client_rate_limiter: Arc<PerClientRateLimiter>,
     #[allow(dead_code)]
     auto_tls: Arc<crate::auto_tls::AutoTls>,
     /// TOML-driven capability registry (tried before ToolResolver)
     capability_registry: Arc<RwLock<CapabilityRegistry>>,
+    /// Cancel tokens for running commands: sandbox_id → cancel flag
+    cancel_tokens: Arc<DashMap<String, Arc<AtomicBool>>>,
+    /// Optional experience store for catalog recording (Phase 2)
+    pub(crate) experience_store: Option<Arc<dyn bastion_domain::catalog::experience::ExperienceStore>>,
+    /// Optional assertion registry loaded from TOML (Phase 3)
+    pub(crate) assertion_registry: Option<Arc<bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry>>,
 }
 
 /// Simple token bucket rate limiter for MCP layer
@@ -110,6 +121,49 @@ impl RateLimiter {
     }
 }
 
+/// Per-client rate limiter using DashMap for concurrent access.
+///
+/// Each client (identified by session/connection key) gets its own token bucket.
+/// Inactive clients are pruned after `prune_interval` to prevent memory growth.
+struct PerClientRateLimiter {
+    buckets: DashMap<String, Mutex<RateLimiter>>,
+    max_tokens: f64,
+    refill_rate: f64,
+    /// Maximum number of clients tracked before eviction of least-recently-used
+    max_clients: usize,
+}
+
+impl PerClientRateLimiter {
+    fn new(max_tokens: f64, refill_rate: f64, max_clients: usize) -> Self {
+        Self {
+            buckets: DashMap::new(),
+            max_tokens,
+            refill_rate,
+            max_clients,
+        }
+    }
+
+    /// Try to consume a token for the given client key.
+    /// Returns true if the request is allowed, false if rate-limited.
+    fn try_consume(&self, client_key: &str) -> bool {
+        // Evict oldest entries if we have too many clients
+        if self.buckets.len() >= self.max_clients {
+            // DashMap doesn't have ordered eviction, so we just remove a random entry
+            if let Some(entry) = self.buckets.iter().next() {
+                self.buckets.remove(entry.key());
+            }
+        }
+
+        self.buckets
+            .entry(client_key.to_string())
+            .or_insert_with(|| Mutex::new(RateLimiter::new(self.max_tokens, self.refill_rate)))
+            .value()
+            .lock()
+            .unwrap()
+            .try_consume()
+    }
+}
+
 impl BastionGateway {
     pub fn new(
         provider: Arc<dyn SandboxProvider>,
@@ -120,6 +174,8 @@ impl BastionGateway {
         metrics: GatewayMetrics,
         auto_tls: Arc<crate::auto_tls::AutoTls>,
         capability_registry: CapabilityRegistry,
+        experience_store: Option<Arc<dyn bastion_domain::catalog::experience::ExperienceStore>>,
+        assertion_registry: Option<Arc<bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry>>,
     ) -> Self {
         Self {
             provider,
@@ -133,22 +189,47 @@ impl BastionGateway {
             prepared_environments: Arc::new(RwLock::new(std::collections::HashMap::new())),
             last_env_ref: Arc::new(RwLock::new(std::collections::HashMap::new())),
             sync_backend: SyncBackend::Auto,
-            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100.0, 20.0))),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(500.0, 100.0))),
+            per_client_rate_limiter: Arc::new(PerClientRateLimiter::new(100.0, 20.0, 1000)),
             auto_tls,
             capability_registry: Arc::new(RwLock::new(capability_registry)),
+            cancel_tokens: Arc::new(DashMap::new()),
+            experience_store,
+            assertion_registry,
         }
     }
 
-    /// Check rate limit and return error response if exceeded
-    fn check_rate_limit(&self) -> Option<String> {
+    /// Check rate limit (global + per-client) and return error response if exceeded.
+    /// Uses per-client limiting with a global fallback.
+    fn check_per_client_rate_limit(&self, client_key: &str) -> Option<String> {
+        // Per-client rate limit
+        if !self.per_client_rate_limiter.try_consume(client_key) {
+            return Some(serde_json::json!({
+                "error": "Per-client rate limit exceeded",
+                "hint": "This client is sending requests too fast. Slow down.",
+                "client": client_key
+            }).to_string());
+        }
+
+        // Global rate limit (backstop)
         let mut limiter = self.rate_limiter.lock().unwrap();
         if limiter.try_consume() {
             None // OK
         } else {
             Some(serde_json::json!({
-                "error": "Rate limit exceeded",
-                "hint": "Reduce request frequency"
+                "error": "Global rate limit exceeded",
+                "hint": "The gateway is receiving too many requests overall. Reduce request frequency."
             }).to_string())
+        }
+    }
+
+    /// Record an experience if the store is configured.
+    async fn record_experience(&self, record: ExperienceRecord) {
+        let Some(ref store) = self.experience_store else {
+            return;
+        };
+        if let Err(e) = store.save(&record).await {
+            tracing::warn!(error = %e, "Failed to record experience");
         }
     }
 
@@ -234,6 +315,9 @@ pub struct SandboxRunParams {
     /// Optional environment reference from sandbox_prepare
     #[serde(default)]
     pub env_ref: Option<String>,
+    /// Optional trace ID to correlate experiences across tools
+    #[serde(default)]
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -253,6 +337,21 @@ pub struct SandboxReadParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxTerminateParams {
     pub sandbox_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SandboxCancelParams {
+    pub sandbox_id: String,
+    /// Grace period in milliseconds before sending SIGKILL after SIGTERM. Default: 5000ms
+    #[serde(default = "default_grace_period_ms")]
+    pub grace_period_ms: u64,
+    /// Optional trace ID to correlate experiences across tools
+    #[serde(default)]
+    pub trace_id: Option<String>,
+}
+
+fn default_grace_period_ms() -> u64 {
+    5000
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -276,6 +375,9 @@ pub struct SandboxRunStreamParams {
     #[serde(default)]
     #[allow(dead_code)]
     pub env_ref: Option<String>,
+    /// Optional trace ID to correlate experiences across tools
+    #[serde(default)]
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -293,7 +395,9 @@ pub struct SandboxPrepareParams {
     pub sandbox_id: String,
     pub capability: String,
     /// Timeout in ms for the entire prepare operation (default: 600s for network-heavy ops)
+    /// Reserved for future use — currently uses a fixed timeout
     #[serde(default = "default_prepare_timeout")]
+    #[allow(dead_code)]
     pub timeout_ms: u64,
     /// Toolchain strategy override (default: auto)
     ///
@@ -303,6 +407,9 @@ pub struct SandboxPrepareParams {
     /// - "content_addressed": Use pre-packaged artifacts from CA store
     #[serde(default)]
     pub strategy: ToolchainStrategy,
+    /// Optional trace ID to correlate experiences across tools
+    #[serde(default)]
+    pub trace_id: Option<String>,
 }
 
 fn default_prepare_timeout() -> u64 {
@@ -323,21 +430,28 @@ pub struct SandboxSyncParams {
     pub mode: String, // "push", "pull", "auto"
     pub source: String,
     pub target: String,
+    /// Exclude patterns for sync (reserved for future rsync --exclude support)
     #[serde(default)]
+    #[allow(dead_code)]
     pub exclude: Vec<String>,
     /// Optional sync backend override: tar, rsync, podman-cp, auto
     #[serde(default)]
     pub backend: Option<String>,
     /// Timeout in ms (default: 300s for large transfers)
+    /// Reserved for future use — currently uses backend-level defaults
     #[serde(default = "default_sync_timeout")]
+    #[allow(dead_code)]
     pub timeout_ms: u64,
+    /// Optional trace ID to correlate experiences across tools
+    #[serde(default)]
+    pub trace_id: Option<String>,
 }
 
 fn default_sync_timeout() -> u64 {
     300_000 // 5 minutes
 }
 
-#[tool_router(server_handler)]
+#[tool_router(router = server_handler, server_handler = false)]
 impl BastionGateway {
     /// Resolve a provider by name, falling back to default
     fn resolve_provider(&self, name: &str) -> Arc<dyn SandboxProvider> {
@@ -353,6 +467,11 @@ impl BastionGateway {
 
     #[tool(description = "Create a new isolated sandbox environment")]
     async fn sandbox_create(&self, Parameters(params): Parameters<SandboxCreateParams>) -> String {
+        // Check rate limit (per-client + global)
+        if let Some(rate_limit_error) = self.check_per_client_rate_limit("mcp-client") {
+            return rate_limit_error;
+        }
+
         let selected_provider = self.resolve_provider(&params.provider);
         tracing::info!(template = %params.template, provider = %params.provider, "Creating sandbox");
 
@@ -407,41 +526,30 @@ impl BastionGateway {
                 })
                 .to_string()
             }
-            Err(e) => {
+Err(e) => {
                 self.metrics.record_error();
-                let mut msg = e.to_string();
-                // Improve error messages with helpful suggestions
-                if msg.contains("no such image") || msg.contains("image not known") {
-                    let suggestion = if !params.template.contains(':') {
-                        format!(
-                            ". Use format 'os:version' (e.g. 'debian:bookworm-slim', not '{}'). \
-                             Try sandbox_list_templates to see available images.",
-                            params.template
-                        )
-                    } else {
-                        format!(
-                            ". Image '{}' not available. Try 'debian:bookworm-slim' or run \
-                             sandbox_list_templates to see available images.",
-                            params.template
-                        )
-                    };
-                    msg.push_str(&suggestion);
-                }
-                serde_json::json!({"error": msg}).to_string()
+                serde_json::json!({"error": e.to_string()}).to_string()
             }
-        }
+}
     }
 
     #[tool(description = "Execute a command in a sandbox")]
     async fn sandbox_run(&self, Parameters(params): Parameters<SandboxRunParams>) -> String {
-        // Check rate limit
-        if let Some(rate_limit_error) = self.check_rate_limit() {
+        // Check rate limit (per-client + global)
+        if let Some(rate_limit_error) = self.check_per_client_rate_limit("mcp-client") {
             return rate_limit_error;
         }
 
         tracing::info!(sandbox_id = %params.sandbox_id, command = %params.command, "Running command");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
+
+        // Create experience record for this command execution
+        let mut experience = ExperienceRecord::new("sandbox_run")
+            .with_sandbox_id(sandbox_id.clone());
+        if let Some(ref trace_id) = params.trace_id {
+            experience = experience.with_trace_id(trace_id.clone());
+        }
 
         let use_case = RunCommandUseCase::new(self.repository.clone());
 
@@ -451,7 +559,6 @@ impl BastionGateway {
         let resolved_env_ref = if let Some(ref env_ref) = params.env_ref {
             Some(env_ref.clone())
         } else {
-            // Auto-inject: check if this sandbox has a registered env_ref from sandbox_prepare
             let last_refs = self.last_env_ref.read().await;
             last_refs.get(&params.sandbox_id).cloned()
         };
@@ -466,7 +573,7 @@ impl BastionGateway {
             }
         }
 
-        // Resolve secrets: collect resolved values first to avoid borrow conflict
+        // Resolve secrets
         let secrets_to_inject: Vec<(String, String)> = {
             let mut results = Vec::new();
             for (key, secret_source) in command_spec.secrets.iter() {
@@ -492,12 +599,25 @@ impl BastionGateway {
             command_spec = command_spec.with_env(k, v);
         }
 
+        let t0 = std::time::Instant::now();
         match use_case
             .execute(&sandbox_id, &command_spec, self.provider.as_ref())
             .await
         {
             Ok(result) => {
-                self.metrics.record_command(result.duration_ms * 1000);
+                let duration_us = t0.elapsed().as_micros() as u64;
+                self.metrics.record_command(duration_us);
+
+                // Record successful experience
+                experience = experience
+                    .with_stdout(&result.stdout)
+                    .with_stderr(&result.stderr)
+                    .completed(result.exit_code);
+                if result.timed_out {
+                    experience = experience.timed_out();
+                }
+                self.record_experience(experience).await;
+
                 serde_json::json!({
                     "exit_code": result.exit_code,
                     "stdout": String::from_utf8_lossy(&result.stdout).to_string(),
@@ -509,6 +629,11 @@ impl BastionGateway {
             }
             Err(e) => {
                 self.metrics.record_error();
+
+                // Record failed experience
+                experience = experience.cancelled();
+                self.record_experience(experience).await;
+
                 serde_json::json!({"error": e.to_string()}).to_string()
             }
         }
@@ -522,6 +647,11 @@ impl BastionGateway {
         Parameters(params): Parameters<SandboxRunStreamParams>,
         request_ctx: RequestContext<RoleServer>,
     ) -> String {
+        // Check rate limit (per-client + global)
+        if let Some(rate_limit_error) = self.check_per_client_rate_limit("mcp-client") {
+            return rate_limit_error;
+        }
+
         // Extract progress token from meta if present
         let progress_token = request_ctx.meta.get_progress_token();
         let peer = request_ctx.peer.clone();
@@ -580,6 +710,10 @@ impl BastionGateway {
         let use_case = RunCommandStreamUseCase::new(self.repository.clone());
         let start_time = std::time::Instant::now();
 
+        // Register cancel token for this streaming command
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        self.cancel_tokens.insert(params.sandbox_id.clone(), cancel_flag.clone());
+
         match use_case
             .execute(&sandbox_id, &command_spec, self.provider.as_ref())
             .await
@@ -591,6 +725,14 @@ impl BastionGateway {
                 let mut chunk_count = 0u32;
 
                 while let Some(chunk_result) = stream.next().await {
+                    // Check cancel flag — if set, stop streaming
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        tracing::info!(sandbox_id = %params.sandbox_id, "Streaming command cancelled");
+                        stderr_parts.push("[CANCELLED] Command was cancelled by user".to_string());
+                        exit_code = -1;
+                        break;
+                    }
+
                     // Send progress notification if token is present
                     if let Some(ref token) = progress_token {
                         chunk_count += 1;
@@ -625,6 +767,9 @@ impl BastionGateway {
                     }
                 }
 
+                // Remove cancel token — command finished or was cancelled
+                self.cancel_tokens.remove(&params.sandbox_id);
+
                 // Send final progress notification
                 if let Some(ref token) = progress_token {
                     Self::send_progress(&peer, token, 1.0, Some("Complete")).await;
@@ -632,6 +777,23 @@ impl BastionGateway {
 
                 let duration_us = start_time.elapsed().as_micros() as u64;
                 self.metrics.record_command(duration_us);
+
+                // Record successful experience
+                let stdout_bytes = stdout_parts.join("").into_bytes();
+                let stderr_bytes = stderr_parts.join("").into_bytes();
+                let mut experience = ExperienceRecord::new("sandbox_run_stream")
+                    .with_sandbox_id(sandbox_id.clone());
+                if let Some(ref trace_id) = params.trace_id {
+                    experience = experience.with_trace_id(trace_id.clone());
+                }
+                experience = experience
+                    .with_stdout(&stdout_bytes)
+                    .with_stderr(&stderr_bytes)
+                    .completed(exit_code);
+                if cancel_flag.load(Ordering::Relaxed) {
+                    experience = experience.cancelled();
+                }
+                self.record_experience(experience).await;
 
                 serde_json::json!({
                     "exit_code": exit_code,
@@ -643,6 +805,16 @@ impl BastionGateway {
             }
             Err(e) => {
                 self.metrics.record_error();
+
+                // Record failed experience
+                let mut experience = ExperienceRecord::new("sandbox_run_stream")
+                    .with_sandbox_id(sandbox_id.clone());
+                if let Some(ref trace_id) = params.trace_id {
+                    experience = experience.with_trace_id(trace_id.clone());
+                }
+                experience = experience.cancelled();
+                self.record_experience(experience).await;
+
                 serde_json::json!({"error": e.to_string()}).to_string()
             }
         }
@@ -824,6 +996,53 @@ impl BastionGateway {
         }
     }
 
+    #[tool(description = "Cancel a running command in a sandbox")]
+    async fn sandbox_cancel(
+        &self,
+        Parameters(params): Parameters<SandboxCancelParams>,
+    ) -> String {
+        tracing::info!(sandbox_id = %params.sandbox_id, grace_period_ms = params.grace_period_ms, "Cancelling sandbox command");
+
+        let sandbox_id = SandboxId::new(params.sandbox_id.clone());
+
+        // Create experience record for this cancel operation
+        let mut experience = ExperienceRecord::new("sandbox_cancel")
+            .with_sandbox_id(sandbox_id.clone());
+        if let Some(ref trace_id) = params.trace_id {
+            experience = experience.with_trace_id(trace_id.clone());
+        }
+
+        // Signal local cancel token (for streaming commands)
+        if let Some(token) = self.cancel_tokens.get(&params.sandbox_id) {
+            token.store(true, Ordering::Relaxed);
+            tracing::info!(sandbox_id = %params.sandbox_id, "Cancel flag set");
+        }
+
+        // Also ask the provider to cancel the command (SIGTERM/SIGKILL)
+        match self.provider.cancel_command(&sandbox_id, params.grace_period_ms).await {
+            Ok(cancelled) => {
+                // Record cancelled experience
+                experience = experience.cancelled();
+                self.record_experience(experience).await;
+
+                serde_json::json!({
+                    "status": if cancelled { "cancelled" } else { "no_running_command" },
+                    "sandbox_id": params.sandbox_id
+                })
+                .to_string()
+            }
+            Err(e) => {
+                self.metrics.record_error();
+
+                // Record failed experience
+                experience = experience.cancelled();
+                self.record_experience(experience).await;
+
+                serde_json::json!({"error": e.to_string()}).to_string()
+            }
+        }
+    }
+
     #[tool(description = "Get information about a sandbox")]
     async fn sandbox_info(&self, Parameters(params): Parameters<SandboxInfoParams>) -> String {
         tracing::info!(sandbox_id = %params.sandbox_id, "Getting sandbox info");
@@ -876,7 +1095,7 @@ impl BastionGateway {
 
     #[tool(description = "Get sandbox pool statistics")]
     async fn sandbox_pool_stats(&self) -> String {
-        tracing::debug!("Getting pool statistics");
+        tracing::trace!("Getting pool statistics");
 
         if let Some(ref pool) = self.pool_manager {
             let stats = pool.stats().await;
@@ -997,6 +1216,13 @@ impl BastionGateway {
         let sandbox_id = SandboxId::new(&params.sandbox_id);
         let capability = &params.capability;
 
+        // Create experience record for this prepare operation
+        let mut experience = ExperienceRecord::new("sandbox_prepare")
+            .with_sandbox_id(sandbox_id.clone());
+        if let Some(ref trace_id) = params.trace_id {
+            experience = experience.with_trace_id(trace_id.clone());
+        }
+
         // Try artifact catalog first
         let artifact = {
             let catalog = self.artifact_catalog.read().await;
@@ -1020,6 +1246,11 @@ impl BastionGateway {
                         let mut last_refs = self.last_env_ref.write().await;
                         last_refs.insert(sandbox_id.to_string(), env_ref.clone());
                     }
+
+                    // Record successful prepare experience
+                    experience = experience.completed(0);
+                    self.record_experience(experience).await;
+
                     return serde_json::json!({
                         "status": "ready",
                         "method": "artifact",
@@ -1120,6 +1351,11 @@ impl BastionGateway {
             }
 
             tracing::info!(capability = %capability, adapter = %plan.adapter_used, "Sandbox prepared via TOML capability registry");
+
+            // Record successful prepare experience
+            experience = experience.completed(0);
+            self.record_experience(experience).await;
+
             return serde_json::json!({
                 "status": "ready",
                 "method": "registry",
@@ -1199,6 +1435,10 @@ impl BastionGateway {
                     let mut last_refs = self.last_env_ref.write().await;
                     last_refs.insert(sandbox_id.to_string(), env_ref.clone());
                 }
+
+                // Record successful prepare experience
+                experience = experience.completed(0);
+                self.record_experience(experience).await;
 
                 serde_json::json!({
                     "status": "ready",
@@ -1312,6 +1552,26 @@ impl BastionGateway {
         Parameters(params): Parameters<SandboxSyncParams>,
     ) -> String {
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
+
+        // Create experience record for this sync operation
+        let mut experience = ExperienceRecord::new("sandbox_sync")
+            .with_sandbox_id(sandbox_id.clone());
+        if let Some(ref trace_id) = params.trace_id {
+            experience = experience.with_trace_id(trace_id.clone());
+        }
+
+        // SYNC-01: Liveness pre-check before sync
+        let provider = self.resolve_provider("podman");
+        match provider.is_alive(&sandbox_id).await {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                return serde_json::json!({
+                    "error": format!("sandbox not alive: {}", sandbox_id),
+                    "sandbox_id": sandbox_id.to_string()
+                }).to_string();
+            }
+        }
+
         let mode = params.mode.as_str();
         let source = params.source.as_str();
         let target = params.target.as_str();
@@ -1414,6 +1674,11 @@ impl BastionGateway {
 
         match result {
             Ok(Ok(output)) if output.status.success() => {
+                // Record successful sync experience
+                let exit_code = output.status.code().unwrap_or(0);
+                experience = experience.completed(exit_code);
+                self.record_experience(experience).await;
+
                 serde_json::json!({
                     "status": "synced",
                     "mode": mode,
@@ -1425,11 +1690,26 @@ impl BastionGateway {
             }
             Ok(Ok(output)) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                serde_json::json!({
-                    "error": format!("Sync failed: {}", stderr.lines().next().unwrap_or("unknown error")),
-                    "mode": mode,
-                    "backend": format!("{:?}", effective_backend).to_lowercase(),
-                }).to_string()
+                let stderr_str: &str = &stderr;
+                // SYNC-02: Include exit_code when stderr is empty instead of "unknown error"
+                if stderr_str.trim().is_empty() {
+                    let exit_code = output.status.code().unwrap_or(-1);
+                    serde_json::json!({
+                        "error": format!("Sync failed with exit code {}", exit_code),
+                        "mode": mode,
+                        "backend": format!("{:?}", effective_backend).to_lowercase(),
+                        "exit_code": exit_code,
+                        "stderr": "(empty)"
+                    }).to_string()
+                } else {
+                    serde_json::json!({
+                        "error": format!("Sync failed: {}", stderr.lines().next().unwrap_or("unknown error")),
+                        "mode": mode,
+                        "backend": format!("{:?}", effective_backend).to_lowercase(),
+                        "exit_code": output.status.code().unwrap_or(-1),
+                        "stderr": stderr_str
+                    }).to_string()
+                }
             }
             Ok(Err(e)) => {
                 serde_json::json!({"error": format!("Sync command error: {}", e)}).to_string()
@@ -1493,3 +1773,7 @@ impl BastionGateway {
         }
     }
 }
+
+/// Combine server_handler and catalog_tools routers into a single ServerHandler impl.
+#[tool_handler(router = (Self::server_handler() + crate::catalog_tools::catalog_tools()))]
+impl ServerHandler for BastionGateway {}

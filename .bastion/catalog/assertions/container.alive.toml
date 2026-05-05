@@ -1,0 +1,8 @@
+[assertion]
+id = "container.alive"
+name = "Container Alive"
+description = "Checks that the sandbox container is alive and responsive"
+category = "container"
+
+[assertion.check]
+type = "sandbox_alive"

@@ -36,11 +36,11 @@ pub struct PoolConfig {
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
-            min_idle: 2,
-            max_idle: 5,
-            max_total: 50,
+            min_idle: 5,
+            max_idle: 20,
+            max_total: 200,
             idle_timeout_ms: 600_000,  // 10 minutes
-            refill_interval_ms: 5_000, // 5 seconds
+            refill_interval_ms: 5_000,  // 5 seconds
         }
     }
 }
@@ -729,9 +729,9 @@ mod tests {
     #[test]
     fn test_pool_config_default() {
         let config = PoolConfig::default();
-        assert_eq!(config.min_idle, 2);
-        assert_eq!(config.max_idle, 5);
-        assert_eq!(config.max_total, 50);
+        assert_eq!(config.min_idle, 5);
+        assert_eq!(config.max_idle, 20);
+        assert_eq!(config.max_total, 200);
         assert_eq!(config.idle_timeout_ms, 600_000);
         assert_eq!(config.refill_interval_ms, 5_000);
     }
@@ -944,6 +944,11 @@ mod tests {
                 let sb = self.sandboxes.lock().await;
                 Ok(sb.iter().filter(|s| s.is_active()).cloned().collect())
             }
+            async fn find_expired(&self) -> Result<Vec<Sandbox>, DomainError> {
+                let sb = self.sandboxes.lock().await;
+                let now = chrono::Utc::now();
+                Ok(sb.iter().filter(|s| s.expires_at.map(|exp| exp < now).unwrap_or(false)).cloned().collect())
+            }
         }
 
         let provider = Arc::new(MockProvider {
@@ -1092,6 +1097,7 @@ mod tests {
             async fn update(&self, _sandbox: &Sandbox) -> Result<(), DomainError> { Ok(()) }
             async fn delete(&self, _id: &SandboxId) -> Result<(), DomainError> { Ok(()) }
             async fn find_active(&self) -> Result<Vec<Sandbox>, DomainError> { Ok(vec![]) }
+            async fn find_expired(&self) -> Result<Vec<Sandbox>, DomainError> { Ok(vec![]) }
         }
 
         let provider = Arc::new(MockProvider {

@@ -1,0 +1,13 @@
+[assertion]
+id = "maven.build.success"
+name = "Maven Build Success"
+description = "Maven build must exit with code 0 and stdout must contain BUILD SUCCESS"
+category = "maven"
+
+[[assertion.checks]]
+type = "exit_code"
+expected = 0
+
+[[assertion.checks]]
+type = "stdout_contains"
+substring = "BUILD SUCCESS"

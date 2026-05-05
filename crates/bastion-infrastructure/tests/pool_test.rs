@@ -223,6 +223,11 @@ impl SandboxRepository for MockRepository {
         let sb = self.sandboxes.lock().await;
         Ok(sb.iter().filter(|s| s.is_active()).cloned().collect())
     }
+
+    async fn find_expired(&self) -> Result<Vec<Sandbox>, DomainError> {
+        // Mock repository doesn't track expiration; return empty for tests
+        Ok(vec![])
+    }
 }
 
 // ============================================================================

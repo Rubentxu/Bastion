@@ -56,4 +56,18 @@ impl SandboxRepository for InMemorySandboxRepository {
         let sandboxes = self.sandboxes.read().await;
         Ok(sandboxes.values().cloned().collect())
     }
+
+    async fn find_expired(&self) -> Result<Vec<Sandbox>, DomainError> {
+        let sandboxes = self.sandboxes.read().await;
+        let now = chrono::Utc::now();
+        Ok(sandboxes
+            .values()
+            .filter(|s| {
+                s.expires_at
+                    .map(|exp| exp < now)
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect())
+    }
 }

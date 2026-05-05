@@ -10,7 +10,10 @@ use bastion_domain::template::{ManagerType, SupportLevel, ToolManagerAdapter, To
 pub struct AsdfAdapter;
 
 const ASDF_SETUP: &str = "git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.14.0";
-const ASDF_SOURCE: &str = "source ~/.asdf/asdf.sh";
+const ASDF_SOURCE: &str = ". ~/.asdf/asdf.sh";
+
+/// Install prerequisites needed for asdf (git, curl, etc.)
+const PREREQ_INSTALL: &str = "apt-get update && apt-get install -y git curl unzip";
 
 #[async_trait]
 impl ToolManagerAdapter for AsdfAdapter {
@@ -31,6 +34,15 @@ impl ToolManagerAdapter for AsdfAdapter {
         let mut steps = Vec::new();
         let mut verification = Vec::new();
         let env = HashMap::new();
+
+        // Step 0: Install prerequisites (git, curl needed by asdf)
+        steps.push(ToolchainStep {
+            description: "Install prerequisites for asdf (git, curl)".into(),
+            command: PREREQ_INSTALL.into(),
+            env: HashMap::new(),
+            timeout_ms: 120_000,
+            expected_exit_code: 0,
+        });
 
         // Step 1: Install asdf itself
         steps.push(ToolchainStep {
@@ -55,14 +67,14 @@ impl ToolManagerAdapter for AsdfAdapter {
                 // Java via asdf-java
                 steps.push(ToolchainStep {
                     description: "Add asdf-java plugin".into(),
-                    command: "git clone https://github.com/halcyon/asdf-java.git ~/.asdf/plugins/java".into(),
+                    command: format!("{ASDF_SOURCE} && asdf plugin add java https://github.com/halcyon/asdf-java.git"),
                     env: HashMap::new(),
                     timeout_ms: 60_000,
                     expected_exit_code: 0,
                 });
                 steps.push(ToolchainStep {
                     description: "Install Java 17 via asdf".into(),
-                    command: format!("{ASDF_SOURCE} && asdf plugin add java && asdf install java adoptopenjdk-17.0.8+7 && asdf global java adoptopenjdk-17.0.8+7"),
+                    command: format!("{ASDF_SOURCE} && asdf install java adoptopenjdk-17.0.8+7 && asdf global java adoptopenjdk-17.0.8+7"),
                     env: HashMap::new(),
                     timeout_ms: 600_000,
                     expected_exit_code: 0,

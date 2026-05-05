@@ -224,12 +224,31 @@ impl SandboxProvider for DockerProvider {
         // Podman uses bind mount which works with ANY binary format (glibc or musl).
         // The binary is mounted read-only (:ro) directly from the host.
         // Also mount source code if configured (for self-testing)
+        //
+        // IMPORTANT: Bind mount sources MUST be absolute paths. Relative paths like
+        // "target/debug/bastion-worker" are interpreted as named volumes by Docker,
+        // causing "invalid argument" errors. Canonicalize to absolute paths.
+        let worker_binary_abs = self.worker_binary.canonicalize().unwrap_or_else(|_| {
+            // Fallback: convert to absolute path if canonicalize fails
+            if self.worker_binary.is_relative() {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp")).join(&self.worker_binary)
+            } else {
+                self.worker_binary.clone()
+            }
+        });
         let mut binds = vec![format!(
             "{}:/usr/local/bin/bastion-worker:ro",
-            self.worker_binary.display()
+            worker_binary_abs.display()
         )];
         if let Some(ref source_path) = self.source_mount {
-            binds.push(format!("{}:/workspace/code:ro", source_path.display()));
+            let source_abs = source_path.canonicalize().unwrap_or_else(|_| {
+                if source_path.is_relative() {
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp")).join(source_path)
+                } else {
+                    source_path.clone()
+                }
+            });
+            binds.push(format!("{}:/workspace/code:ro", source_abs.display()));
         }
 
         let container_config = bollard::models::ContainerCreateBody {

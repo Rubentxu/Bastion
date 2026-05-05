@@ -309,6 +309,43 @@ impl SandboxRepository for SqliteSandboxRepository {
 
         Ok(sandboxes)
     }
+
+    async fn find_expired(&self) -> Result<Vec<Sandbox>, DomainError> {
+        let conn = self.conn.lock().await;
+
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, template_id, provider_id, status, created_at, expires_at, resources, network, metadata
+                 FROM sandboxes WHERE status IN ('running', 'pending') AND expires_at IS NOT NULL AND expires_at < ?",
+            )
+            .map_err(|e| DomainError::Internal(format!("Failed to prepare statement: {}", e)))?;
+
+        let rows = stmt
+            .query_map([&now], |row| {
+                Ok(SandboxRow {
+                    id: row.get(0)?,
+                    template_id: row.get(1)?,
+                    provider_id: row.get(2)?,
+                    status: row.get(3)?,
+                    created_at: row.get(4)?,
+                    expires_at: row.get(5)?,
+                    resources: row.get(6)?,
+                    network: row.get(7)?,
+                    metadata: row.get(8)?,
+                })
+            })
+            .map_err(|e| DomainError::Internal(format!("Failed to query expired sandboxes: {}", e)))?;
+
+        let mut sandboxes = Vec::new();
+        for row in rows {
+            let row = row.map_err(|e| DomainError::Internal(format!("Failed to read row: {}", e)))?;
+            sandboxes.push(row_to_sandbox(row)?);
+        }
+
+        Ok(sandboxes)
+    }
 }
 
 /// Helper struct for reading a sandbox row from SQLite.

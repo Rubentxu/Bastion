@@ -183,6 +183,17 @@ fn test_gateway_e2e_lifecycle() {
     assert!(has_terminate, "Missing sandbox_terminate tool");
     assert!(has_health, "Missing sandbox_health tool");
 
+    // REG-02: Assert all 8 required tools
+    let has_sync = tool_names.contains(&"sandbox_sync");
+    let has_run_stream = tool_names.contains(&"sandbox_run_stream");
+    let has_cancel = tool_names.contains(&"sandbox_cancel");
+    let has_prepare = tool_names.contains(&"sandbox_prepare");
+
+    assert!(has_sync, "Missing sandbox_sync tool");
+    assert!(has_run_stream, "Missing sandbox_run_stream tool");
+    assert!(has_cancel, "Missing sandbox_cancel tool");
+    assert!(has_prepare, "Missing sandbox_prepare tool");
+
     // 4. Create a sandbox
     let create_response = send_request(
         &mut stdin,

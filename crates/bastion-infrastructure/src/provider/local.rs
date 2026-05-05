@@ -124,13 +124,16 @@ impl SandboxProvider for LocalProvider {
         self.workspaces.write().await.insert(id.clone(), workspace);
 
         // Create sandbox entity
-        let sandbox = Sandbox::new(
+        let mut sandbox = Sandbox::new(
             id.clone(),
             bastion_domain::shared::id::TemplateId::new(template),
             bastion_domain::shared::id::ProviderId::new("local"),
             _resources.clone(),
             _network.clone(),
         );
+
+        sandbox.mark_running()?;
+        sandbox.set_timeout(_timeout_ms);
 
         self.sandboxes.write().await.insert(id.clone(), sandbox.clone());
 
@@ -157,6 +160,27 @@ impl SandboxProvider for LocalProvider {
 
     async fn is_alive(&self, id: &SandboxId) -> Result<bool, DomainError> {
         Ok(self.sandboxes.read().await.contains_key(id))
+    }
+
+    /// Cancel a running command in the local sandbox.
+    ///
+    /// For LocalProvider, command cancellation is best-effort. Since commands
+    /// run via `std::process::Command::output()` (synchronous), we cannot
+    /// cancel mid-execution. However, if the command was spawned with
+    /// process group tracking, we can signal the group.
+    ///
+    /// Currently returns Ok(false) (no running command found) as the
+    /// synchronous execution model doesn't support mid-execution cancellation.
+    async fn cancel_command(
+        &self,
+        id: &SandboxId,
+        grace_period_ms: u64,
+    ) -> Result<bool, DomainError> {
+        tracing::info!(sandbox_id = %id, grace_period_ms, "Cancelling running command (LocalProvider) — best-effort");
+        // LocalProvider currently runs commands synchronously via std::process::Command::output()
+        // which doesn't support mid-execution cancellation.
+        // Future improvement: track spawned processes and signal their process groups.
+        Ok(false)
     }
 
     async fn run_command(

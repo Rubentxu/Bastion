@@ -13,6 +13,7 @@
 //! - **Provider**: Backend abstraction for container runtimes
 //! - **FileOps**: File operations within sandboxes
 
+pub mod catalog;
 pub mod execution;
 pub mod file_ops;
 pub mod provider;

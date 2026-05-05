@@ -63,6 +63,22 @@ pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
         command: &CommandSpec,
     ) -> Result<CommandStream, DomainError>;
 
+    /// Cancel a running command in the sandbox.
+    ///
+    /// Sends SIGTERM to the command process group. If it doesn't exit within
+    /// the grace period, sends SIGKILL.
+    ///
+    /// Returns true if the command was successfully cancelled, false if no
+    /// running command was found for the sandbox.
+    async fn cancel_command(
+        &self,
+        id: &SandboxId,
+        grace_period_ms: u64,
+    ) -> Result<bool, DomainError> {
+        let _ = (id, grace_period_ms);
+        Err(DomainError::UnsupportedOperation("cancel_command".to_string()))
+    }
+
     // ── File Operations ────────────────────────────────────────
 
     /// Write content to a file inside the sandbox.

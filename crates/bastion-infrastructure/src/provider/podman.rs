@@ -224,12 +224,31 @@ impl SandboxProvider for PodmanProvider {
         // Podman uses bind mount which works with ANY binary format (glibc or musl).
         // The binary is mounted read-only (:ro) directly from the host.
         // Also mount source code if configured (for self-testing)
+        //
+        // IMPORTANT: Bind mount sources MUST be absolute paths. Relative paths like
+        // "target/debug/bastion-worker" are interpreted as named volumes by Docker,
+        // causing "invalid argument" errors. Canonicalize to absolute paths.
+        let worker_binary_abs = self.worker_binary.canonicalize().unwrap_or_else(|_| {
+            // Fallback: convert to absolute path if canonicalize fails
+            if self.worker_binary.is_relative() {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp")).join(&self.worker_binary)
+            } else {
+                self.worker_binary.clone()
+            }
+        });
         let mut binds = vec![format!(
             "{}:/usr/local/bin/bastion-worker:ro",
-            self.worker_binary.display()
+            worker_binary_abs.display()
         )];
         if let Some(ref source_path) = self.source_mount {
-            binds.push(format!("{}:/workspace/code:ro", source_path.display()));
+            let source_abs = source_path.canonicalize().unwrap_or_else(|_| {
+                if source_path.is_relative() {
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp")).join(source_path)
+                } else {
+                    source_path.clone()
+                }
+            });
+            binds.push(format!("{}:/workspace/code:ro", source_abs.display()));
         }
 
         let container_config = bollard::models::ContainerCreateBody {
@@ -563,6 +582,64 @@ impl SandboxProvider for PodmanProvider {
         let output_str = String::from_utf8_lossy(&stdout);
         let entries = parse_ls_output(&output_str);
         Ok(entries)
+    }
+
+    /// Cancel a running command by sending SIGTERM to the process group,
+    /// then SIGKILL after the grace period.
+    async fn cancel_command(
+        &self,
+        id: &SandboxId,
+        grace_period_ms: u64,
+    ) -> Result<bool, DomainError> {
+        let container_name = id.to_string();
+        tracing::info!(sandbox_id = %id, grace_period_ms, "Cancelling running command");
+
+        // Send SIGTERM to the container's init process
+        // This sends SIGTERM to PID 1 in the container, which should
+        // propagate to the process group
+        let kill_result = self.docker.kill_container(
+            &container_name,
+            Some(bollard::query_parameters::KillContainerOptions {
+                signal: "SIGTERM".to_string(),
+            }),
+        ).await;
+
+        match kill_result {
+            Ok(()) => {
+                tracing::debug!(sandbox_id = %id, "SIGTERM sent, waiting grace period");
+                // Wait for grace period then check if container is still running
+                tokio::time::sleep(std::time::Duration::from_millis(grace_period_ms)).await;
+
+                // Check if the container is still running
+                match self.is_alive(id).await {
+                    Ok(true) => {
+                        tracing::warn!(sandbox_id = %id, "Container still alive after SIGTERM, sending SIGKILL");
+                        // Force kill
+                        self.docker.kill_container(
+                            &container_name,
+                            Some(bollard::query_parameters::KillContainerOptions {
+                                signal: "SIGKILL".to_string(),
+                            }),
+                        ).await
+                        .map_err(|e| DomainError::Internal(format!("Failed to SIGKILL container: {e}")))?;
+                        Ok(true)
+                    }
+                    Ok(false) => {
+                        tracing::info!(sandbox_id = %id, "Container terminated after SIGTERM");
+                        Ok(true)
+                    }
+                    Err(e) => {
+                        tracing::warn!(sandbox_id = %id, error = %e, "Error checking if container is alive after cancel");
+                        Ok(true) // Assume cancelled
+                    }
+                }
+            }
+            Err(e) => {
+                // Container might not exist or might already be stopped
+                tracing::warn!(sandbox_id = %id, error = %e, "Failed to send SIGTERM");
+                Ok(false)
+            }
+        }
     }
 
     fn capabilities(&self) -> ProviderCapabilities {

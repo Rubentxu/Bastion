@@ -16,8 +16,6 @@ use std::sync::Arc;
 use std::pin::Pin;
 #[cfg(feature = "wasm-sandbox")]
 use async_trait::async_trait;
-#[cfg(not(feature = "wasm-sandbox"))]
-use async_trait::async_trait;
 #[cfg(feature = "wasm-sandbox")]
 use tokio::sync::RwLock;
 #[cfg(feature = "wasm-sandbox")]

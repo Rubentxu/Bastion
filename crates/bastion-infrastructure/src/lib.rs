@@ -2,6 +2,7 @@
 //!
 //! Infrastructure adapters that implement domain ports (driven adapters).
 
+pub mod catalog;
 pub mod config;
 pub mod grpc;
 pub mod metrics;

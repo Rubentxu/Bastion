@@ -1,0 +1,9 @@
+[assertion]
+id = "command.exit_code.zero"
+name = "Exit Code Zero"
+description = "Fails if the command exit code is non-zero"
+category = "command"
+
+[assertion.check]
+type = "exit_code"
+expected = 0

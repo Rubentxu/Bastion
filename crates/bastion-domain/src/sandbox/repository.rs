@@ -29,4 +29,7 @@ pub trait SandboxRepository: Send + Sync + std::fmt::Debug {
 
     /// List all active sandboxes.
     async fn find_active(&self) -> Result<Vec<Sandbox>, crate::shared::DomainError>;
+
+    /// Find sandboxes that have expired (expires_at < now).
+    async fn find_expired(&self) -> Result<Vec<Sandbox>, crate::shared::DomainError>;
 }
