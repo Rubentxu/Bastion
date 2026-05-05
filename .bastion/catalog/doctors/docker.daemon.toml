@@ -1,0 +1,10 @@
+[doctor]
+id = "docker.daemon"
+name = "Docker Daemon"
+description = "Checks Docker daemon health via assertion replay"
+category = "provider"
+severity = "critical"
+
+[[doctor.checks]]
+type = "assertion_driven"
+assertion_id = "command.exit_code.zero"

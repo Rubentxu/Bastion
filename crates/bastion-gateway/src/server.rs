@@ -57,12 +57,12 @@ pub enum SyncBackend {
 /// Exposes sandbox management tools to AI agents via MCP protocol.
 #[derive(Clone)]
 pub struct BastionGateway {
-    provider: Arc<dyn SandboxProvider>,
+    pub(crate) provider: Arc<dyn SandboxProvider>,
     /// All registered providers (keyed by name: "podman", "firecracker", "gvisor")
     providers: Arc<std::collections::HashMap<String, Arc<dyn SandboxProvider>>>,
     repository: Arc<dyn SandboxRepository>,
     secret_resolver: Arc<dyn SecretResolver>,
-    pool_manager: Option<Arc<SandboxPoolManager>>,
+    pub(crate) pool_manager: Option<Arc<SandboxPoolManager>>,
     metrics: GatewayMetrics,
     artifact_catalog: Arc<RwLock<ArtifactCatalog>>,
     artifact_store: Arc<FsArtifactStore>,
@@ -86,6 +86,8 @@ pub struct BastionGateway {
     pub(crate) experience_store: Option<Arc<dyn bastion_domain::catalog::experience::ExperienceStore>>,
     /// Optional assertion registry loaded from TOML (Phase 3)
     pub(crate) assertion_registry: Option<Arc<bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry>>,
+    /// Optional doctor registry loaded from TOML (Phase 4)
+    pub(crate) doctor_registry: Option<Arc<bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry>>,
 }
 
 /// Simple token bucket rate limiter for MCP layer
@@ -176,6 +178,7 @@ impl BastionGateway {
         capability_registry: CapabilityRegistry,
         experience_store: Option<Arc<dyn bastion_domain::catalog::experience::ExperienceStore>>,
         assertion_registry: Option<Arc<bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry>>,
+        doctor_registry: Option<Arc<bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry>>,
     ) -> Self {
         Self {
             provider,
@@ -196,6 +199,7 @@ impl BastionGateway {
             cancel_tokens: Arc::new(DashMap::new()),
             experience_store,
             assertion_registry,
+            doctor_registry,
         }
     }
 
@@ -1774,6 +1778,6 @@ Err(e) => {
     }
 }
 
-/// Combine server_handler and catalog_tools routers into a single ServerHandler impl.
-#[tool_handler(router = (Self::server_handler() + crate::catalog_tools::catalog_tools()))]
+/// Combine server_handler, catalog_tools, and doctor_tools routers into a single ServerHandler impl.
+#[tool_handler(router = (Self::server_handler() + crate::catalog_tools::catalog_tools() + crate::doctor_tools::doctor_tools()))]
 impl ServerHandler for BastionGateway {}

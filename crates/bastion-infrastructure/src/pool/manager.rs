@@ -799,7 +799,6 @@ mod tests {
         use bastion_domain::file_ops::FileEntry;
         use bastion_domain::sandbox::snapshot::SnapshotInfo;
         use std::collections::HashMap;
-        use futures::StreamExt;
         use std::pin::Pin;
 
         // Create mock provider
@@ -996,7 +995,6 @@ mod tests {
         use bastion_domain::file_ops::FileEntry;
         use bastion_domain::sandbox::snapshot::SnapshotInfo;
         use std::collections::HashMap;
-        use futures::StreamExt;
         use std::pin::Pin;
 
         // Sandbox with unregistered template

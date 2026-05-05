@@ -4,3 +4,4 @@
 
 pub mod sqlite_experience_store;
 pub mod toml_assertion_parser;
+pub mod toml_doctor_parser;

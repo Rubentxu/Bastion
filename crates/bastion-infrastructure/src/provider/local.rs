@@ -143,12 +143,11 @@ impl SandboxProvider for LocalProvider {
 
     async fn terminate(&self, id: &SandboxId) -> Result<(), DomainError> {
         // Remove workspace
-        if let Some(ws) = self.workspaces.write().await.remove(id) {
-            if self.cleanup {
-                if let Err(e) = std::fs::remove_dir_all(&ws) {
-                    tracing::warn!(sandbox_id = %id, error = %e, "Failed to remove workspace");
-                }
-            }
+        if let Some(ws) = self.workspaces.write().await.remove(id)
+            && self.cleanup
+            && let Err(e) = std::fs::remove_dir_all(&ws)
+        {
+            tracing::warn!(sandbox_id = %id, error = %e, "Failed to remove workspace");
         }
 
         // Remove sandbox entity

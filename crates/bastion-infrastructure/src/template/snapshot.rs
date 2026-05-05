@@ -235,7 +235,6 @@ impl SnapshotManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bastion_domain::template::ProviderKind;
 
     #[test]
     fn test_snapshot_name_extraction() {

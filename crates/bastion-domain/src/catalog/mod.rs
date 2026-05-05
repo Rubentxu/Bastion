@@ -4,4 +4,5 @@
 //! evidence and validating it against TOML-based assertion descriptors.
 
 pub mod assertion;
+pub mod doctor;
 pub mod experience;

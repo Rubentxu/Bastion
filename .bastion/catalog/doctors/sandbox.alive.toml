@@ -1,0 +1,9 @@
+[doctor]
+id = "sandbox.alive"
+name = "Sandbox Alive"
+description = "Checks that a sandbox is alive and responsive"
+category = "sandbox"
+severity = "critical"
+
+[[doctor.checks]]
+type = "aliveness"

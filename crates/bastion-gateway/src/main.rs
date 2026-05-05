@@ -29,6 +29,7 @@ use bastion_infrastructure::secret::EnvSecretResolver;
 use bastion_infrastructure::template::CapabilityRegistry;
 use bastion_infrastructure::catalog::sqlite_experience_store::SqliteExperienceStore;
 use bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry;
+use bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry;
 
 use rmcp::{ServiceExt, service::RoleServer};
 
@@ -43,6 +44,7 @@ use hyper::server::conn::http1;
 mod auth;
 mod auto_tls;
 mod catalog_tools;
+mod doctor_tools;
 mod registry;
 mod sandbox;
 mod server;
@@ -437,11 +439,30 @@ async fn main() -> Result<()> {
         registry
     });
 
+    // Create doctor registry and load TOML files
+    let doctor_registry = Arc::new({
+        let registry = DoctorRegistry::new();
+        let doctors_dir = bastion_config_dir.join("catalog").join("doctors");
+        if doctors_dir.exists() {
+            match registry.load_from_dir(&doctors_dir) {
+                Ok(count) => {
+                    tracing::info!(count, path = %doctors_dir.display(), "Loaded doctor files");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %doctors_dir.display(), "Failed to load doctors");
+                }
+            }
+        } else {
+            tracing::info!("No doctors directory at {}, using empty registry", doctors_dir.display());
+        }
+        registry
+    });
+
     // Create gateway — ready to serve MCP immediately
     let default_provider = registry.default().clone();
     let providers_map = registry.into_providers();
     let gateway =
-        server::BastionGateway::new(default_provider, providers_map, repository.clone(), secret_resolver.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()), capability_registry, experience_store, Some(assertion_registry));
+        server::BastionGateway::new(default_provider, providers_map, repository.clone(), secret_resolver.clone(), pool_manager, metrics, Arc::new(auto_tls::get_auto_tls().clone()), capability_registry, experience_store, Some(assertion_registry), Some(doctor_registry));
 
     // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS)
     let registry_addr: std::net::SocketAddr = args.registry_addr.parse()

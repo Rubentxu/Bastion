@@ -1,0 +1,11 @@
+[doctor]
+id = "sandbox.resources"
+name = "Sandbox Resources"
+description = "Checks pool resource usage against thresholds"
+category = "sandbox"
+severity = "warning"
+
+[[doctor.checks]]
+type = "resources"
+max_total = 200
+max_idle_per_template = 20

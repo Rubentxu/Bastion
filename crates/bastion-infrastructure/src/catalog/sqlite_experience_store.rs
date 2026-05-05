@@ -25,18 +25,12 @@ impl SqliteExperienceStore {
     pub fn new(db_path: &Path) -> Result<Self, DomainError> {
         let is_memory = db_path.to_str() == Some(":memory:");
 
-        if !is_memory {
-            if let Some(parent) = db_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| DomainError::Internal(format!("Failed to create DB directory: {}", e)))?;
-            }
+        if !is_memory && let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| DomainError::Internal(format!("Failed to create DB directory: {}", e)))?;
         }
 
-        let conn = if is_memory {
-            rusqlite::Connection::open(db_path)
-        } else {
-            rusqlite::Connection::open(db_path)
-        }
+        let conn = rusqlite::Connection::open(db_path)
         .map_err(|e| DomainError::Internal(format!("Failed to open SQLite DB: {}", e)))?;
 
         conn.execute_batch(
@@ -242,7 +236,7 @@ fn row_to_experience(row: ExperienceRow) -> Result<ExperienceRecord, DomainError
     }).transpose()
     .map_err(|e| DomainError::Internal(format!("Failed to parse ended_at: {}", e)))?;
 
-    let sandbox_id = row.sandbox_id.map(|s| SandboxId::new(s));
+    let sandbox_id = row.sandbox_id.map(SandboxId::new);
 
     Ok(ExperienceRecord {
         id: row.id,
