@@ -295,6 +295,70 @@ impl BastionEnrichmentAdapter {
             timed_out: result.timed_out,
         }
     }
+
+    /// Enrich a streaming command execution from accumulated output.
+    ///
+    /// This method is called after `sandbox_run_stream` has drained the stream.
+    /// It maps the accumulated stdout/stderr/exit_code to an `OperationResult`
+    /// and runs the enrichment pipeline on it.
+    ///
+    /// Returns `None` if enrichment is disabled or no enricher matches.
+    /// Errors are traced at warn level and return `None` (non-blocking).
+    ///
+    /// This enables enrichment attachment to streaming responses without blocking
+    /// the stream itself.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn enrich_stream(
+        &self,
+        sandbox_id: &SandboxId,
+        command_spec: &CommandSpec,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        duration_ms: u64,
+        timed_out: bool,
+    ) -> Option<AgentContext> {
+        if !self.config.enabled {
+            return None;
+        }
+
+        let invocation = Self::map_command_spec(command_spec);
+        let result = OperationResult {
+            exit_code,
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+            duration_ms,
+            timed_out,
+        };
+
+        let fs = SandboxFileSystem::new(self.provider.clone(), sandbox_id.clone());
+
+        let start = Instant::now();
+        let ctx = match self.pipeline.run(invocation.clone(), result.clone(), &fs).await {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                tracing::warn!(error = %e, "Enrichment pipeline failed for stream");
+                // Record even on pipeline error (partial results may exist)
+                self.record_run(&invocation, &result, None, start.elapsed(), Some(&e));
+                return None;
+            }
+        };
+        let elapsed = start.elapsed();
+
+        if elapsed > Duration::from_millis(100) {
+            tracing::debug!(elapsed_ms = elapsed.as_millis() as u64, "Stream enrichment completed slowly");
+        }
+
+        if ctx.facts.is_empty() {
+            self.record_run(&invocation, &result, Some(&ctx), elapsed, None);
+            return None;
+        }
+
+        // Record successful enrichment run
+        self.record_run(&invocation, &result, Some(&ctx), elapsed, None);
+
+        Some(ctx)
+    }
 }
 
 #[cfg(test)]

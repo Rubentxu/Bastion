@@ -38,6 +38,12 @@ pub enum Expr {
     Fact(String),
     /// `stdout_contains('str')` — true if stdout contains substring.
     StdoutContains(String),
+    /// `any_fact('key', 'op', 'value')` — true if ≥1 fact with key satisfies op.
+    AnyFact(String, CompOp, String),
+    /// `all_fact('key', 'op', 'value')` — true if ALL facts with key satisfy op.
+    AllFact(String, CompOp, String),
+    /// `count_fact('key', 'op', N)` — true if count of facts with key satisfies op N.
+    CountFact(String, CompOp, i32),
 }
 
 /// Comparison operator for `fact(...)` predicates.
@@ -142,6 +148,10 @@ impl<'a> EvalContext<'a> {
             }
 
             Expr::StdoutContains(sub) => self.result.stdout.contains(sub.as_str()),
+
+            Expr::AnyFact(key, op, value) => self.eval_any_fact(key, op, value),
+            Expr::AllFact(key, op, value) => self.eval_all_fact(key, op, value),
+            Expr::CountFact(key, op, n) => self.eval_count_fact(key, op, *n),
         }
     }
 
@@ -212,6 +222,71 @@ impl<'a> EvalContext<'a> {
         let fact_i32: i32 = fact.value.parse().unwrap_or(0);
         let right_i32 = self.extract_i32(right);
         cmp(fact_i32, right_i32)
+    }
+
+    /// Evaluate `any_fact(key, op, value)` — true if ≥1 fact with key satisfies op.
+    fn eval_any_fact(&self, key: &str, op: &CompOp, value: &str) -> bool {
+        let matching: Vec<&Fact> = self.facts.iter().filter(|f| f.key == key).collect();
+        if matching.is_empty() {
+            return false;
+        }
+        matching.iter().any(|f| self.fact_satisfies_op(f, op, value))
+    }
+
+    /// Evaluate `all_fact(key, op, value)` — true if ALL facts with key satisfy op.
+    /// Returns false if no facts with key exist.
+    fn eval_all_fact(&self, key: &str, op: &CompOp, value: &str) -> bool {
+        let matching: Vec<&Fact> = self.facts.iter().filter(|f| f.key == key).collect();
+        if matching.is_empty() {
+            return false;
+        }
+        matching.iter().all(|f| self.fact_satisfies_op(f, op, value))
+    }
+
+    /// Evaluate `count_fact(key, op, N)` — true if count of facts with key satisfies op N.
+    fn eval_count_fact(&self, key: &str, op: &CompOp, n: i32) -> bool {
+        let count = self.facts.iter().filter(|f| f.key == key).count() as i32;
+        self.compare_count(op, count, n)
+    }
+
+    /// Check if a single fact satisfies a comparison operator against a string value.
+    fn fact_satisfies_op(&self, fact: &Fact, op: &CompOp, expected: &str) -> bool {
+        match op {
+            CompOp::Eq => fact.value == expected,
+            CompOp::Ne => fact.value != expected,
+            CompOp::Gt => {
+                let fact_i64: i64 = fact.value.parse().unwrap_or(i64::MIN);
+                let expected_i64: i64 = expected.parse().unwrap_or(i64::MIN);
+                fact_i64 > expected_i64
+            }
+            CompOp::Lt => {
+                let fact_i64: i64 = fact.value.parse().unwrap_or(i64::MIN);
+                let expected_i64: i64 = expected.parse().unwrap_or(i64::MIN);
+                fact_i64 < expected_i64
+            }
+            CompOp::Ge => {
+                let fact_i64: i64 = fact.value.parse().unwrap_or(i64::MIN);
+                let expected_i64: i64 = expected.parse().unwrap_or(i64::MIN);
+                fact_i64 >= expected_i64
+            }
+            CompOp::Le => {
+                let fact_i64: i64 = fact.value.parse().unwrap_or(i64::MIN);
+                let expected_i64: i64 = expected.parse().unwrap_or(i64::MIN);
+                fact_i64 <= expected_i64
+            }
+        }
+    }
+
+    /// Compare count with comparison operator.
+    fn compare_count(&self, op: &CompOp, count: i32, n: i32) -> bool {
+        match op {
+            CompOp::Eq => count == n,
+            CompOp::Ne => count != n,
+            CompOp::Gt => count > n,
+            CompOp::Lt => count < n,
+            CompOp::Ge => count >= n,
+            CompOp::Le => count <= n,
+        }
     }
 
     fn extract_str(&self, expr: &Expr) -> String {
@@ -365,6 +440,18 @@ impl<'a> Parser<'a> {
                 self.advance();
                 self.parse_ident_or_call(name)
             }
+            TokenKind::CountFact => {
+                self.advance();
+                self.parse_ident_or_call("count_fact".to_string())
+            }
+            TokenKind::AnyFact => {
+                self.advance();
+                self.parse_ident_or_call("any_fact".to_string())
+            }
+            TokenKind::AllFact => {
+                self.advance();
+                self.parse_ident_or_call("all_fact".to_string())
+            }
             TokenKind::LParen => {
                 self.advance();
                 let expr = self.parse_expression()?;
@@ -471,6 +558,81 @@ impl<'a> Parser<'a> {
                         ))
                     }
                 }
+                "any_fact" => {
+                    // any_fact('key', 'op', 'value')
+                    if args.len() != 3 {
+                        return Err(ParseError::Invalid(format!(
+                            "any_fact takes 3 arguments, got {}",
+                            args.len()
+                        )));
+                    }
+                    let key = if let Expr::Str(k) = &args[0] {
+                        k.clone()
+                    } else {
+                        return Err(ParseError::Invalid(
+                            "any_fact first argument (key) must be a string literal".to_string(),
+                        ));
+                    };
+                    let op = self.parse_comp_op_from_expr(&args[1])?;
+                    let value = if let Expr::Str(v) = &args[2] {
+                        v.clone()
+                    } else {
+                        return Err(ParseError::Invalid(
+                            "any_fact third argument (value) must be a string literal".to_string(),
+                        ));
+                    };
+                    Ok(Expr::AnyFact(key, op, value))
+                }
+                "all_fact" => {
+                    // all_fact('key', 'op', 'value')
+                    if args.len() != 3 {
+                        return Err(ParseError::Invalid(format!(
+                            "all_fact takes 3 arguments, got {}",
+                            args.len()
+                        )));
+                    }
+                    let key = if let Expr::Str(k) = &args[0] {
+                        k.clone()
+                    } else {
+                        return Err(ParseError::Invalid(
+                            "all_fact first argument (key) must be a string literal".to_string(),
+                        ));
+                    };
+                    let op = self.parse_comp_op_from_expr(&args[1])?;
+                    let value = if let Expr::Str(v) = &args[2] {
+                        v.clone()
+                    } else {
+                        return Err(ParseError::Invalid(
+                            "all_fact third argument (value) must be a string literal".to_string(),
+                        ));
+                    };
+                    Ok(Expr::AllFact(key, op, value))
+                }
+                "count_fact" => {
+                    // count_fact('key', 'op', N)
+                    if args.len() != 3 {
+                        return Err(ParseError::Invalid(format!(
+                            "count_fact takes 3 arguments, got {}",
+                            args.len()
+                        )));
+                    }
+                    let key = if let Expr::Str(k) = &args[0] {
+                        k.clone()
+                    } else {
+                        return Err(ParseError::Invalid(
+                            "count_fact first argument (key) must be a string literal".to_string(),
+                        ));
+                    };
+                    let op = self.parse_comp_op_from_expr(&args[1])?;
+                    let n = if let Expr::Int(n) = &args[2] {
+                        *n
+                    } else {
+                        return Err(ParseError::Invalid(
+                            "count_fact third argument (N) must be an integer".to_string(),
+                        ));
+                    };
+                    Ok(Expr::CountFact(key, op, n))
+                }
                 _ => Err(ParseError::Invalid(format!("Unknown function: {}", name))),
             }
         } else {
@@ -495,6 +657,24 @@ impl<'a> Parser<'a> {
             args.push(self.parse_expression()?);
         }
         Ok(args)
+    }
+
+    /// Parse a CompOp from an expression (expects a string literal like "==" or ">").
+    fn parse_comp_op_from_expr(&self, expr: &Expr) -> Result<CompOp, ParseError> {
+        match expr {
+            Expr::Str(s) => match s.as_str() {
+                "==" => Ok(CompOp::Eq),
+                "!=" => Ok(CompOp::Ne),
+                ">" => Ok(CompOp::Gt),
+                "<" => Ok(CompOp::Lt),
+                ">=" => Ok(CompOp::Ge),
+                "<=" => Ok(CompOp::Le),
+                _ => Err(ParseError::Invalid(format!("Unknown comparison operator: {}", s))),
+            },
+            _ => Err(ParseError::Invalid(
+                "Comparison operator must be a string literal".to_string(),
+            )),
+        }
     }
 }
 
@@ -677,5 +857,215 @@ mod tests {
         )
         .unwrap();
         assert!(ctx.evaluate(&expr));
+    }
+
+    // ─── any_fact tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_any_fact() {
+        let expr = Parser::parse(r#"any_fact('severity', '==', 'critical')"#).unwrap();
+        assert!(matches!(expr, Expr::AnyFact(_, _, _)));
+    }
+
+    #[test]
+    fn eval_any_fact_true_when_match_found() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![
+            fact("severity", "high"),
+            fact("severity", "critical"),
+        ];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"any_fact('severity', '==', 'critical')"#).unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_any_fact_false_when_no_match() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![
+            fact("severity", "high"),
+            fact("severity", "high"),
+        ];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"any_fact('severity', '==', 'critical')"#).unwrap();
+        assert!(!ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_any_fact_false_when_empty() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"any_fact('missing', '==', 'x')"#).unwrap();
+        assert!(!ctx.evaluate(&expr)); // Empty → false (not error)
+    }
+
+    #[test]
+    fn eval_any_fact_unknown_key_returns_false() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![fact("other_key", "value")];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"any_fact('missing', '==', 'x')"#).unwrap();
+        assert!(!ctx.evaluate(&expr)); // Unknown key → false (fail-closed)
+    }
+
+    #[test]
+    fn eval_any_fact_with_greater_than() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![
+            fact("score", "5"),
+            fact("score", "10"),
+        ];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"any_fact('score', '>', '8')"#).unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    // ─── all_fact tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_all_fact() {
+        let expr = Parser::parse(r#"all_fact('score', '>=', '3')"#).unwrap();
+        assert!(matches!(expr, Expr::AllFact(_, _, _)));
+    }
+
+    #[test]
+    fn eval_all_fact_true_when_all_match() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![
+            fact("score", "5"),
+            fact("score", "5"),
+        ];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"all_fact('score', '==', '5')"#).unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_all_fact_false_when_one_fails() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![
+            fact("score", "5"),
+            fact("score", "2"),
+        ];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"all_fact('score', '>', '3')"#).unwrap();
+        assert!(!ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_all_fact_false_when_empty() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"all_fact('missing', '==', 'x')"#).unwrap();
+        assert!(!ctx.evaluate(&expr)); // Empty → false
+    }
+
+    // ─── count_fact tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_count_fact() {
+        let expr = Parser::parse("count_fact('error', '>=', 5)").unwrap();
+        assert!(matches!(expr, Expr::CountFact(_, _, _)));
+    }
+
+    #[test]
+    fn eval_count_fact_threshold_met() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        // 5 facts with key "error"
+        let facts = vec![
+            fact("error", "err1"),
+            fact("error", "err2"),
+            fact("error", "err3"),
+            fact("error", "err4"),
+            fact("error", "err5"),
+        ];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse("count_fact('error', '>=', 3)").unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_count_fact_below_threshold() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        // 2 facts with key "error"
+        let facts = vec![
+            fact("error", "err1"),
+            fact("error", "err2"),
+        ];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse("count_fact('error', '>=', 5)").unwrap();
+        assert!(!ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_count_fact_unknown_key_returns_zero() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        // Unknown key → count = 0, 0 >= 5 → false
+        let expr = Parser::parse("count_fact('missing', '>=', 5)").unwrap();
+        assert!(!ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_count_fact_exact_equality() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![
+            fact("error", "err1"),
+            fact("error", "err2"),
+            fact("error", "err3"),
+        ];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse("count_fact('error', '==', 3)").unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_count_fact_less_than() {
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let facts = vec![
+            fact("warning", "warn1"),
+            fact("warning", "warn2"),
+        ];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse("count_fact('warning', '<', 5)").unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    // ─── Parser error tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_any_fact_invalid_op_returns_error() {
+        // ~= is not a valid operator
+        let result = Parser::parse(r#"any_fact('key', '~=', 'x')"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_count_fact_requires_integer() {
+        // Third arg must be integer
+        let result = Parser::parse(r#"count_fact('key', '>=', 'not_a_number')"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_any_fact_requires_three_args() {
+        let result = Parser::parse(r#"any_fact('key', '==')"#);
+        assert!(result.is_err());
     }
 }

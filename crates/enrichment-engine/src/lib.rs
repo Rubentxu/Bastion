@@ -38,6 +38,8 @@ pub use crate::models::{
 };
 pub use crate::traits::{CatalogRepository, EnrichmentError, Extractor, FactStore, FileSystem, RuleRepository, RunRecorder};
 pub use crate::rules::{DefaultRuleEvaluator, Expr, ParseError, RuleEvaluator};
+pub use crate::optimizer::{OptimizerReport, EnricherScore, OptimizationRecommendation, RecAction, OptimizerRepository, AggregateStats};
+pub use crate::sanitizer::sanitize_command;
 
 // ─── Modules ─────────────────────────────────────────────────────────────────
 
@@ -47,7 +49,9 @@ pub mod extractors;
 pub mod intent;
 pub mod models;
 pub mod normalizer;
+pub mod optimizer;
 pub mod pipeline;
 pub mod rules;
+pub mod sanitizer;
 pub mod traits;
 pub mod truncate;

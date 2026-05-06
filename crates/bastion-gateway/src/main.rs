@@ -130,6 +130,10 @@ struct Args {
     /// Allow LocalProvider (DANGEROUS: runs commands directly on host filesystem)
     #[arg(long, default_value_t = false)]
     dangerous_allow_local: bool,
+
+    /// Run retention cleanup on enrichment database at startup (deletes old rows based on retention policy)
+    #[arg(long, default_value_t = false)]
+    enrichment_retention_cleanup: bool,
 }
 
 /// Run HTTP transport server using StreamableHttpService
@@ -524,6 +528,7 @@ async fn main() -> Result<()> {
             let enrichment_cfg = bastion_infrastructure::enrichment::EnrichmentConfig {
                 enabled: true,
                 catalog_dir: enrichers_dir.clone(),
+                retention: bastion_infrastructure::enrichment::RetentionConfig::default(),
             };
             let adapter = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::new(
                 catalog_repo,
@@ -535,9 +540,24 @@ async fn main() -> Result<()> {
             let enrichment_runs_db_path = bastion_home.join("data").join("enrichment_runs.db");
             let (adapter, _enrichment_log) = match bastion_infrastructure::enrichment::SqliteRunRecorder::new(&enrichment_runs_db_path) {
                 Ok(recorder) => {
-                    let recorder: Arc<dyn enrichment_engine::traits::RunRecorder> = Arc::new(recorder);
+                    // Run retention cleanup if requested via CLI flag (before wrapping in Arc)
+                    if args.enrichment_retention_cleanup {
+                        match recorder.cleanup().await {
+                            Ok(deleted) if deleted > 0 => {
+                                tracing::info!(rows_deleted = deleted, "Retention cleanup completed at startup");
+                            }
+                            Ok(_) => {
+                                tracing::debug!("Retention cleanup completed, no rows deleted");
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Retention cleanup failed at startup, continuing");
+                            }
+                        }
+                    }
+
+                    let run_recorder: Arc<dyn enrichment_engine::traits::RunRecorder> = Arc::new(recorder);
                     let adapter_arc = Arc::new(adapter);
-                    let adapter_with_recorder = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::with_recorder(adapter_arc, recorder);
+                    let adapter_with_recorder = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::with_recorder(adapter_arc, run_recorder);
                     tracing::info!("Enrichment catalog initialized at {}, runs recorded at {}", enrichment_catalog_db_path.display(), enrichment_runs_db_path.display());
                     // adapter_with_recorder is Arc<BastionEnrichmentAdapter>, and BastionGateway expects Arc<Option<BastionEnrichmentAdapter>>
                     // We can use Arc::new(Some(...)) on the unwrapped inner value

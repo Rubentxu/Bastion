@@ -52,6 +52,12 @@ pub enum TokenKind {
     Comma,
     /// Unrecognized character.
     Illegal,
+    /// `any_fact` predicate keyword.
+    AnyFact,
+    /// `all_fact` predicate keyword.
+    AllFact,
+    /// `count_fact` predicate keyword.
+    CountFact,
 }
 
 /// CEL-lite expression lexer.
@@ -240,6 +246,9 @@ impl<'a> Lexer<'a> {
             "and" => TokenKind::And,
             "or" => TokenKind::Or,
             "not" => TokenKind::Not,
+            "any_fact" => TokenKind::AnyFact,
+            "all_fact" => TokenKind::AllFact,
+            "count_fact" => TokenKind::CountFact,
             _ => TokenKind::Ident(text.to_string()),
         }
     }
@@ -351,5 +360,55 @@ mod tests {
         let token = lex.next_token();
         assert!(matches!(&token.kind, TokenKind::Ident(s) if s == "exit_code"));
         assert_eq!(token.position, 2); // after two spaces
+    }
+
+    // ─── Fact quantifier keywords ───────────────────────────────────────────────
+
+    #[test]
+    fn lexer_any_fact_keyword() {
+        let mut lex = Lexer::new("any_fact");
+        let token = lex.next_token();
+        assert!(matches!(token.kind, TokenKind::AnyFact));
+        assert_eq!(token.position, 0);
+    }
+
+    #[test]
+    fn lexer_all_fact_keyword() {
+        let mut lex = Lexer::new("all_fact");
+        let token = lex.next_token();
+        assert!(matches!(token.kind, TokenKind::AllFact));
+        assert_eq!(token.position, 0);
+    }
+
+    #[test]
+    fn lexer_count_fact_keyword() {
+        let mut lex = Lexer::new("count_fact");
+        let token = lex.next_token();
+        assert!(matches!(token.kind, TokenKind::CountFact));
+        assert_eq!(token.position, 0);
+    }
+
+    #[test]
+    fn lexer_any_fact_in_expression() {
+        let mut lex = Lexer::new(r#"any_fact('severity', '==', 'critical')"#);
+        let tokens: Vec<_> = lex.tokenize();
+        assert!(matches!(&tokens[0].kind, TokenKind::AnyFact));
+        assert!(matches!(&tokens[1].kind, TokenKind::LParen));
+        assert!(matches!(&tokens[2].kind, TokenKind::Str(s) if s == "severity"));
+        assert!(matches!(&tokens[3].kind, TokenKind::Comma));
+        assert!(matches!(&tokens[4].kind, TokenKind::Str(s) if s == "=="));
+        assert!(matches!(&tokens[5].kind, TokenKind::Comma));
+        assert!(matches!(&tokens[6].kind, TokenKind::Str(s) if s == "critical"));
+        assert!(matches!(&tokens[7].kind, TokenKind::RParen));
+        assert!(matches!(&tokens[8].kind, TokenKind::Eof));
+    }
+
+    #[test]
+    fn lexer_count_fact_with_integer() {
+        let mut lex = Lexer::new("count_fact('error', '>=', 5)");
+        let tokens: Vec<_> = lex.tokenize();
+        assert!(matches!(&tokens[0].kind, TokenKind::CountFact));
+        assert!(matches!(&tokens[4].kind, TokenKind::Str(s) if s == ">="));
+        assert!(matches!(&tokens[6].kind, TokenKind::Int(5)));
     }
 }

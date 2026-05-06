@@ -871,13 +871,57 @@ Err(e) => {
                 }
                 self.record_experience(experience).await;
 
-                serde_json::json!({
+                // Build base response
+                let mut response = serde_json::json!({
                     "exit_code": exit_code,
                     "stdout": stdout_parts.join(""),
                     "stderr": stderr_parts.join(""),
                     "chunks_received": stdout_parts.len() + stderr_parts.len(),
-                })
-                .to_string()
+                });
+
+                // Attempt stream enrichment if adapter is configured and enabled
+                // This mirrors sandbox_run's enrichment pattern, but operates on
+                // accumulated stdout/stderr/exit_code after the stream has drained.
+                if let Some(ref adapter) = *self.enrichment_adapter
+                    && self.enrichment_config.enabled
+                {
+                    // Build CommandSpec for enrichment
+                    let stream_command_spec = CommandSpec::new(&params.command);
+
+                    // Compute duration from start_time
+                    let stream_duration_ms = start_time.elapsed().as_millis() as u64;
+
+                    match adapter.enrich_stream(
+                        &sandbox_id,
+                        &stream_command_spec,
+                        &stdout_parts.join(""),
+                        &stderr_parts.join(""),
+                        exit_code,
+                        stream_duration_ms,
+                        cancel_flag.load(Ordering::Relaxed),
+                    ).await {
+                        Some(ctx) => {
+                            // Add enrichment results additively to response
+                            response["agent_context"] = serde_json::json!({
+                                "facts": ctx.facts,
+                                "build_status": ctx.build_status,
+                                "artifacts": ctx.artifacts,
+                                "test_summary": ctx.test_summary,
+                            });
+                            response["enrichment_meta"] = serde_json::json!({
+                                "source": ctx.enrichment_meta.source,
+                                "timestamp": ctx.enrichment_meta.timestamp,
+                                "enricher_id": ctx.enrichment_meta.enricher_id,
+                            });
+                        }
+                        None => {
+                            // No enrichment facts extracted — log at debug level
+                            tracing::debug!(sandbox_id = %sandbox_id, command = %params.command, "No enrichment facts extracted for stream");
+                        }
+                    }
+                }
+
+                response.to_string()
             }
             Err(e) => {
                 self.gateway_config.metrics.record_error();
