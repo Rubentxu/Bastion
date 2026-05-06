@@ -527,7 +527,7 @@ async fn main() -> Result<()> {
             };
             let adapter = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::new(
                 catalog_repo,
-                podman.clone(),
+                registry.default().clone(),
                 enrichment_cfg.clone(),
             );
 

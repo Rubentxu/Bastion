@@ -16,6 +16,13 @@ pub struct ExtractorConfig {
     /// Extraction priority (lower = higher priority).
     #[serde(default)]
     pub priority: i32,
+    /// Merge mode: "single" (dedupe by key, max confidence wins) or "multi" (preserve all facts).
+    #[serde(default = "default_merge_mode")]
+    pub merge_mode: String,
+}
+
+fn default_merge_mode() -> String {
+    "single".to_string()
 }
 
 /// Descriptor for an enricher — loaded from the catalog.

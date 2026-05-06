@@ -6,6 +6,40 @@ mod enricher;
 
 pub use enricher::{EnricherDescriptor, ExtractorConfig};
 
+use regex::Regex;
+use std::sync::Arc;
+
+/// A pre-compiled regex pattern with its metadata.
+/// Created once at catalog load time and reused across all pipeline requests.
+#[derive(Clone)]
+pub struct ValidatedPattern {
+    /// The pre-compiled regex.
+    pub regex: Arc<Regex>,
+    /// The original pattern string (for debugging/logging).
+    pub pattern_str: String,
+    /// The fact key to emit.
+    pub fact_key: String,
+    /// The extractor ID.
+    pub extractor_id: String,
+    /// Merge mode: "single" or "multi".
+    pub merge_mode: String,
+}
+
+impl ValidatedPattern {
+    /// Create a new ValidatedPattern from a pattern string.
+    /// Returns Err with message if the pattern is invalid.
+    pub fn new(extractor_id: &str, pattern: &str, fact_key: &str, merge_mode: &str) -> Result<Self, String> {
+        let regex = Regex::new(pattern).map_err(|e| e.to_string())?;
+        Ok(Self {
+            regex: Arc::new(regex),
+            pattern_str: pattern.to_string(),
+            fact_key: fact_key.to_string(),
+            extractor_id: extractor_id.to_string(),
+            merge_mode: merge_mode.to_string(),
+        })
+    }
+}
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

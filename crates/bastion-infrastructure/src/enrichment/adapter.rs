@@ -20,24 +20,41 @@ use super::fs::SandboxFileSystem;
 
 /// The Bastion enrichment adapter.
 ///
-/// Holds a `CatalogRepository` and a `SandboxProvider` reference.
+/// Holds a shared `FactPipeline` and a `SandboxProvider` reference.
 /// Implements the enrichment workflow: map CommandSpec → OperationInvocation,
 /// call pipeline, map back to JSON extension.
 pub struct BastionEnrichmentAdapter {
-    catalog: Arc<dyn CatalogRepository>,
+    pipeline: Arc<FactPipeline>,
     provider: Arc<dyn SandboxProvider>,
     config: EnrichmentConfig,
 }
 
 impl BastionEnrichmentAdapter {
     /// Create a new adapter.
+    ///
+    /// The pipeline is built once from the catalog and reused for all enrich() calls.
+    /// The provider is used to create per-request SandboxFileSystem instances.
     pub fn new(
         catalog: Arc<dyn CatalogRepository>,
         provider: Arc<dyn SandboxProvider>,
         config: EnrichmentConfig,
     ) -> Self {
+        let pipeline = FactPipeline::new(catalog);
         Self {
-            catalog,
+            pipeline: Arc::new(pipeline),
+            provider,
+            config,
+        }
+    }
+
+    /// Create a new adapter with a pre-built pipeline (for shared pipeline scenario).
+    pub fn with_pipeline(
+        pipeline: Arc<FactPipeline>,
+        provider: Arc<dyn SandboxProvider>,
+        config: EnrichmentConfig,
+    ) -> Self {
+        Self {
+            pipeline,
             provider,
             config,
         }
@@ -64,10 +81,9 @@ impl BastionEnrichmentAdapter {
         let result = Self::map_command_result(command_result);
 
         let fs = SandboxFileSystem::new(self.provider.clone(), sandbox_id.clone());
-        let pipeline = FactPipeline::new(self.catalog.clone());
 
         let start = Instant::now();
-        let ctx = match pipeline.run(invocation, result, &fs).await {
+        let ctx = match self.pipeline.run(invocation, result, &fs).await {
             Ok(ctx) => ctx,
             Err(e) => {
                 tracing::warn!(error = %e, "Enrichment pipeline failed");

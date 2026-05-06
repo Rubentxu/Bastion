@@ -17,6 +17,8 @@ pub enum EnrichmentError {
     Catalog(String),
     #[error("Extraction error: {0}")]
     Extraction(String),
+    #[error("Config error: {0}")]
+    Config(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

@@ -9,19 +9,33 @@ use crate::models::{Fact, OperationInvocation, OperationResult};
 use crate::traits::{Extractor, FileSystem};
 
 /// Extractor that glob-matches files and produces a Fact per matched file.
+#[derive(Debug)]
+#[allow(dead_code)]
 pub struct GlobExtractor {
     name: String,
     pattern: String,
     fact_key: String,
+    merge_mode: String,
 }
 
 impl GlobExtractor {
-    /// Create a new glob extractor.
+    /// Create a new glob extractor with default merge_mode.
     pub fn new(name: &str, pattern: &str, fact_key: &str) -> Self {
         Self {
             name: name.to_string(),
             pattern: pattern.to_string(),
             fact_key: fact_key.to_string(),
+            merge_mode: "single".to_string(),
+        }
+    }
+
+    /// Create a new glob extractor with explicit merge_mode.
+    pub fn with_merge_mode(name: &str, pattern: &str, fact_key: &str, merge_mode: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            pattern: pattern.to_string(),
+            fact_key: fact_key.to_string(),
+            merge_mode: merge_mode.to_string(),
         }
     }
 }

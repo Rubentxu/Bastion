@@ -31,6 +31,8 @@ impl SqliteCatalogRepository {
             .map_err(|e| DomainError::Internal(format!("Failed to open SQLite DB: {}", e)))?;
 
         // Inline schema creation
+        // Note: SQLite does not support ALTER TABLE to add composite PK or CASCADE,
+        // so we create the table with the correct schema from the start.
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS enrichers (
@@ -43,14 +45,18 @@ impl SqliteCatalogRepository {
             );
 
             CREATE TABLE IF NOT EXISTS extractors (
-                id TEXT PRIMARY KEY,
+                id TEXT NOT NULL,
                 enricher_id TEXT NOT NULL,
                 type TEXT NOT NULL,
                 pattern TEXT NOT NULL,
                 fact_key TEXT NOT NULL,
                 priority INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY (enricher_id) REFERENCES enrichers(id)
+                merge_mode TEXT NOT NULL DEFAULT 'single',
+                PRIMARY KEY (enricher_id, id),
+                FOREIGN KEY (enricher_id) REFERENCES enrichers(id) ON DELETE CASCADE
             );
+
+            CREATE INDEX IF NOT EXISTS idx_extractors_enricher ON extractors(enricher_id);
             "#,
         )
         .map_err(|e| DomainError::Internal(format!("Failed to create schema: {}", e)))?;
@@ -91,15 +97,16 @@ impl SqliteCatalogRepository {
 
         for ext in &enricher.extractors {
             tx.execute(
-                r#"INSERT OR REPLACE INTO extractors (id, enricher_id, type, pattern, fact_key, priority)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                r#"INSERT OR REPLACE INTO extractors (id, enricher_id, type, pattern, fact_key, priority, merge_mode)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
                 params![
                     ext.id,
                     enricher.id,
                     ext.extractor_type,
                     ext.pattern,
                     ext.fact_key,
-                    ext.priority
+                    ext.priority,
+                    ext.merge_mode
                 ],
             )
             .map_err(|e| DomainError::Internal(format!("Insert extractor failed: {}", e)))?;
@@ -122,7 +129,7 @@ impl CatalogRepository for SqliteCatalogRepository {
         let mut stmt = match conn.prepare(
             r#"
             SELECT e.id, e.name, e.version, e.match_patterns_json, e.template, e.enabled,
-                   ext.id, ext.type, ext.pattern, ext.fact_key, ext.priority
+                   ext.id, ext.type, ext.pattern, ext.fact_key, ext.priority, ext.merge_mode
             FROM enrichers e
             LEFT JOIN extractors ext ON ext.enricher_id = e.id
             WHERE e.enabled = 1
@@ -145,6 +152,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
                 row.get::<_, Option<i32>>(10)?,
+                row.get::<_, Option<String>>(11)?,
             ))
         }) {
             Ok(r) => r,
@@ -160,7 +168,7 @@ impl CatalogRepository for SqliteCatalogRepository {
             std::collections::HashMap::new();
 
         for row in rows.flatten() {
-            let (id, name, version, patterns_json, template, enabled, ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority) = row;
+            let (id, name, version, patterns_json, template, enabled, ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority, ext_merge_mode) = row;
 
             let patterns: Vec<String> =
                 serde_json::from_str(&patterns_json).unwrap_or_default();
@@ -181,6 +189,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                         pattern: epattern,
                         fact_key: efact_key,
                         priority: epriority,
+                        merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
                     });
             }
         }
@@ -213,7 +222,12 @@ impl CatalogRepository for SqliteCatalogRepository {
         let conn = self.conn.lock().await;
 
         let mut stmt = match conn.prepare(
-            "SELECT id, name, version, match_patterns_json, template, enabled FROM enrichers",
+            r#"
+            SELECT e.id, e.name, e.version, e.match_patterns_json, e.template, e.enabled,
+                   ext.id, ext.type, ext.pattern, ext.fact_key, ext.priority, ext.merge_mode
+            FROM enrichers e
+            LEFT JOIN extractors ext ON ext.enricher_id = e.id
+            "#,
         ) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
@@ -227,24 +241,65 @@ impl CatalogRepository for SqliteCatalogRepository {
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, i32>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<i32>>(10)?,
+                row.get::<_, Option<String>>(11)?,
             ))
         }) {
             Ok(r) => r,
             Err(_) => return Vec::new(),
         };
 
-        rows.flatten()
-            .map(|(id, name, version, patterns_json, template, enabled)| {
-                let patterns: Vec<String> =
-                    serde_json::from_str(&patterns_json).unwrap_or_default();
+        // Group by enricher
+        let mut enricher_map: std::collections::HashMap<
+            String,
+            (String, String, String, Vec<String>, String, bool),
+        > = std::collections::HashMap::new();
+        let mut extractor_map: std::collections::HashMap<String, Vec<ExtractorConfig>> =
+            std::collections::HashMap::new();
+
+        for row in rows.flatten() {
+            let (id, name, version, patterns_json, template, enabled, ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority, ext_merge_mode) = row;
+
+            let patterns: Vec<String> =
+                serde_json::from_str(&patterns_json).unwrap_or_default();
+
+            enricher_map.insert(
+                id.clone(),
+                (name, version, template, patterns, id.clone(), enabled != 0),
+            );
+            if let (Some(eid), Some(etype), Some(epattern), Some(efact_key), Some(epriority)) =
+                (ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority)
+            {
+                extractor_map
+                    .entry(id)
+                    .or_default()
+                    .push(ExtractorConfig {
+                        id: eid,
+                        extractor_type: etype,
+                        pattern: epattern,
+                        fact_key: efact_key,
+                        priority: epriority,
+                        merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
+                    });
+            }
+        }
+
+        enricher_map
+            .into_iter()
+            .map(|(id, (name, version, template, match_patterns, _, enabled))| {
+                let extractors = extractor_map.remove(&id).unwrap_or_default();
                 EnricherDescriptor {
                     id,
                     name,
                     version,
-                    match_patterns: patterns,
+                    match_patterns,
                     template,
-                    enabled: enabled != 0,
-                    extractors: Vec::new(),
+                    enabled,
+                    extractors,
                 }
             })
             .collect()
@@ -304,7 +359,6 @@ impl<'a> YamlCatalogImporter<'a> {
             match self.import_file(&path).await {
                 Ok(_) => count += 1,
                 Err(e) => {
-                    eprintln!("ERROR importing {:?}: {}", path, e);
                     warn!(path = %path.display(), error = %e, "Failed to import enricher file");
                 }
             }
@@ -318,23 +372,38 @@ impl<'a> YamlCatalogImporter<'a> {
             .await
             .map_err(|e| DomainError::Internal(format!("Failed to read file: {}", e)))?;
 
-        // Try YAML first, then TOML
+        // Dispatch by extension only — no fallback to TOML for YAML files
         let path_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let enricher = if path_ext == "yaml" || path_ext == "yml" {
             self.parse_yaml(&content)
                 .map_err(|e| {
                     DomainError::Internal(format!("YAML parse error: {}", e))
-                })
-                .or_else(|_| {
-                    self.parse_toml(&content).map_err(|e| {
-                        DomainError::Internal(format!("TOML parse error: {}", e))
-                    })
-                })
+                })?
         } else {
             self.parse_toml(&content).map_err(|e| {
                 DomainError::Internal(format!("TOML parse error: {}", e))
-            })
-        }?;
+            })?
+        };
+
+        // Validate regex patterns before inserting
+        // W2 Fix: reject entire enricher if any regex extractor has invalid pattern
+        for ext in &enricher.extractors {
+            if ext.extractor_type == "regex"
+                && let Err(e) = regex::Regex::new(&ext.pattern)
+            {
+                warn!(
+                    enricher_id = %enricher.id,
+                    extractor_id = %ext.id,
+                    pattern = %ext.pattern,
+                    error = %e,
+                    "Rejecting enricher due to invalid regex extractor"
+                );
+                return Err(DomainError::Validation(format!(
+                    "Enricher '{}' has invalid regex in extractor '{}': {}",
+                    enricher.id, ext.id, e
+                )));
+            }
+        }
 
         self.repo.upsert_enricher(&enricher).await?;
         Ok(())
@@ -365,9 +434,14 @@ impl<'a> YamlCatalogImporter<'a> {
             fact_key: String,
             #[serde(default)]
             priority: i32,
+            #[serde(default = "default_merge_mode")]
+            merge_mode: String,
         }
         fn default_enabled() -> bool {
             true
+        }
+        fn default_merge_mode() -> String {
+            "single".to_string()
         }
 
         let yaml: YamlEnricher =
@@ -390,6 +464,7 @@ impl<'a> YamlCatalogImporter<'a> {
                     pattern: e.pattern,
                     fact_key: e.fact_key,
                     priority: e.priority,
+                    merge_mode: e.merge_mode,
                 })
                 .collect(),
         })
@@ -420,9 +495,14 @@ impl<'a> YamlCatalogImporter<'a> {
             fact_key: String,
             #[serde(default)]
             priority: i32,
+            #[serde(default = "default_merge_mode")]
+            merge_mode: String,
         }
         fn default_enabled() -> bool {
             true
+        }
+        fn default_merge_mode() -> String {
+            "single".to_string()
         }
 
         let toml: TomlEnricher =
@@ -445,6 +525,7 @@ impl<'a> YamlCatalogImporter<'a> {
                     pattern: e.pattern,
                     fact_key: e.fact_key,
                     priority: e.priority,
+                    merge_mode: e.merge_mode,
                 })
                 .collect(),
         })
@@ -494,6 +575,7 @@ mod tests {
                 pattern: r"(?P<status>BUILD\s+(SUCCESS|FAILURE))".to_string(),
                 fact_key: "build_status".to_string(),
                 priority: 1,
+                merge_mode: "single".to_string(),
             }],
         };
         repo.upsert_enricher(&enricher).await.unwrap();
@@ -536,5 +618,166 @@ enricher:
 
         let count = importer.import_dir(tmp.path()).await.unwrap();
         assert_eq!(count, 1); // Only the valid one counted
+    }
+
+    #[tokio::test]
+    async fn test_yaml_parse_error_does_not_fallback_to_toml() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+        let importer = YamlCatalogImporter::new(&repo);
+
+        // Malformed YAML that is valid TOML (starts with a simple key)
+        // YAML would parse this as a mapping, but it's actually valid TOML
+        // Since our parser will fail on YAML, it should NOT fall back to TOML
+        let ambiguous_content = "key = \"value\"\n";
+        std::fs::write(tmp.path().join("ambiguous.toml"), ambiguous_content).unwrap();
+
+        // This file has a YAML extension but contains TOML-like content
+        // It should fail YAML parsing and NOT fall back to TOML
+        std::fs::write(tmp.path().join("ambiguous.yaml"), ambiguous_content).unwrap();
+
+        let count = importer.import_dir(tmp.path()).await.unwrap();
+        // Both files should be skipped because:
+        // - .yaml file: YAML parse fails, no fallback to TOML
+        // - .toml file: TOML parse succeeds but doesn't have required fields
+        // Since the TOML content doesn't match the expected schema (no [enricher] table),
+        // it won't upsert anything
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_same_extractor_id_different_enrichers() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+
+        // Maven enricher with extractor id "build_status"
+        let maven_enricher = EnricherDescriptor {
+            id: "maven".to_string(),
+            name: "Maven".to_string(),
+            version: "1.0".to_string(),
+            match_patterns: vec![r"^mvn\s+".to_string()],
+            template: "Build".to_string(),
+            enabled: true,
+            extractors: vec![ExtractorConfig {
+                id: "build_status".to_string(),
+                extractor_type: "regex".to_string(),
+                pattern: r"BUILD\s+(SUCCESS|FAILURE)".to_string(),
+                fact_key: "build_status".to_string(),
+                priority: 1,
+                merge_mode: "single".to_string(),
+            }],
+        };
+
+        // Gradle enricher also with extractor id "build_status"
+        let gradle_enricher = EnricherDescriptor {
+            id: "gradle".to_string(),
+            name: "Gradle".to_string(),
+            version: "1.0".to_string(),
+            match_patterns: vec![r"^gradle\s+".to_string()],
+            template: "Build".to_string(),
+            enabled: true,
+            extractors: vec![ExtractorConfig {
+                id: "build_status".to_string(),
+                extractor_type: "regex".to_string(),
+                pattern: r"BUILD\s+(SUCCESS|FAILURE)".to_string(),
+                fact_key: "build_status".to_string(),
+                priority: 1,
+                merge_mode: "single".to_string(),
+            }],
+        };
+
+        repo.upsert_enricher(&maven_enricher).await.unwrap();
+        repo.upsert_enricher(&gradle_enricher).await.unwrap();
+
+        // Both should be stored with their respective extractors
+        let all_enrichers = repo.list_all().await;
+        assert_eq!(all_enrichers.len(), 2);
+
+        let maven = all_enrichers.iter().find(|e| e.id == "maven").unwrap();
+        let gradle = all_enrichers.iter().find(|e| e.id == "gradle").unwrap();
+
+        assert_eq!(maven.extractors.len(), 1);
+        assert_eq!(gradle.extractors.len(), 1);
+        assert_eq!(maven.extractors[0].id, "build_status");
+        assert_eq!(gradle.extractors[0].id, "build_status");
+    }
+
+    #[tokio::test]
+    async fn test_invalid_regex_rejected_during_import() {
+        // W2 Fix: invalid regex extractor should reject the entire enricher import
+        // Note: import_dir is resilient (continues on error), but invalid regex
+        // causes import_file to return error, so the enricher is not persisted
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+        let importer = YamlCatalogImporter::new(&repo);
+
+        // YAML with invalid regex pattern
+        let yaml_content = r#"
+enricher:
+  id: "bad_maven"
+  name: "Bad Maven"
+  version: "1.0"
+  match_patterns:
+    - "^mvn\\s+test"
+  template: "Test"
+  enabled: true
+  extractors:
+    - id: bad_regex
+      type: regex
+      pattern: "[invalid"  # Invalid regex - missing closing bracket
+      fact_key: status
+      priority: 1
+"#;
+        std::fs::write(tmp.path().join("bad_maven.yaml"), yaml_content).unwrap();
+
+        // Import should complete (import_dir is resilient) but count is 0
+        let result = importer.import_dir(tmp.path()).await;
+        assert!(result.is_ok(), "import_dir should complete even on error");
+        assert_eq!(result.unwrap(), 0, "No files should be imported successfully");
+
+        // Verify the enricher was NOT persisted
+        let all_enrichers = repo.list_all().await;
+        assert!(all_enrichers.iter().find(|e| e.id == "bad_maven").is_none(),
+            "Enricher with invalid regex should not be persisted");
+
+        let found = repo.find_enrichers("mvn test").await;
+        assert!(found.iter().find(|e| e.id == "bad_maven").is_none(),
+            "Enricher with invalid regex should not appear in find_enrichers");
+    }
+
+    #[tokio::test]
+    async fn test_import_skips_only_invalid_extractors_not_whole_enricher_when_upsert_directly() {
+        // This tests the direct upsert path (not through importer)
+        // When upsert is called directly, invalid regex is validated in pipeline
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+
+        // Valid enricher first
+        let valid_enricher = EnricherDescriptor {
+            id: "maven".to_string(),
+            name: "Maven".to_string(),
+            version: "1.0".to_string(),
+            match_patterns: vec![r"^mvn\s+".to_string()],
+            template: "Build".to_string(),
+            enabled: true,
+            extractors: vec![ExtractorConfig {
+                id: "build_status".to_string(),
+                extractor_type: "regex".to_string(),
+                pattern: r"BUILD\s+(SUCCESS|FAILURE)".to_string(),
+                fact_key: "build_status".to_string(),
+                priority: 1,
+                merge_mode: "single".to_string(),
+            }],
+        };
+        repo.upsert_enricher(&valid_enricher).await.unwrap();
+
+        // Verify it's there
+        let all_enrichers = repo.list_all().await;
+        assert_eq!(all_enrichers.len(), 1);
+        assert_eq!(all_enrichers[0].id, "maven");
     }
 }

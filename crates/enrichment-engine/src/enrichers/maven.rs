@@ -21,6 +21,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 pattern: r"(?P<status>BUILD\s+(SUCCESS|FAILURE))".to_string(),
                 fact_key: "build_status".to_string(),
                 priority: 1,
+                merge_mode: "single".to_string(),
             },
             ExtractorConfig {
                 id: "maven_coords".to_string(),
@@ -28,6 +29,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 pattern: r"Building\s+(?P<group_id>[\w.]+):(?P<artifact_id>[\w-]+):(?P<version>[\w.]+)".to_string(),
                 fact_key: "maven_coords".to_string(),
                 priority: 2,
+                merge_mode: "single".to_string(),
             },
             ExtractorConfig {
                 id: "test_results".to_string(),
@@ -35,6 +37,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 pattern: r"Tests run:\s*(?P<tests_run>\d+),\s*Failures:\s*(?P<tests_failed>\d+),\s*Errors:\s*(?P<tests_errors>\d+),\s*Skipped:\s*(?P<tests_skipped>\d+)".to_string(),
                 fact_key: "test_results".to_string(),
                 priority: 3,
+                merge_mode: "single".to_string(),
             },
             ExtractorConfig {
                 id: "jar_artifacts".to_string(),
@@ -42,6 +45,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 pattern: "target/*.jar".to_string(),
                 fact_key: "jar_artifact".to_string(),
                 priority: 4,
+                merge_mode: "multi".to_string(),
             },
             ExtractorConfig {
                 id: "war_artifacts".to_string(),
@@ -49,6 +53,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 pattern: "target/*.war".to_string(),
                 fact_key: "war_artifact".to_string(),
                 priority: 5,
+                merge_mode: "multi".to_string(),
             },
             ExtractorConfig {
                 id: "error_diagnostics".to_string(),
@@ -56,6 +61,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 pattern: r"(?P<error_msg>(error|ERROR|compilation failure|COMPILATION ERROR):.*)".to_string(),
                 fact_key: "error_msg".to_string(),
                 priority: 6,
+                merge_mode: "single".to_string(),
             },
         ],
     }
