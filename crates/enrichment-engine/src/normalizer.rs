@@ -147,6 +147,7 @@ mod tests {
             fact_key: "jar".to_string(),
             priority: 1,
             merge_mode: "multi".to_string(),
+            command_extractor_policy: None,
         };
 
         let mut config_map: HashMap<String, &ExtractorConfig> = HashMap::new();

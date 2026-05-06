@@ -32,7 +32,7 @@
 // ─── Public re-exports ────────────────────────────────────────────────────────
 
 pub use crate::models::{
-    AgentContext, EnricherDescriptor, EnrichmentMeta, ExtractorConfig, Fact,
+    AgentContext, CommandExtractorPolicy, EnricherDescriptor, EnrichmentMeta, ExtractorConfig, Fact,
     OperationInvocation, OperationResult, RuleAction, RuleConfig, RuleOutput, TestSummary,
 };
 pub use crate::traits::{CatalogRepository, EnrichmentError, Extractor, FactStore, FileSystem, RuleRepository};

@@ -16,12 +16,22 @@ pub fn maven_enricher() -> EnricherDescriptor {
         enabled: true,
         extractors: vec![
             ExtractorConfig {
+                id: "cmd_struct".to_string(),
+                extractor_type: "command".to_string(),
+                pattern: String::new(),
+                fact_key: "command".to_string(),
+                priority: 0,
+                merge_mode: "multi".to_string(),
+                command_extractor_policy: None,
+            },
+            ExtractorConfig {
                 id: "build_status".to_string(),
                 extractor_type: "regex".to_string(),
                 pattern: r"(?P<status>BUILD\s+(SUCCESS|FAILURE))".to_string(),
                 fact_key: "build_status".to_string(),
                 priority: 1,
                 merge_mode: "single".to_string(),
+                command_extractor_policy: None,
             },
             ExtractorConfig {
                 id: "maven_coords".to_string(),
@@ -30,6 +40,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 fact_key: "maven_coords".to_string(),
                 priority: 2,
                 merge_mode: "single".to_string(),
+                command_extractor_policy: None,
             },
             ExtractorConfig {
                 id: "test_results".to_string(),
@@ -38,6 +49,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 fact_key: "test_results".to_string(),
                 priority: 3,
                 merge_mode: "single".to_string(),
+                command_extractor_policy: None,
             },
             ExtractorConfig {
                 id: "jar_artifacts".to_string(),
@@ -46,6 +58,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 fact_key: "jar_artifact".to_string(),
                 priority: 4,
                 merge_mode: "multi".to_string(),
+                command_extractor_policy: None,
             },
             ExtractorConfig {
                 id: "war_artifacts".to_string(),
@@ -54,6 +67,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 fact_key: "war_artifact".to_string(),
                 priority: 5,
                 merge_mode: "multi".to_string(),
+                command_extractor_policy: None,
             },
             ExtractorConfig {
                 id: "error_diagnostics".to_string(),
@@ -62,6 +76,7 @@ pub fn maven_enricher() -> EnricherDescriptor {
                 fact_key: "error_msg".to_string(),
                 priority: 6,
                 merge_mode: "single".to_string(),
+                command_extractor_policy: None,
             },
         ],
     }

@@ -238,6 +238,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                         fact_key: efact_key,
                         priority: epriority,
                         merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
+                        command_extractor_policy: None,
                     });
             }
         }
@@ -332,6 +333,7 @@ impl CatalogRepository for SqliteCatalogRepository {
                         fact_key: efact_key,
                         priority: epriority,
                         merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
+                        command_extractor_policy: None,
                     });
             }
         }
@@ -644,6 +646,7 @@ impl<'a> YamlCatalogImporter<'a> {
                     fact_key: e.fact_key,
                     priority: e.priority,
                     merge_mode: e.merge_mode,
+                    command_extractor_policy: None,
                 })
                 .collect(),
         };
@@ -751,6 +754,7 @@ impl<'a> YamlCatalogImporter<'a> {
                     fact_key: e.fact_key,
                     priority: e.priority,
                     merge_mode: e.merge_mode,
+                    command_extractor_policy: None,
                 })
                 .collect(),
         };
@@ -828,6 +832,7 @@ mod tests {
                 fact_key: "build_status".to_string(),
                 priority: 1,
                 merge_mode: "single".to_string(),
+                command_extractor_policy: None,
             }],
         };
         repo.upsert_enricher(&enricher).await.unwrap();
@@ -919,6 +924,7 @@ enricher:
                 fact_key: "build_status".to_string(),
                 priority: 1,
                 merge_mode: "single".to_string(),
+                command_extractor_policy: None,
             }],
         };
 
@@ -937,6 +943,7 @@ enricher:
                 fact_key: "build_status".to_string(),
                 priority: 1,
                 merge_mode: "single".to_string(),
+                command_extractor_policy: None,
             }],
         };
 
@@ -1023,6 +1030,7 @@ enricher:
                 fact_key: "build_status".to_string(),
                 priority: 1,
                 merge_mode: "single".to_string(),
+                command_extractor_policy: None,
             }],
         };
         repo.upsert_enricher(&valid_enricher).await.unwrap();

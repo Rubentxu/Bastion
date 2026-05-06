@@ -5,7 +5,7 @@
 mod enricher;
 mod rule;
 
-pub use enricher::{EnricherDescriptor, ExtractorConfig};
+pub use enricher::{CommandExtractorPolicy, EnricherDescriptor, ExtractorConfig};
 pub use rule::{RuleAction, RuleConfig, RuleOutput};
 
 use regex::Regex;

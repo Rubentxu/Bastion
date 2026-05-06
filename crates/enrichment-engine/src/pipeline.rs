@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 use crate::composer::AgentContextComposer;
-use crate::extractors::{GlobExtractor, RegexExtractor};
+use crate::extractors::{CommandExtractor, GlobExtractor, RegexExtractor};
 use crate::intent::IntentDetector;
 use crate::models::{AgentContext, EnrichmentMeta, EnricherDescriptor, Fact, OperationInvocation, OperationResult, ValidatedPattern};
 use crate::normalizer::{FactNormalizer, NormalizerConfig};
@@ -222,6 +222,11 @@ impl FactPipeline {
                 let extractor = GlobExtractor::with_merge_mode(&config.id, &config.pattern, &config.fact_key, &config.merge_mode);
                 Ok(extractor.extract(invocation, result, fs).await)
             }
+            "command" => {
+                let policy = config.command_extractor_policy.clone().unwrap_or_default();
+                let extractor = CommandExtractor::with_policy(&config.id, policy);
+                Ok(extractor.extract(invocation, result, fs).await)
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -327,6 +332,7 @@ mod tests {
                     fact_key: "build_status".to_string(),
                     priority: 1,
                     merge_mode: "single".to_string(),
+                    command_extractor_policy: None,
                 },
                 ExtractorConfig {
                     id: "test_results".to_string(),
@@ -335,6 +341,7 @@ mod tests {
                     fact_key: "test_results".to_string(),
                     priority: 2,
                     merge_mode: "single".to_string(),
+                    command_extractor_policy: None,
                 },
             ],
         }
