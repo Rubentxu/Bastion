@@ -485,6 +485,61 @@ async fn main() -> Result<()> {
         AdviceConfigStore::new(config_path)
     });
 
+    // Initialize enrichment catalog: SQLite-backed repository with built-in + file-based enrichers
+    let enrichment_catalog_db_path = bastion_home.join("enrichment_catalog.db");
+    let (enrichment_adapter, enrichment_config) = match bastion_infrastructure::enrichment::SqliteCatalogRepository::new(&enrichment_catalog_db_path) {
+        Ok(catalog_repo) => {
+            let catalog_repo = Arc::new(catalog_repo);
+            let importer = bastion_infrastructure::enrichment::YamlCatalogImporter::new(&catalog_repo);
+
+            // Upsert built-in enrichers (Maven, etc.) first
+            let built_in = enrichment_engine::enrichers::all_enrichers();
+            for enricher in &built_in {
+                if let Err(e) = catalog_repo.upsert_enricher(enricher).await {
+                    tracing::warn!(enricher_id = %enricher.id, error = %e, "Failed to upsert built-in enricher");
+                } else {
+                    tracing::debug!(enricher_id = %enricher.id, "Upserted built-in enricher");
+                }
+            }
+
+            // Import from catalog directory (if present)
+            let enrichers_dir = bastion_config_dir.join("catalog").join("enrichers");
+            if enrichers_dir.exists() {
+                match importer.import_dir(&enrichers_dir).await {
+                    Ok(count) if count > 0 => {
+                        tracing::info!(count, path = %enrichers_dir.display(), "Imported enricher descriptors from catalog");
+                    }
+                    Ok(_) => {
+                        tracing::debug!("No enricher descriptor files found in {}", enrichers_dir.display());
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, path = %enrichers_dir.display(), "Failed to import enricher descriptors");
+                    }
+                }
+            } else {
+                tracing::debug!("No enrichers catalog directory at {}, using built-in enrichers only", enrichers_dir.display());
+            }
+
+            // Create the BastionEnrichmentAdapter wrapping the catalog repository
+            let enrichment_cfg = bastion_infrastructure::enrichment::EnrichmentConfig {
+                enabled: true,
+                catalog_dir: enrichers_dir.clone(),
+            };
+            let adapter = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::new(
+                catalog_repo,
+                podman.clone(),
+                enrichment_cfg.clone(),
+            );
+
+            tracing::info!("Enrichment catalog initialized at {}", enrichment_catalog_db_path.display());
+            (Arc::new(Some(adapter)), enrichment_cfg)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to initialize enrichment catalog, enrichment disabled");
+            (Arc::new(None), bastion_infrastructure::enrichment::EnrichmentConfig::default())
+        }
+    };
+
     // Create gateway — ready to serve MCP immediately
     let default_provider = registry.default().clone();
     let providers_map = registry.into_providers();
@@ -501,7 +556,7 @@ async fn main() -> Result<()> {
         advice_config: Some(advice_config),
     };
     let gateway =
-        server::BastionGateway::new(default_provider, providers_map, repository.clone(), secret_resolver.clone(), gateway_config, capability_registry, catalog_config);
+        server::BastionGateway::new(default_provider, providers_map, repository.clone(), secret_resolver.clone(), gateway_config, capability_registry, catalog_config, enrichment_adapter, enrichment_config);
 
     // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS)
     let registry_addr: std::net::SocketAddr = args.registry_addr.parse()

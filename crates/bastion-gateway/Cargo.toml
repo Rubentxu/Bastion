@@ -13,6 +13,7 @@ path = "src/main.rs"
 bastion-domain = { workspace = true }
 bastion-application = { workspace = true }
 bastion-infrastructure = { workspace = true }
+enrichment-engine = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
 tokio = { workspace = true }

@@ -7,6 +7,7 @@ members = [
     "crates/bastion-gateway",
     "crates/bastion-worker",
     "crates/bastion-bootstrap",
+    "crates/enrichment-engine",
 ]
 
 [workspace.package]
@@ -22,6 +23,7 @@ description = "MCP Gateway for AI agent sandbox orchestration"
 bastion-domain = { path = "crates/bastion-domain" }
 bastion-application = { path = "crates/bastion-application" }
 bastion-infrastructure = { path = "crates/bastion-infrastructure" }
+enrichment-engine = { path = "crates/enrichment-engine" }
 
 # ── Async runtime ────────────────────────────────────────────
 tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "process", "fs"] }

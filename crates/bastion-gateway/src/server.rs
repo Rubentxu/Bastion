@@ -36,6 +36,9 @@ use bastion_domain::template::{
 use bastion_infrastructure::catalog::toml_advice_parser::{AdviceConfigStore, AdviceRegistry};
 use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::pool::SandboxPoolManager;
+use bastion_infrastructure::enrichment::{
+    BastionEnrichmentAdapter, EnrichmentConfig,
+};
 use bastion_infrastructure::template::{
     AptAdapter, AsdfAdapter, CapabilityRegistry, SdkmanAdapter, FsArtifactStore,
     PodmanOptimizedMaterializer, SnapshotManager,
@@ -131,6 +134,10 @@ pub struct BastionGateway {
     cancel_tokens: Arc<DashMap<String, Arc<AtomicBool>>>,
     /// Catalog configuration (experience, assertions, doctors, advice)
     pub(crate) catalog_config: CatalogConfig,
+    /// Optional enrichment adapter for sandbox command enrichment
+    enrichment_adapter: Arc<Option<BastionEnrichmentAdapter>>,
+    /// Enrichment configuration
+    enrichment_config: EnrichmentConfig,
 }
 
 /// Simple token bucket rate limiter for MCP layer
@@ -210,6 +217,7 @@ impl PerClientRateLimiter {
 }
 
 impl BastionGateway {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: Arc<dyn SandboxProvider>,
         providers: std::collections::HashMap<String, Arc<dyn SandboxProvider>>,
@@ -218,6 +226,8 @@ impl BastionGateway {
         gateway_config: GatewayConfig,
         capability_registry: CapabilityRegistry,
         catalog_config: CatalogConfig,
+        enrichment_adapter: Arc<Option<BastionEnrichmentAdapter>>,
+        enrichment_config: EnrichmentConfig,
     ) -> Self {
         Self {
             provider,
@@ -235,6 +245,8 @@ impl BastionGateway {
             capability_registry: Arc::new(RwLock::new(capability_registry)),
             cancel_tokens: Arc::new(DashMap::new()),
             catalog_config,
+            enrichment_adapter,
+            enrichment_config,
         }
     }
 
@@ -657,14 +669,42 @@ Err(e) => {
                 }
                 self.record_experience(experience).await;
 
-                serde_json::json!({
+                // Build base response
+                let mut response = serde_json::json!({
                     "exit_code": result.exit_code,
                     "stdout": String::from_utf8_lossy(&result.stdout).to_string(),
                     "stderr": String::from_utf8_lossy(&result.stderr).to_string(),
                     "duration_ms": result.duration_ms,
                     "timed_out": result.timed_out
-                })
-                .to_string()
+                });
+
+                // Attempt enrichment if adapter is configured and enabled
+                if let Some(ref adapter) = *self.enrichment_adapter
+                    && self.enrichment_config.enabled
+                {
+                    match adapter.enrich(&sandbox_id, &command_spec, &result).await {
+                        Some(ctx) => {
+                            // Add enrichment results additively
+                            response["agent_context"] = serde_json::json!({
+                                "facts": ctx.facts,
+                                "build_status": ctx.build_status,
+                                "artifacts": ctx.artifacts,
+                                "test_summary": ctx.test_summary,
+                            });
+                            response["enrichment_meta"] = serde_json::json!({
+                                "source": ctx.enrichment_meta.source,
+                                "timestamp": ctx.enrichment_meta.timestamp,
+                                "enricher_id": ctx.enrichment_meta.enricher_id,
+                            });
+                        }
+                        None => {
+                            // No enrichment facts extracted — log at debug level
+                            tracing::debug!(sandbox_id = %sandbox_id, command = %params.command, "No enrichment facts extracted");
+                        }
+                    }
+                }
+
+                response.to_string()
             }
             Err(e) => {
                 self.gateway_config.metrics.record_error();

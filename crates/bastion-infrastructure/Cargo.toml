@@ -12,6 +12,7 @@ wasm-sandbox = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 [dependencies]
 bastion-domain = { workspace = true }
+enrichment-engine = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -26,6 +27,8 @@ tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
 toml = { workspace = true }
+serde_yaml = "0.9"
+regex = "1"
 bollard = { workspace = true }
 podman-api = "0.11"
 base64 = { workspace = true }

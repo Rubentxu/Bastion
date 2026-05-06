@@ -1,0 +1,13 @@
+//! Enrichment infrastructure module.
+//!
+//! Provides the Bastion-specific adapter that wires the host-agnostic
+//! `enrichment-engine` crate into the Bastion gateway.
+
+pub mod adapter;
+pub mod config;
+pub mod fs;
+pub mod sqlite_repo;
+
+pub use adapter::BastionEnrichmentAdapter;
+pub use config::EnrichmentConfig;
+pub use sqlite_repo::{SqliteCatalogRepository, YamlCatalogImporter};
