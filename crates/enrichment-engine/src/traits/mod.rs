@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-use crate::models::{EnricherDescriptor, OperationInvocation, OperationResult, Fact};
+use crate::models::{EnricherDescriptor, OperationInvocation, OperationResult, Fact, RuleConfig};
 
 /// Errors that can occur in enrichment operations.
 #[derive(Debug, thiserror::Error)]
@@ -69,4 +69,14 @@ pub trait Extractor: Send + Sync {
         result: &OperationResult,
         fs: &dyn FileSystem,
     ) -> Vec<Fact>;
+}
+
+/// Repository for rule configurations.
+#[async_trait]
+pub trait RuleRepository: Send + Sync {
+    /// Find all enabled rules for the given enricher, ordered by priority (ascending).
+    async fn find_rules(&self, enricher_id: &str) -> Vec<RuleConfig>;
+
+    /// List all rules across all enrichers.
+    async fn list_all_rules(&self) -> Vec<RuleConfig>;
 }

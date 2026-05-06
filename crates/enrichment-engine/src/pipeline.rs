@@ -13,6 +13,7 @@ use crate::extractors::{GlobExtractor, RegexExtractor};
 use crate::intent::IntentDetector;
 use crate::models::{AgentContext, EnrichmentMeta, EnricherDescriptor, Fact, OperationInvocation, OperationResult, ValidatedPattern};
 use crate::normalizer::{FactNormalizer, NormalizerConfig};
+use crate::rules::RuleEvaluator;
 use crate::traits::{CatalogRepository, Extractor, FileSystem, EnrichmentError};
 
 /// Cache of pre-compiled patterns per enricher.
@@ -63,24 +64,55 @@ impl CompiledEnricherCache {
 }
 
 /// The main enrichment pipeline.
-pub struct FactPipeline {
-    catalog: Arc<dyn CatalogRepository>,
-    #[allow(dead_code)]
-    compiled_cache: Arc<CompiledEnricherCache>,
-}
+ pub struct FactPipeline {
+     catalog: Arc<dyn CatalogRepository>,
+     rule_evaluator: Option<Arc<dyn RuleEvaluator>>,
+     #[allow(dead_code)]
+     compiled_cache: Arc<CompiledEnricherCache>,
+ }
 
 impl FactPipeline {
-    /// Create a new pipeline with the given catalog repository.
+    /// Create a new pipeline with the given catalog repository (no rule evaluator).
     pub fn new(catalog: Arc<dyn CatalogRepository>) -> Self {
         Self {
             catalog,
+            rule_evaluator: None,
+            compiled_cache: Arc::new(CompiledEnricherCache::default()),
+        }
+    }
+
+    /// Create a new pipeline with catalog and optional rule evaluator.
+    pub fn with_rule_evaluator(
+        catalog: Arc<dyn CatalogRepository>,
+        rule_evaluator: Option<Arc<dyn RuleEvaluator>>,
+    ) -> Self {
+        Self {
+            catalog,
+            rule_evaluator,
             compiled_cache: Arc::new(CompiledEnricherCache::default()),
         }
     }
 
     /// Create a new pipeline with a pre-built cache (for shared pipeline scenario).
     pub fn with_cache(catalog: Arc<dyn CatalogRepository>, compiled_cache: Arc<CompiledEnricherCache>) -> Self {
-        Self { catalog, compiled_cache }
+        Self {
+            catalog,
+            rule_evaluator: None,
+            compiled_cache,
+        }
+    }
+
+    /// Create a new pipeline with a pre-built cache and optional rule evaluator.
+    pub fn with_cache_and_rules(
+        catalog: Arc<dyn CatalogRepository>,
+        compiled_cache: Arc<CompiledEnricherCache>,
+        rule_evaluator: Option<Arc<dyn RuleEvaluator>>,
+    ) -> Self {
+        Self {
+            catalog,
+            rule_evaluator,
+            compiled_cache,
+        }
     }
 
     /// Build the compiled cache from all enrichers in the catalog.
@@ -118,6 +150,8 @@ impl FactPipeline {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     enricher_id: String::new(),
                 },
+                verdict: None,
+                recommendations: None,
             });
         }
 
@@ -135,6 +169,18 @@ impl FactPipeline {
             }
         }
 
+        // Step 2.5: Rule evaluation (if rule evaluator is configured)
+        let rule_output = if let Some(ref evaluator) = self.rule_evaluator {
+            let output = evaluator
+                .evaluate(&enricher.id, &invocation, &result, &all_facts)
+                .await;
+            // Merge rule-derived facts with extracted facts before normalization
+            all_facts.extend(output.derived_facts.clone());
+            output
+        } else {
+            crate::models::RuleOutput::empty()
+        };
+
         // Step 3: Normalize - build extractor config map for merge_mode
         let extractor_config_map: HashMap<String, &crate::models::ExtractorConfig> = enricher
             .extractors
@@ -145,7 +191,18 @@ impl FactPipeline {
         let normalized = normalizer.normalize_with_config(all_facts, &extractor_config_map);
 
         // Step 4: Compose AgentContext
-        let context = Self::compose_context(&invocation, &result, &normalized, enricher);
+        let context = Self::compose_context(
+            &invocation,
+            &result,
+            &normalized,
+            enricher,
+            rule_output.verdict,
+            if rule_output.recommendations.is_empty() {
+                None
+            } else {
+                Some(rule_output.recommendations)
+            },
+        );
 
         Ok(context)
     }
@@ -174,6 +231,8 @@ impl FactPipeline {
         _result: &OperationResult,
         facts: &[Fact],
         enricher: &EnricherDescriptor,
+        verdict: Option<String>,
+        recommendations: Option<Vec<String>>,
     ) -> AgentContext {
         // Extract build status
         let build_status = AgentContextComposer::get_fact(facts, "build_status")
@@ -199,6 +258,8 @@ impl FactPipeline {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 enricher_id: enricher.id.clone(),
             },
+            verdict,
+            recommendations,
         }
     }
 

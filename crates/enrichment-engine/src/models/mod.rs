@@ -3,8 +3,10 @@
 //! All types are framework-free (no Bastion, no MCP) and serde-serializable.
 
 mod enricher;
+mod rule;
 
 pub use enricher::{EnricherDescriptor, ExtractorConfig};
+pub use rule::{RuleAction, RuleConfig, RuleOutput};
 
 use regex::Regex;
 use std::sync::Arc;
@@ -84,7 +86,7 @@ pub struct OperationResult {
 }
 
 /// A single extracted fact from an operation result.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Fact {
     /// The fact key (e.g., "build_status", "jar_artifact").
     pub key: String,
@@ -135,4 +137,58 @@ pub struct AgentContext {
     pub test_summary: Option<TestSummary>,
     /// Enrichment metadata.
     pub enrichment_meta: EnrichmentMeta,
+    /// Verdict set by rule evaluation (last-wins across rules).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<String>,
+    /// Recommendations from rule evaluation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommendations: Option<Vec<String>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verdict and recommendations are omitted from JSON when None (backward-compatible).
+    #[test]
+    fn agent_context_backward_compatible_serialization() {
+        let ctx = AgentContext {
+            facts: vec![],
+            build_status: Some("BUILD SUCCESS".to_string()),
+            artifacts: vec![],
+            test_summary: None,
+            enrichment_meta: EnrichmentMeta {
+                source: "test".to_string(),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                enricher_id: "maven".to_string(),
+            },
+            verdict: None,
+            recommendations: None,
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        // Must NOT contain "verdict" or "recommendations" keys
+        assert!(!json.contains("\"verdict\""));
+        assert!(!json.contains("\"recommendations\""));
+    }
+
+    /// Verdict and recommendations ARE present when set.
+    #[test]
+    fn agent_context_with_verdict_and_recommendations() {
+        let ctx = AgentContext {
+            facts: vec![],
+            build_status: Some("BUILD SUCCESS".to_string()),
+            artifacts: vec![],
+            test_summary: None,
+            enrichment_meta: EnrichmentMeta {
+                source: "test".to_string(),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                enricher_id: "maven".to_string(),
+            },
+            verdict: Some("PASSED".to_string()),
+            recommendations: Some(vec!["Review tests".to_string()]),
+        };
+        let json = serde_json::to_string(&ctx).unwrap();
+        assert!(json.contains("\"verdict\":\"PASSED\""));
+        assert!(json.contains("\"recommendations\""));
+    }
 }
