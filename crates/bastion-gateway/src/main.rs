@@ -531,7 +531,25 @@ async fn main() -> Result<()> {
                 enrichment_cfg.clone(),
             );
 
-            tracing::info!("Enrichment catalog initialized at {}", enrichment_catalog_db_path.display());
+            // Initialize the enrichment runs recorder (persistence for Meta-Harness optimization)
+            let enrichment_runs_db_path = bastion_home.join("data").join("enrichment_runs.db");
+            let (adapter, _enrichment_log) = match bastion_infrastructure::enrichment::SqliteRunRecorder::new(&enrichment_runs_db_path) {
+                Ok(recorder) => {
+                    let recorder: Arc<dyn enrichment_engine::traits::RunRecorder> = Arc::new(recorder);
+                    let adapter_arc = Arc::new(adapter);
+                    let adapter_with_recorder = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::with_recorder(adapter_arc, recorder);
+                    tracing::info!("Enrichment catalog initialized at {}, runs recorded at {}", enrichment_catalog_db_path.display(), enrichment_runs_db_path.display());
+                    // adapter_with_recorder is Arc<BastionEnrichmentAdapter>, and BastionGateway expects Arc<Option<BastionEnrichmentAdapter>>
+                    // We can use Arc::new(Some(...)) on the unwrapped inner value
+                    let inner = Arc::try_unwrap(adapter_with_recorder).unwrap_or_else(|arc| (*arc).clone());
+                    (inner, Some(enrichment_runs_db_path.clone()))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to initialize enrichment run recorder, continuing without recording");
+                    tracing::info!("Enrichment catalog initialized at {}", enrichment_catalog_db_path.display());
+                    (adapter, None)
+                }
+            };
             (Arc::new(Some(adapter)), enrichment_cfg)
         }
         Err(e) => {

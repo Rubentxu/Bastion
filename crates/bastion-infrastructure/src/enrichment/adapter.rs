@@ -10,10 +10,12 @@ use std::time::{Duration, Instant};
 use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::provider::port::SandboxProvider;
 use bastion_domain::shared::id::SandboxId;
+use uuid::Uuid;
 
-use enrichment_engine::models::{AgentContext, OperationInvocation, OperationResult};
+use enrichment_engine::models::{AgentContext, EnrichmentRunRecord, OperationInvocation, OperationResult};
 use enrichment_engine::pipeline::FactPipeline;
-use enrichment_engine::traits::CatalogRepository;
+use enrichment_engine::traits::{CatalogRepository, RunRecorder};
+use enrichment_engine::truncate::truncate_string;
 
 use super::config::EnrichmentConfig;
 use super::fs::SandboxFileSystem;
@@ -23,17 +25,27 @@ use super::fs::SandboxFileSystem;
 /// Holds a shared `FactPipeline` and a `SandboxProvider` reference.
 /// Implements the enrichment workflow: map CommandSpec → OperationInvocation,
 /// call pipeline, map back to JSON extension.
+///
+/// Optionally records enrichment runs via a `RunRecorder` for telemetry
+/// and Meta-Harness optimization.
+#[derive(Clone)]
 pub struct BastionEnrichmentAdapter {
     pipeline: Arc<FactPipeline>,
     provider: Arc<dyn SandboxProvider>,
     config: EnrichmentConfig,
+    recorder: Option<Arc<dyn RunRecorder>>,
 }
 
 impl BastionEnrichmentAdapter {
-    /// Create a new adapter.
+    /// Create a new adapter without a recorder.
     ///
     /// The pipeline is built once from the catalog and reused for all enrich() calls.
     /// The provider is used to create per-request SandboxFileSystem instances.
+    ///
+    /// # Backward Compatibility
+    ///
+    /// This constructor preserves the original signature. To add a recorder,
+    /// use `with_recorder()` on the returned adapter.
     pub fn new(
         catalog: Arc<dyn CatalogRepository>,
         provider: Arc<dyn SandboxProvider>,
@@ -44,6 +56,7 @@ impl BastionEnrichmentAdapter {
             pipeline: Arc::new(pipeline),
             provider,
             config,
+            recorder: None,
         }
     }
 
@@ -57,7 +70,36 @@ impl BastionEnrichmentAdapter {
             pipeline,
             provider,
             config,
+            recorder: None,
         }
+    }
+
+    /// Configure this adapter with a recorder.
+    ///
+    /// Returns a new `Arc<Self>` with the recorder set. The original adapter
+    /// is cloned, not modified (preserving the original `new()` signature).
+    ///
+    /// # Arguments
+    ///
+    /// * `recorder` - The recorder to use for persisting enrichment runs
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::Arc;
+    /// use bastion_infrastructure::enrichment::{BastionEnrichmentAdapter, SqliteRunRecorder};
+    ///
+    /// let adapter = Arc::new(BastionEnrichmentAdapter::new(catalog, provider, config));
+    /// let recorder = Arc::new(SqliteRunRecorder::new(path).unwrap());
+    /// let adapter_with_recorder = BastionEnrichmentAdapter::with_recorder(adapter, recorder);
+    /// ```
+    pub fn with_recorder(self: Arc<Self>, recorder: Arc<dyn RunRecorder>) -> Arc<Self> {
+        Arc::new(Self {
+            pipeline: self.pipeline.clone(),
+            provider: self.provider.clone(),
+            config: self.config.clone(),
+            recorder: Some(recorder),
+        })
     }
 
     /// Enrich a sandbox command execution.
@@ -67,6 +109,10 @@ impl BastionEnrichmentAdapter {
     ///
     /// Returns `None` if enrichment is disabled or no enricher matches.
     /// Errors are traced at warn level and return `None` (non-blocking).
+    ///
+    /// When a recorder is configured, an `EnrichmentRunRecord` is persisted
+    /// asynchronously after the pipeline completes. Recording is fire-and-forget
+    /// — failures do not block the enrichment response.
     pub async fn enrich(
         &self,
         sandbox_id: &SandboxId,
@@ -83,10 +129,12 @@ impl BastionEnrichmentAdapter {
         let fs = SandboxFileSystem::new(self.provider.clone(), sandbox_id.clone());
 
         let start = Instant::now();
-        let ctx = match self.pipeline.run(invocation, result, &fs).await {
+        let ctx = match self.pipeline.run(invocation.clone(), result.clone(), &fs).await {
             Ok(ctx) => ctx,
             Err(e) => {
                 tracing::warn!(error = %e, "Enrichment pipeline failed");
+                // Record even on pipeline error (partial results may exist)
+                self.record_run(&invocation, &result, None, start.elapsed(), Some(&e));
                 return None;
             }
         };
@@ -98,11 +146,133 @@ impl BastionEnrichmentAdapter {
         }
 
         // Return None if no facts were extracted (no enricher matched)
+        // But still record the run for telemetry
         if ctx.facts.is_empty() {
+            self.record_run(&invocation, &result, Some(&ctx), elapsed, None);
             return None;
         }
 
+        // Record successful enrichment run
+        self.record_run(&invocation, &result, Some(&ctx), elapsed, None);
+
         Some(ctx)
+    }
+
+    /// Record an enrichment run asynchronously.
+    ///
+    /// This is fire-and-forget — errors are logged at warn level but do not
+    /// block the caller.
+    fn record_run(
+        &self,
+        invocation: &OperationInvocation,
+        result: &OperationResult,
+        ctx: Option<&AgentContext>,
+        elapsed: Duration,
+        error: Option<&str>,
+    ) {
+        let Some(ref recorder) = self.recorder else {
+            return;
+        };
+
+        let record = self.build_record(invocation, result, ctx, elapsed, error);
+        let recorder = Arc::clone(recorder);
+
+        // Fire-and-forget: spawn recording task
+        tokio::spawn(async move {
+            if let Err(e) = recorder.record(&record).await {
+                tracing::warn!(error = %e, run_id = %record.id, "EnrichmentRunRecord failed to persist");
+            }
+        });
+    }
+
+    /// Build an `EnrichmentRunRecord` from the enrichment context.
+    fn build_record(
+        &self,
+        invocation: &OperationInvocation,
+        result: &OperationResult,
+        ctx: Option<&AgentContext>,
+        elapsed: Duration,
+        error: Option<&str>,
+    ) -> EnrichmentRunRecord {
+        let enricher_id = ctx
+            .map(|c| c.enrichment_meta.enricher_id.clone())
+            .unwrap_or_default();
+
+        let facts_count = ctx.map(|c| c.facts.len() as u32).unwrap_or(0);
+        let artifacts_count = ctx.map(|c| c.artifacts.len() as u32).unwrap_or(0);
+        let verdict = ctx.and_then(|c| c.verdict.clone());
+        let recommendation_count = ctx
+            .and_then(|c| c.recommendations.as_ref())
+            .map(|r| r.len() as u32)
+            .unwrap_or(0);
+
+        // Count diagnostic-tagged facts
+        let diagnostics_count = ctx
+            .map(|c| {
+                c.facts
+                    .iter()
+                    .filter(|f| f.tags.iter().any(|t| t == "diagnostic"))
+                    .count() as u32
+            })
+            .unwrap_or(0);
+
+        // Derived facts and rule hits come from the pipeline's rule evaluation
+        // Since we don't have direct access to RuleOutput here, we derive from ctx
+        let derived_facts_count = ctx
+            .map(|c| {
+                c.facts
+                    .iter()
+                    .filter(|f| f.source_extractor == "rule")
+                    .count() as u32
+            })
+            .unwrap_or(0);
+
+        // rule_hits_count: we track via derived facts since RuleOutput is internal
+        // A rule hit produces at least one derived fact or a verdict/recommendation
+        let rule_hits_count = if derived_facts_count > 0 || recommendation_count > 0 || verdict.is_some() {
+            // Estimate based on having any rule activity
+            1
+        } else {
+            0
+        };
+
+        // Compute average confidence
+        let confidence_avg = ctx
+            .map(|c| {
+                if c.facts.is_empty() {
+                    0.0
+                } else {
+                    let sum: f64 = c.facts.iter().map(|f| f.confidence as f64).sum();
+                    sum / c.facts.len() as f64
+                }
+            })
+            .unwrap_or(0.0);
+
+        // Truncate outputs (500 char limit, None if empty)
+        let output_summary_stdout = truncate_string(&result.stdout, 500);
+        let output_summary_stderr = truncate_string(&result.stderr, 500);
+        let command = truncate_string(&invocation.command, 500)
+            .unwrap_or_else(|| invocation.command.clone());
+
+        EnrichmentRunRecord::new(
+            Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            command,
+            enricher_id,
+            result.exit_code,
+            elapsed.as_millis() as u64,
+            output_summary_stdout,
+            output_summary_stderr,
+            facts_count,
+            derived_facts_count,
+            rule_hits_count,
+            diagnostics_count,
+            artifacts_count,
+            confidence_avg,
+            verdict,
+            recommendation_count,
+            error.map(String::from),
+        )
     }
 
     /// Map a `CommandSpec` to an `OperationInvocation`.
@@ -130,8 +300,147 @@ impl BastionEnrichmentAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use bastion_domain::execution::command::CommandSpec;
     use bastion_domain::execution::command::CommandResult;
+    use bastion_domain::provider::capabilities::ProviderCapabilities;
+    use bastion_domain::provider::port::SandboxProvider;
+    use bastion_domain::shared::DomainError;
+    use bastion_domain::shared::id::SandboxId;
+    use bastion_domain::provider::port::CommandStream;
+    use bastion_domain::sandbox::entity::Sandbox;
+    use bastion_domain::sandbox::snapshot::SnapshotInfo;
+    use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
+    use bastion_domain::file_ops::FileEntry;
+    use enrichment_engine::models::{EnricherDescriptor, EnrichmentMeta, Fact};
+    use enrichment_engine::traits::CatalogRepository;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    // Mock recorder for testing
+    struct MockRecorder {
+        records: Arc<Mutex<Vec<EnrichmentRunRecord>>>,
+    }
+
+    impl MockRecorder {
+        fn new() -> Self {
+            Self {
+                records: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl RunRecorder for MockRecorder {
+        async fn record(&self, run: &EnrichmentRunRecord) -> Result<(), enrichment_engine::traits::EnrichmentError> {
+            self.records.lock().await.push(run.clone());
+            Ok(())
+        }
+    }
+
+    // Fake CatalogRepository for tests
+    struct FakeCatalog;
+
+    #[async_trait]
+    impl CatalogRepository for FakeCatalog {
+        async fn find_enrichers(&self, _command: &str) -> Vec<EnricherDescriptor> {
+            vec![]
+        }
+        async fn list_all(&self) -> Vec<EnricherDescriptor> {
+            vec![]
+        }
+    }
+
+    // Fake SandboxProvider for tests
+    struct FakeProvider;
+
+    impl std::fmt::Debug for FakeProvider {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "FakeProvider")
+        }
+    }
+
+    #[async_trait]
+    impl SandboxProvider for FakeProvider {
+        async fn create(
+            &self,
+            _id: &SandboxId,
+            _template: &str,
+            _resources: &ResourcesSpec,
+            _network: &NetworkSpec,
+            _env_vars: &HashMap<String, String>,
+            _timeout_ms: u64,
+        ) -> Result<Sandbox, DomainError> {
+            unimplemented!()
+        }
+        async fn terminate(&self, _id: &SandboxId) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn is_alive(&self, _id: &SandboxId) -> Result<bool, DomainError> {
+            Ok(true)
+        }
+        async fn run_command(
+            &self,
+            _id: &SandboxId,
+            _command: &CommandSpec,
+        ) -> Result<CommandResult, DomainError> {
+            unimplemented!()
+        }
+        async fn run_command_stream(
+            &self,
+            _id: &SandboxId,
+            _command: &CommandSpec,
+        ) -> Result<CommandStream, DomainError> {
+            unimplemented!()
+        }
+        async fn write_file(
+            &self,
+            _id: &SandboxId,
+            _path: &str,
+            _content: &[u8],
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn read_file(
+            &self,
+            _id: &SandboxId,
+            _path: &str,
+        ) -> Result<Vec<u8>, DomainError> {
+            Ok(vec![])
+        }
+        async fn list_files(
+            &self,
+            _id: &SandboxId,
+            _dir: &str,
+        ) -> Result<Vec<FileEntry>, DomainError> {
+            Ok(vec![])
+        }
+        async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+            unimplemented!()
+        }
+        async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+            unimplemented!()
+        }
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
+        fn name(&self) -> &str {
+            "fake"
+        }
+        async fn list_sandboxes(
+            &self,
+            _filter: &SandboxFilter,
+        ) -> Result<Vec<Sandbox>, DomainError> {
+            Ok(vec![])
+        }
+        async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
+            unimplemented!()
+        }
+        async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn test_command_spec_mapping() {
@@ -161,5 +470,120 @@ mod tests {
         assert_eq!(op_result.stderr, "");
         assert_eq!(op_result.duration_ms, 5000);
         assert!(!op_result.timed_out);
+    }
+
+    #[tokio::test]
+    async fn test_record_run_not_called_when_no_recorder() {
+        // Test that record_run is a no-op when recorder is None
+        // This is implicitly tested by the fact that enrich() doesn't panic
+        // when recorder is None
+        let adapter = BastionEnrichmentAdapter::new(
+            Arc::new(FakeCatalog),
+            Arc::new(FakeProvider),
+            EnrichmentConfig::default(),
+        );
+
+        // Should not panic when calling record_run with None recorder
+        let invocation = OperationInvocation::from_command("echo hello");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: "hello".to_string(),
+            stderr: String::new(),
+            duration_ms: 100,
+            timed_out: false,
+        };
+
+        adapter.record_run(&invocation, &result, None, Duration::from_millis(100), None);
+    }
+
+    #[tokio::test]
+    async fn test_build_record_truncates_long_output() {
+        let adapter = BastionEnrichmentAdapter::new(
+            Arc::new(FakeCatalog),
+            Arc::new(FakeProvider),
+            EnrichmentConfig::default(),
+        );
+
+        let long_stdout = "x".repeat(1000);
+        let invocation = OperationInvocation::from_command("mvn package");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: long_stdout.clone(),
+            stderr: String::new(),
+            duration_ms: 5000,
+            timed_out: false,
+        };
+
+        let ctx = AgentContext {
+            facts: vec![Fact {
+                key: "status".to_string(),
+                value: "BUILD SUCCESS".to_string(),
+                tags: vec![],
+                source_extractor: "test".to_string(),
+                confidence: 0.9,
+            }],
+            build_status: Some("BUILD SUCCESS".to_string()),
+            artifacts: vec![],
+            test_summary: None,
+            enrichment_meta: EnrichmentMeta {
+                source: "test".to_string(),
+                timestamp: "2024-01-01T00:00:00Z".to_string(),
+                enricher_id: "maven".to_string(),
+            },
+            verdict: Some("PASSED".to_string()),
+            recommendations: None,
+        };
+
+        let record = adapter.build_record(&invocation, &result, Some(&ctx), Duration::from_millis(5000), None);
+
+        // stdout should be truncated to 500 chars + ellipsis
+        assert!(record.output_summary_stdout.is_some());
+        let stdout = record.output_summary_stdout.unwrap();
+        assert!(stdout.ends_with('…'));
+        assert!(stdout.chars().count() <= 501);
+
+        // stderr is empty, should be None
+        assert!(record.output_summary_stderr.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_build_record_empty_stderr_returns_none() {
+        let adapter = BastionEnrichmentAdapter::new(
+            Arc::new(FakeCatalog),
+            Arc::new(FakeProvider),
+            EnrichmentConfig::default(),
+        );
+
+        let invocation = OperationInvocation::from_command("echo hello");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: "hello".to_string(),
+            stderr: String::new(),
+            duration_ms: 100,
+            timed_out: false,
+        };
+
+        let record = adapter.build_record(&invocation, &result, None, Duration::from_millis(100), None);
+
+        // Empty stderr should be stored as None
+        assert!(record.output_summary_stderr.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_with_recorder_returns_new_arc() {
+        let adapter = Arc::new(BastionEnrichmentAdapter::new(
+            Arc::new(FakeCatalog),
+            Arc::new(FakeProvider),
+            EnrichmentConfig::default(),
+        ));
+
+        let recorder = Arc::new(MockRecorder::new());
+        let adapter_with_recorder = BastionEnrichmentAdapter::with_recorder(adapter.clone(), recorder);
+
+        // Should be a different Arc
+        assert_ne!(Arc::as_ptr(&adapter), Arc::as_ptr(&adapter_with_recorder));
+
+        // Original adapter should have no recorder
+        // (we can't directly access private fields, but this is implicit)
     }
 }

@@ -4,9 +4,13 @@
 
 mod enricher;
 mod rule;
+mod run_record;
+mod utility_metrics;
 
 pub use enricher::{CommandExtractorPolicy, EnricherDescriptor, ExtractorConfig};
 pub use rule::{RuleAction, RuleConfig, RuleOutput};
+pub use run_record::EnrichmentRunRecord;
+pub use utility_metrics::UtilityMetrics;
 
 use regex::Regex;
 use std::sync::Arc;

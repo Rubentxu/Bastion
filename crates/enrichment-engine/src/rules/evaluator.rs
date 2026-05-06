@@ -104,6 +104,7 @@ impl DefaultRuleEvaluator {
 
         for pr in sorted {
             if ctx.evaluate(&pr.expr) {
+                output.hit_count += 1;
                 for action in &pr.config.actions {
                     self.execute_action(action, &mut output);
                 }

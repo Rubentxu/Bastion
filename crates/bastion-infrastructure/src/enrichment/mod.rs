@@ -7,7 +7,9 @@ pub mod adapter;
 pub mod config;
 pub mod fs;
 pub mod sqlite_repo;
+pub mod sqlite_recorder;
 
 pub use adapter::BastionEnrichmentAdapter;
 pub use config::EnrichmentConfig;
 pub use sqlite_repo::{SqliteCatalogRepository, YamlCatalogImporter};
+pub use sqlite_recorder::SqliteRunRecorder;

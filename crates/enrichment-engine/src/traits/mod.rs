@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-use crate::models::{EnricherDescriptor, OperationInvocation, OperationResult, Fact, RuleConfig};
+use crate::models::{EnricherDescriptor, OperationInvocation, OperationResult, Fact, RuleConfig, EnrichmentRunRecord};
 
 /// Errors that can occur in enrichment operations.
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +19,8 @@ pub enum EnrichmentError {
     Extraction(String),
     #[error("Config error: {0}")]
     Config(String),
+    #[error("Recorder error: {0}")]
+    Recorder(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -79,4 +81,21 @@ pub trait RuleRepository: Send + Sync {
 
     /// List all rules across all enrichers.
     async fn list_all_rules(&self) -> Vec<RuleConfig>;
+}
+
+/// Recorder trait for persisting enrichment run records.
+///
+/// Implementations are responsible for storing `EnrichmentRunRecord`s
+/// to a backing store (e.g., SQLite, PostgreSQL, etc.).
+///
+/// The recorder is fire-and-forget in the adapter — failures are logged
+/// but do not block the enrichment pipeline.
+#[async_trait]
+pub trait RunRecorder: Send + Sync {
+    /// Record an enrichment run.
+    ///
+    /// The implementation should persist the record to its backing store.
+    /// Errors should be logged but not propagated — the adapter handles
+    /// failure reporting via `tracing::warn!`.
+    async fn record(&self, run: &EnrichmentRunRecord) -> Result<(), EnrichmentError>;
 }

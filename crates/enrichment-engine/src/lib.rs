@@ -32,10 +32,11 @@
 // ─── Public re-exports ────────────────────────────────────────────────────────
 
 pub use crate::models::{
-    AgentContext, CommandExtractorPolicy, EnricherDescriptor, EnrichmentMeta, ExtractorConfig, Fact,
-    OperationInvocation, OperationResult, RuleAction, RuleConfig, RuleOutput, TestSummary,
+    AgentContext, CommandExtractorPolicy, EnricherDescriptor, EnrichmentMeta,     EnrichmentRunRecord,
+    ExtractorConfig, Fact, OperationInvocation, OperationResult, RuleAction, RuleConfig, RuleOutput,
+    TestSummary, UtilityMetrics,
 };
-pub use crate::traits::{CatalogRepository, EnrichmentError, Extractor, FactStore, FileSystem, RuleRepository};
+pub use crate::traits::{CatalogRepository, EnrichmentError, Extractor, FactStore, FileSystem, RuleRepository, RunRecorder};
 pub use crate::rules::{DefaultRuleEvaluator, Expr, ParseError, RuleEvaluator};
 
 // ─── Modules ─────────────────────────────────────────────────────────────────
@@ -49,3 +50,4 @@ pub mod normalizer;
 pub mod pipeline;
 pub mod rules;
 pub mod traits;
+pub mod truncate;

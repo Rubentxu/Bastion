@@ -45,7 +45,7 @@ pub enum RuleAction {
     Recommend(String),
 }
 
-/// Output from rule evaluation: derived facts, verdict, and recommendations.
+/// Output from rule evaluation: derived facts, verdict, recommendations, and hit count.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct RuleOutput {
     /// Facts derived by matched rules.
@@ -56,6 +56,9 @@ pub struct RuleOutput {
     /// Recommendations accumulated across all matched rules.
     #[serde(default)]
     pub recommendations: Vec<String>,
+    /// Number of rules that matched (condition evaluated to true).
+    #[serde(default)]
+    pub hit_count: u32,
 }
 
 impl RuleOutput {
@@ -65,6 +68,7 @@ impl RuleOutput {
             derived_facts: Vec::new(),
             verdict: None,
             recommendations: Vec::new(),
+            hit_count: 0,
         }
     }
 
@@ -72,12 +76,14 @@ impl RuleOutput {
     /// - derived_facts are appended.
     /// - verdict is replaced if the other has one (last-wins).
     /// - recommendations are extended.
+    /// - hit_count is summed.
     pub fn merge(&mut self, other: RuleOutput) {
         self.derived_facts.extend(other.derived_facts);
         if other.verdict.is_some() {
             self.verdict = other.verdict;
         }
         self.recommendations.extend(other.recommendations);
+        self.hit_count += other.hit_count;
     }
 }
 
@@ -178,6 +184,7 @@ mod tests {
             ],
             verdict: Some("PASSED".to_string()),
             recommendations: vec!["Review tests".to_string()],
+            hit_count: 3,
         };
         let json = serde_json::to_string(&output).unwrap();
         let parsed: RuleOutput = serde_json::from_str(&json).unwrap();
@@ -185,6 +192,7 @@ mod tests {
         assert_eq!(parsed.derived_facts[0].key, "build_ok");
         assert_eq!(parsed.verdict.as_deref(), Some("PASSED"));
         assert_eq!(parsed.recommendations.as_slice(), ["Review tests"]);
+        assert_eq!(parsed.hit_count, 3);
     }
 
     #[test]
@@ -193,12 +201,14 @@ mod tests {
             derived_facts: vec![],
             verdict: None,
             recommendations: vec![],
+            hit_count: 0,
         };
         let json = serde_json::to_string(&output).unwrap();
         let parsed: RuleOutput = serde_json::from_str(&json).unwrap();
         assert!(parsed.derived_facts.is_empty());
         assert!(parsed.verdict.is_none());
         assert!(parsed.recommendations.is_empty());
+        assert_eq!(parsed.hit_count, 0);
     }
 
     // ─── RuleOutput merge ─────────────────────────────────────────────────────
@@ -207,14 +217,17 @@ mod tests {
     fn rule_output_merge_last_verdict_wins() {
         let mut out = RuleOutput::empty();
         out.verdict = Some("FIRST".to_string());
+        out.hit_count = 1;
 
         let other = RuleOutput {
             derived_facts: vec![],
             verdict: Some("SECOND".to_string()),
             recommendations: vec![],
+            hit_count: 2,
         };
         out.merge(other);
         assert_eq!(out.verdict.as_deref(), Some("SECOND"));
+        assert_eq!(out.hit_count, 3); // 1 + 2
     }
 
     #[test]
@@ -229,6 +242,7 @@ mod tests {
             }],
             verdict: None,
             recommendations: vec!["rec1".to_string()],
+            hit_count: 1,
         };
 
         let other = RuleOutput {
@@ -241,11 +255,13 @@ mod tests {
             }],
             verdict: None,
             recommendations: vec!["rec2".to_string()],
+            hit_count: 2,
         };
         out.merge(other);
 
         assert_eq!(out.derived_facts.len(), 2);
         assert_eq!(out.derived_facts[1].key, "b");
         assert_eq!(out.recommendations.as_slice(), ["rec1", "rec2"]);
+        assert_eq!(out.hit_count, 3); // 1 + 2
     }
 }
