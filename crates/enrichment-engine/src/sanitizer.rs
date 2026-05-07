@@ -144,9 +144,29 @@ pub fn sanitize_command(input: &str) -> String {
             continue;
         }
 
-        // No pattern matched — copy byte as-is
-        result.push(bytes[i] as char);
-        i += 1;
+        // Check for lowercase secret suffix pattern (_key, _token, _secret, _password)
+        // This is checked LAST to give explicit patterns and uppercase snake priority
+        if let Some((key_len, _, value_end)) = check_lowercase_secret_suffix(bytes, i) {
+            result.push_str(&input[i..i + key_len]);
+            result.push('=');
+            result.push_str("[REDACTED]");
+            i = value_end;
+            continue;
+        }
+
+        // No pattern matched — copy UTF-8 character as-is
+        // Determine character byte length to preserve multi-byte sequences
+        let char_len = if bytes[i] < 0x80 {
+            1 // ASCII
+        } else if bytes[i] < 0xE0 {
+            2 // 2-byte UTF-8 sequence
+        } else if bytes[i] < 0xF0 {
+            3 // 3-byte UTF-8 sequence
+        } else {
+            4 // 4-byte UTF-8 sequence (emoji, etc.)
+        };
+        result.push_str(&input[i..i + char_len]);
+        i += char_len;
     }
 
     result
@@ -160,7 +180,7 @@ pub fn sanitize_command(input: &str) -> String {
 fn check_assignment_pattern(bytes: &[u8], i: usize) -> Option<(usize, usize, usize)> {
     // Check each pattern individually
     let patterns = [
-        ("token=", 5usize),   // "token" = 5 chars
+        ("token=", 5usize),    // "token" = 5 chars
         ("password=", 8usize), // "password" = 8 chars
         ("api_key=", 7usize),  // "api_key" = 7 chars
     ];
@@ -168,13 +188,22 @@ fn check_assignment_pattern(bytes: &[u8], i: usize) -> Option<(usize, usize, usi
     for (pattern_str, key_len) in &patterns {
         let pattern_bytes = pattern_str.as_bytes();
         let pattern_total_len = pattern_bytes.len(); // includes '='
-        if i + pattern_total_len <= bytes.len() && &bytes[i..i + pattern_total_len] == pattern_bytes {
+        if i + pattern_total_len <= bytes.len() && &bytes[i..i + pattern_total_len] == pattern_bytes
+        {
             // Find the end of the value (whitespace, quote, comma, or end of string)
             let value_start = i + pattern_total_len; // position of '='
             let mut value_end = value_start;
             while value_end < bytes.len() {
                 let b = bytes[value_end];
-                if b == b' ' || b == b'\t' || b == b'\'' || b == b'"' || b == b',' || b == b'&' || b == b'\n' || b == b'\r' {
+                if b == b' '
+                    || b == b'\t'
+                    || b == b'\''
+                    || b == b'"'
+                    || b == b','
+                    || b == b'&'
+                    || b == b'\n'
+                    || b == b'\r'
+                {
                     break;
                 }
                 value_end += 1;
@@ -225,7 +254,14 @@ fn check_aws_key_pattern(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
     let mut end = i + 4; // Start after AKIA prefix
     while end < bytes.len() {
         let b = bytes[end];
-        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == b'\'' || b == b'"' || b == b',' {
+        if b == b' '
+            || b == b'\t'
+            || b == b'\n'
+            || b == b'\r'
+            || b == b'\''
+            || b == b'"'
+            || b == b','
+        {
             break;
         }
         end += 1;
@@ -292,7 +328,14 @@ fn check_snake_key_pattern(bytes: &[u8], i: usize) -> Option<(usize, usize, usiz
         let mut value_end = value_start;
         while value_end < bytes.len() {
             let b = bytes[value_end];
-            if b == b' ' || b == b'\t' || b == b'\'' || b == b'"' || b == b',' || b == b'&' || b == b'\n' {
+            if b == b' '
+                || b == b'\t'
+                || b == b'\''
+                || b == b'"'
+                || b == b','
+                || b == b'&'
+                || b == b'\n'
+            {
                 break;
             }
             value_end += 1;
@@ -318,7 +361,15 @@ fn check_github_token(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
             let mut count = 0;
             while end < bytes.len() {
                 let b = bytes[end];
-                if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == b'\'' || b == b'"' || b == b',' || b == b'&' {
+                if b == b' '
+                    || b == b'\t'
+                    || b == b'\n'
+                    || b == b'\r'
+                    || b == b'\''
+                    || b == b'"'
+                    || b == b','
+                    || b == b'&'
+                {
                     break;
                 }
                 // Only hex/alphanumeric allowed in GitHub tokens
@@ -359,7 +410,15 @@ fn check_openai_key(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
         let mut count = 0;
         while end < bytes.len() {
             let b = bytes[end];
-            if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == b'\'' || b == b'"' || b == b',' || b == b'&' {
+            if b == b' '
+                || b == b'\t'
+                || b == b'\n'
+                || b == b'\r'
+                || b == b'\''
+                || b == b'"'
+                || b == b','
+                || b == b'&'
+            {
                 break;
             }
             count += 1;
@@ -373,7 +432,12 @@ fn check_openai_key(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
 }
 
 /// Helper for OpenAI long prefix patterns (sk-proj-, sk-svcacct-, sk-admin-).
-fn check_openai_long_prefix(bytes: &[u8], i: usize, prefix: &[u8], min_chars: usize) -> Option<(usize, usize)> {
+fn check_openai_long_prefix(
+    bytes: &[u8],
+    i: usize,
+    prefix: &[u8],
+    min_chars: usize,
+) -> Option<(usize, usize)> {
     let prefix_len = prefix.len();
     if i + prefix_len <= bytes.len() && &bytes[i..i + prefix_len] == prefix {
         let start = i;
@@ -381,7 +445,15 @@ fn check_openai_long_prefix(bytes: &[u8], i: usize, prefix: &[u8], min_chars: us
         let mut count = 0;
         while end < bytes.len() {
             let b = bytes[end];
-            if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == b'\'' || b == b'"' || b == b',' || b == b'&' {
+            if b == b' '
+                || b == b'\t'
+                || b == b'\n'
+                || b == b'\r'
+                || b == b'\''
+                || b == b'"'
+                || b == b','
+                || b == b'&'
+            {
                 break;
             }
             count += 1;
@@ -461,6 +533,98 @@ fn check_jwt_prefix(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
+/// Check if current position starts a lowercase secret suffix pattern.
+/// Matches keys of 3+ bytes containing ONLY a-z, 0-9, underscore
+/// that END with exactly one of: _key, _token, _secret, _password.
+/// Follows same delimiter semantics as check_assignment_pattern.
+///
+/// Returns (key_len, value_start, value_end) if found, None otherwise.
+fn check_lowercase_secret_suffix(bytes: &[u8], i: usize) -> Option<(usize, usize, usize)> {
+    // Must have at least one char before '='
+    if i >= bytes.len() || bytes[i] == b'=' {
+        return None;
+    }
+
+    // Find the '=' position
+    let mut eq_pos = i;
+    while eq_pos < bytes.len() && bytes[eq_pos] != b'=' {
+        eq_pos += 1;
+    }
+
+    if eq_pos >= bytes.len() || bytes[eq_pos] != b'=' {
+        return None;
+    }
+
+    // Key must be 3+ bytes
+    let key_len = eq_pos - i;
+    if key_len < 3 {
+        return None;
+    }
+
+    // Key must contain ONLY a-z, 0-9, underscore
+    let key_bytes = &bytes[i..eq_pos];
+    for &b in key_bytes {
+        match b {
+            b'a'..=b'z' | b'0'..=b'9' | b'_' => {}
+            _ => return None,
+        }
+    }
+
+    // Key must END with exactly one of: _key, _token, _secret, _password
+    let suffixes: [&[u8]; 4] = [b"_key", b"_token", b"_secret", b"_password"];
+    let mut matched_suffix_len = 0;
+
+    for suffix in &suffixes {
+        let suffix_len = suffix.len();
+        if key_len >= suffix_len {
+            let suffix_start = eq_pos - suffix_len;
+            if &bytes[suffix_start..eq_pos] == *suffix {
+                matched_suffix_len = suffix_len;
+                break;
+            }
+        }
+    }
+
+    if matched_suffix_len == 0 {
+        return None;
+    }
+
+    // Find the end of the value (same delimiter set as check_assignment_pattern)
+    let value_start = eq_pos + 1;
+    let mut value_end = value_start;
+
+    // Handle quoted values
+    if value_end < bytes.len() && (bytes[value_end] == b'\'' || bytes[value_end] == b'"') {
+        let quote = bytes[value_end];
+        value_end += 1; // skip opening quote
+        while value_end < bytes.len() && bytes[value_end] != quote {
+            value_end += 1;
+        }
+        if value_end < bytes.len() {
+            value_end += 1; // skip closing quote
+        }
+    } else {
+        // Scan until delimiter or end
+        while value_end < bytes.len() {
+            let b = bytes[value_end];
+            if b == b' '
+                || b == b'\t'
+                || b == b'\''
+                || b == b'"'
+                || b == b','
+                || b == b'&'
+                || b == b'\n'
+                || b == b'\r'
+            {
+                break;
+            }
+            value_end += 1;
+        }
+    }
+
+    Some((key_len, value_start, value_end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,10 +633,7 @@ mod tests {
 
     #[test]
     fn sanitize_token_eq_value() {
-        assert_eq!(
-            sanitize_command("token=secret123"),
-            "token=[REDACTED]"
-        );
+        assert_eq!(sanitize_command("token=secret123"), "token=[REDACTED]");
     }
 
     #[test]
@@ -485,10 +646,7 @@ mod tests {
 
     #[test]
     fn sanitize_token_with_suffix() {
-        assert_eq!(
-            sanitize_command("mytoken=sk-12345"),
-            "mytoken=[REDACTED]"
-        );
+        assert_eq!(sanitize_command("mytoken=sk-12345"), "mytoken=[REDACTED]");
     }
 
     // ─── password= pattern ───────────────────────────────────────────────────────
@@ -539,10 +697,7 @@ mod tests {
 
     #[test]
     fn sanitize_bearer_alone() {
-        assert_eq!(
-            sanitize_command("Bearer abc123"),
-            "Bearer [REDACTED]"
-        );
+        assert_eq!(sanitize_command("Bearer abc123"), "Bearer [REDACTED]");
     }
 
     // ─── AWS AKIA key pattern ──────────────────────────────────────────────────
@@ -550,10 +705,7 @@ mod tests {
     #[test]
     fn sanitize_aws_access_key() {
         // AKIA followed by 16 characters
-        assert_eq!(
-            sanitize_command("AKIAIOSFODNN7EXAMPLE"),
-            "[REDACTED]"
-        );
+        assert_eq!(sanitize_command("AKIAIOSFODNN7EXAMPLE"), "[REDACTED]");
     }
 
     #[test]
@@ -568,10 +720,7 @@ mod tests {
 
     #[test]
     fn sanitize_uppercase_snake_key() {
-        assert_eq!(
-            sanitize_command("API_KEY=secret"),
-            "API_KEY=[REDACTED]"
-        );
+        assert_eq!(sanitize_command("API_KEY=secret"), "API_KEY=[REDACTED]");
     }
 
     #[test]
@@ -585,10 +734,7 @@ mod tests {
     #[test]
     fn sanitize_mixed_case_not_redacted() {
         // Mixed case should NOT be redacted (not uppercase snakecase)
-        assert_eq!(
-            sanitize_command("myToken=secret"),
-            "myToken=secret"
-        );
+        assert_eq!(sanitize_command("myToken=secret"), "myToken=secret");
     }
 
     // Note: api_key=secret is redacted per spec (api_key= is a secret pattern)
@@ -651,10 +797,7 @@ mod tests {
     #[test]
     fn sanitize_key_with_underscore_middle() {
         // FOO_BAR=baz should be redacted
-        assert_eq!(
-            sanitize_command("FOO_BAR=baz"),
-            "FOO_BAR=[REDACTED]"
-        );
+        assert_eq!(sanitize_command("FOO_BAR=baz"), "FOO_BAR=[REDACTED]");
     }
 
     #[test]
@@ -689,28 +832,19 @@ mod tests {
     #[test]
     fn sanitize_github_token_short_false_positive() {
         // Short prefix <8 chars should NOT be redacted
-        assert_eq!(
-            sanitize_command("ghp_test"),
-            "ghp_test"
-        );
+        assert_eq!(sanitize_command("ghp_test"), "ghp_test");
     }
 
     #[test]
     fn sanitize_github_token_inline_ghs() {
         // Inline ghs_ token with 8+ chars
-        assert_eq!(
-            sanitize_command("ghs_12345678ab"),
-            "[REDACTED]"
-        );
+        assert_eq!(sanitize_command("ghs_12345678ab"), "[REDACTED]");
     }
 
     #[test]
     fn sanitize_github_token_ght() {
         // ght_ token
-        assert_eq!(
-            sanitize_command("ght_abcdef123456"),
-            "[REDACTED]"
-        );
+        assert_eq!(sanitize_command("ght_abcdef123456"), "[REDACTED]");
     }
 
     // ─── OpenAI Key Patterns (sk-, sk-proj-, sk-svcacct-, sk-admin-) ──────────
@@ -737,10 +871,7 @@ mod tests {
     #[test]
     fn sanitize_openai_key_short_false_positive() {
         // sk-sandbox < 48 chars should NOT be redacted
-        assert_eq!(
-            sanitize_command("sk-sandbox"),
-            "sk-sandbox"
-        );
+        assert_eq!(sanitize_command("sk-sandbox"), "sk-sandbox");
     }
 
     #[test]
@@ -792,9 +923,7 @@ mod tests {
     #[test]
     fn sanitize_jwt_prefix_valid() {
         // eyJ... with 200 chars and x.y.z structure
-        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.".to_string()
-            + &"x".repeat(150)
-            + ".z";
+        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.".to_string() + &"x".repeat(150) + ".z";
         assert_eq!(
             sanitize_command(&format!("Bearer {}", jwt)),
             "Bearer [REDACTED]"
@@ -804,28 +933,197 @@ mod tests {
     #[test]
     fn sanitize_jwt_prefix_short_no_dots() {
         // Short base64 without dots should NOT be redacted
-        assert_eq!(
-            sanitize_command("eyJpZCI6"),
-            "eyJpZCI6"
-        );
+        assert_eq!(sanitize_command("eyJpZCI6"), "eyJpZCI6");
     }
 
     #[test]
     fn sanitize_jwt_prefix_no_tripartite() {
         // eyJabc without dots should NOT be redacted
-        assert_eq!(
-            sanitize_command("eyJabc"),
-            "eyJabc"
-        );
+        assert_eq!(sanitize_command("eyJabc"), "eyJabc");
     }
 
     #[test]
     fn sanitize_jwt_prefix_no_prefix() {
         // No eyJ prefix, just base64-like string - should NOT be redacted
         let no_prefix = "dGhpcyBpcyBhIHNhbXBsZSJ9".to_string();
+        assert_eq!(sanitize_command(&no_prefix), no_prefix);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Phase 1: Lowercase Secret Suffix Detection (_key, _token, _secret, _password)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_lowercase_secret_key_suffix() {
+        // REQ-LCK-01#1: secret_key=fake123 → secret_key=[REDACTED]
         assert_eq!(
-            sanitize_command(&no_prefix),
-            no_prefix
+            sanitize_command("secret_key=fake123"),
+            "secret_key=[REDACTED]"
         );
+    }
+
+    #[test]
+    fn test_lowercase_access_token_suffix() {
+        // REQ-LCK-01#2: access_token=abc123 → access_token=[REDACTED]
+        assert_eq!(
+            sanitize_command("access_token=abc123"),
+            "access_token=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn test_lowercase_client_secret_suffix() {
+        // REQ-LCK-01#3: client_secret=mysecret → client_secret=[REDACTED]
+        assert_eq!(
+            sanitize_command("client_secret=mysecret"),
+            "client_secret=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn test_lowercase_db_password_suffix() {
+        // REQ-LCK-01#4: db_password=letmein → db_password=[REDACTED]
+        assert_eq!(
+            sanitize_command("db_password=letmein"),
+            "db_password=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn test_lowercase_github_token_suffix() {
+        // REQ-LCK-01#5: github_token=ghp_fake12345678 → github_token=[REDACTED]
+        assert_eq!(
+            sanitize_command("github_token=ghp_fake12345678"),
+            "github_token=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn test_lowercase_quoted_value() {
+        // REQ-LCK-01#6: secret_key='f4k3t0k3n' → secret_key=[REDACTED]
+        assert_eq!(
+            sanitize_command("secret_key='f4k3t0k3n'"),
+            "secret_key=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn test_lowercase_empty_value() {
+        // REQ-LCK-01#7: secret_key= → secret_key=[REDACTED]
+        assert_eq!(sanitize_command("secret_key="), "secret_key=[REDACTED]");
+    }
+
+    #[test]
+    fn test_lowercase_ampersand_delimiter() {
+        // REQ-LCK-01#8: private_key=abc&next=val → private_key=[REDACTED]&next=val
+        assert_eq!(
+            sanitize_command("private_key=abc&next=val"),
+            "private_key=[REDACTED]&next=val"
+        );
+    }
+
+    #[test]
+    fn test_lowercase_newline_delimiter() {
+        // REQ-LCK-01#9: private_key=abc\nnext → private_key=[REDACTED]\nnext
+        assert_eq!(
+            sanitize_command("private_key=abc\nnext"),
+            "private_key=[REDACTED]\nnext"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Phase 2: False-Positive Guards (keys WITHOUT exact suffix match)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_key_count_not_redacted() {
+        // REQ-LCK-03#13: key_count=5 → key_count=5 (no exact suffix match)
+        assert_eq!(sanitize_command("key_count=5"), "key_count=5");
+    }
+
+    #[test]
+    fn test_user_name_not_redacted() {
+        // REQ-LCK-03#14: user_name=john → user_name=john
+        assert_eq!(sanitize_command("user_name=john"), "user_name=john");
+    }
+
+    #[test]
+    fn test_model_id_not_redacted() {
+        // REQ-LCK-03#16: model_id=gpt-4 → model_id=gpt-4
+        assert_eq!(sanitize_command("model_id=gpt-4"), "model_id=gpt-4");
+    }
+
+    #[test]
+    fn test_profile_path_not_redacted() {
+        // REQ-LCK-03#15: profile_path=/tmp → profile_path=/tmp
+        assert_eq!(sanitize_command("profile_path=/tmp"), "profile_path=/tmp");
+    }
+
+    #[test]
+    fn test_env_not_redacted() {
+        // REQ-LCK-03#17: env=production → env=production (single word)
+        assert_eq!(sanitize_command("env=production"), "env=production");
+    }
+
+    #[test]
+    fn test_short_key_not_redacted() {
+        // REQ-LCK-03#18: k=val → k=val (key < 3 chars)
+        assert_eq!(sanitize_command("k=val"), "k=val");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Phase 3: Priority, Unicode & Idempotence
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_uppercase_snake_priority_over_lowercase() {
+        // REQ-LCK-04#19: AWS_KEY=AKIA_FAKEEXAMPLE_0001 → uppercase snake wins
+        assert_eq!(
+            sanitize_command("AWS_KEY=AKIA_FAKEEXAMPLE_0001"),
+            "AWS_KEY=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn test_explicit_api_key_pattern_priority() {
+        // REQ-LCK-04#20: api_key=secret_key_value → explicit api_key= wins
+        assert_eq!(
+            sanitize_command("api_key=secret_key_value"),
+            "api_key=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn test_token_index_not_redacted() {
+        // REQ-LCK-03#13 variant: token_index=1 → NOT redacted (no exact suffix)
+        assert_eq!(sanitize_command("token_index=1"), "token_index=1");
+    }
+
+    #[test]
+    fn test_unicode_preserved() {
+        // REQ-LCK-05#21: echo café && secret_key=fake → echo café && secret_key=[REDACTED]
+        assert_eq!(
+            sanitize_command("echo café && secret_key=fake"),
+            "echo café && secret_key=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn test_emoji_preserved() {
+        // REQ-LCK-05#22: secret_key=fake 🔑 done → secret_key=[REDACTED] 🔑 done
+        assert_eq!(
+            sanitize_command("secret_key=fake 🔑 done"),
+            "secret_key=[REDACTED] 🔑 done"
+        );
+    }
+
+    #[test]
+    fn test_idempotent_deterministic() {
+        // REQ-LCK-06#23: Repeated calls produce identical output
+        let input = "secret_key=fake123 access_token=abc";
+        let first = sanitize_command(input);
+        for _ in 0..100 {
+            assert_eq!(sanitize_command(input), first);
+        }
     }
 }
