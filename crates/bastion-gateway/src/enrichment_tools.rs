@@ -119,8 +119,8 @@ impl BastionGateway {
             }
         };
 
-        // Get retention info from the adapter
-        let retention_stats = match adapter.retention_info() {
+        // Get retention info from the adapter (async to fetch stats from DB)
+        let retention_stats = match adapter.retention_info().await {
             Some(stats) => stats,
             None => {
                 return serde_json::json!({
@@ -138,12 +138,9 @@ impl BastionGateway {
                 "sanitize": retention_stats.sanitize
             },
             "stats": {
-                // Stats (row count, timestamps) require direct DB access via SqliteRunRecorder.
-                // The adapter's retention_info() provides config only; row stats are not
-                // exposed through the trait to keep the port interface minimal.
-                "current_row_count": null,
-                "oldest_record_ts": null,
-                "newest_record_ts": null
+                "current_row_count": retention_stats.current_row_count,
+                "oldest_record_ts": retention_stats.oldest_record_ts,
+                "newest_record_ts": retention_stats.newest_record_ts
             }
         })
         .to_string()
@@ -184,11 +181,17 @@ impl BastionGateway {
         // Run cleanup
         match recorder.cleanup().await {
             Ok(deleted) => {
-                // Get remaining count - we'd need direct DB access for accurate count
-                // For now, return what we know
+                // Get remaining count by querying stats after cleanup
+                let remaining_rows: Option<u64> = match recorder.stats().await {
+                    Ok(stats) => Some(stats.current_row_count),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to get remaining rows after cleanup");
+                        None
+                    }
+                };
                 serde_json::json!({
                     "deleted_rows": deleted,
-                    "remaining_rows": null  // Would require separate query
+                    "remaining_rows": remaining_rows
                 })
                 .to_string()
             }

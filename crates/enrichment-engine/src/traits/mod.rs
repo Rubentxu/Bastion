@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-use crate::models::{EnricherDescriptor, OperationInvocation, OperationResult, Fact, RuleConfig, EnrichmentRunRecord};
+use crate::models::{EnricherDescriptor, OperationInvocation, OperationResult, Fact, RuleConfig, EnrichmentRunRecord, RunRecorderStats};
 
 /// Errors that can occur in enrichment operations.
 #[derive(Debug, thiserror::Error)]
@@ -112,4 +112,11 @@ pub trait RunRecorder: Send + Sync {
     ///
     /// Returns the number of rows deleted.
     async fn cleanup(&self) -> Result<u64, EnrichmentError>;
+
+    /// Get current statistics about the recorded runs.
+    ///
+    /// Returns row count and timestamp bounds (oldest/newest records).
+    /// This allows monitoring and introspection without exposing
+    /// storage implementation details.
+    async fn stats(&self) -> Result<RunRecorderStats, EnrichmentError>;
 }

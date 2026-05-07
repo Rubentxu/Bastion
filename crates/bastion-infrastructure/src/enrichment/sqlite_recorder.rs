@@ -303,6 +303,40 @@ impl RunRecorder for SqliteRunRecorder {
 
         Ok(total_deleted)
     }
+
+    async fn stats(&self) -> Result<enrichment_engine::models::RunRecorderStats, EnrichmentError> {
+        let conn = self.conn.lock().await;
+
+        let row_count: u64 = conn
+            .query_row("SELECT COUNT(*) FROM enrichment_runs", [], |row| row.get(0))
+            .map_err(|e| EnrichmentError::Recorder(format!("stats count query failed: {}", e)))?;
+
+        if row_count == 0 {
+            return Ok(enrichment_engine::models::RunRecorderStats::empty());
+        }
+
+        let oldest: Option<String> = conn
+            .query_row(
+                "SELECT MIN(timestamp) FROM enrichment_runs",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| EnrichmentError::Recorder(format!("stats oldest query failed: {}", e)))?;
+
+        let newest: Option<String> = conn
+            .query_row(
+                "SELECT MAX(timestamp) FROM enrichment_runs",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| EnrichmentError::Recorder(format!("stats newest query failed: {}", e)))?;
+
+        Ok(enrichment_engine::models::RunRecorderStats::new(
+            row_count,
+            oldest,
+            newest,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -859,5 +893,104 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM enrichment_runs", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    // ─── Stats tests ─────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_stats_empty_database() {
+        let recorder = SqliteRunRecorder::in_memory().unwrap();
+
+        let stats = recorder.stats().await.unwrap();
+        assert_eq!(stats.current_row_count, 0);
+        assert!(stats.oldest_record_ts.is_none());
+        assert!(stats.newest_record_ts.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stats_single_record() {
+        let recorder = SqliteRunRecorder::in_memory().unwrap();
+
+        let record = EnrichmentRunRecord::new(
+            "stats-test-1".to_string(),
+            "2024-06-01T12:00:00Z".to_string(),
+            "mvn test".to_string(),
+            "maven".to_string(),
+            0,
+            5000,
+            Some("BUILD SUCCESS".to_string()),
+            None,
+            5,
+            2,
+            3,
+            1,
+            2,
+            0.85,
+            Some("PASSED".to_string()),
+            1,
+            None,
+        );
+
+        recorder.record(&record).await.unwrap();
+
+        let stats = recorder.stats().await.unwrap();
+        assert_eq!(stats.current_row_count, 1);
+        assert_eq!(stats.oldest_record_ts, Some("2024-06-01T12:00:00Z".to_string()));
+        assert_eq!(stats.newest_record_ts, Some("2024-06-01T12:00:00Z".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_stats_multiple_records() {
+        let recorder = SqliteRunRecorder::in_memory().unwrap();
+
+        // Record from 30 days ago
+        let old_record = EnrichmentRunRecord::new(
+            "stats-old".to_string(),
+            "2024-05-01T12:00:00Z".to_string(),
+            "mvn compile".to_string(),
+            "maven".to_string(),
+            0,
+            3000,
+            Some("BUILD SUCCESS".to_string()),
+            None,
+            3,
+            1,
+            2,
+            0,
+            1,
+            0.80,
+            Some("PASSED".to_string()),
+            0,
+            None,
+        );
+
+        // Record from today
+        let new_record = EnrichmentRunRecord::new(
+            "stats-new".to_string(),
+            "2024-06-01T12:00:00Z".to_string(),
+            "mvn test".to_string(),
+            "maven".to_string(),
+            0,
+            5000,
+            Some("BUILD SUCCESS".to_string()),
+            None,
+            5,
+            2,
+            3,
+            1,
+            2,
+            0.85,
+            Some("PASSED".to_string()),
+            1,
+            None,
+        );
+
+        recorder.record(&old_record).await.unwrap();
+        recorder.record(&new_record).await.unwrap();
+
+        let stats = recorder.stats().await.unwrap();
+        assert_eq!(stats.current_row_count, 2);
+        assert_eq!(stats.oldest_record_ts, Some("2024-05-01T12:00:00Z".to_string()));
+        assert_eq!(stats.newest_record_ts, Some("2024-06-01T12:00:00Z".to_string()));
     }
 }

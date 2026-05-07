@@ -33,8 +33,8 @@
 
 pub use crate::models::{
     AgentContext, CommandExtractorPolicy, EnricherDescriptor, EnrichmentMeta,     EnrichmentRunRecord,
-    ExtractorConfig, Fact, OperationInvocation, OperationResult, RuleAction, RuleConfig, RuleOutput,
-    TestSummary, UtilityMetrics,
+    ExtractorConfig, Fact, OperationInvocation, OperationResult, RetentionConfig, RuleAction, RuleConfig,
+    RuleOutput, RunRecorderStats, TestSummary, UtilityMetrics,
 };
 pub use crate::traits::{CatalogRepository, EnrichmentError, Extractor, FactStore, FileSystem, RuleRepository, RunRecorder};
 pub use crate::rules::{DefaultRuleEvaluator, Expr, ParseError, RuleEvaluator};

@@ -175,6 +175,40 @@ impl Default for RetentionConfig {
     }
 }
 
+/// Statistics about the run recorder's backing store.
+///
+/// Provides visibility into the current state of persisted enrichment runs
+/// without leaking storage implementation details (e.g., SQLite) into the core.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunRecorderStats {
+    /// Total number of records currently stored.
+    pub current_row_count: u64,
+    /// ISO 8601 timestamp of the oldest record, if any.
+    pub oldest_record_ts: Option<String>,
+    /// ISO 8601 timestamp of the newest record, if any.
+    pub newest_record_ts: Option<String>,
+}
+
+impl RunRecorderStats {
+    /// Create a new stats instance.
+    pub fn new(current_row_count: u64, oldest_record_ts: Option<String>, newest_record_ts: Option<String>) -> Self {
+        Self {
+            current_row_count,
+            oldest_record_ts,
+            newest_record_ts,
+        }
+    }
+
+    /// Create a stats instance for an empty database.
+    pub fn empty() -> Self {
+        Self {
+            current_row_count: 0,
+            oldest_record_ts: None,
+            newest_record_ts: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

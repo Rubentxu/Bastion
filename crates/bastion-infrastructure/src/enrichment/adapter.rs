@@ -143,21 +143,38 @@ impl BastionEnrichmentAdapter {
     /// Get the retention configuration and stats from the recorder.
     ///
     /// Returns `None` if no recorder is configured.
-    /// The stats (row count, timestamps) require direct database access which is
-    /// only available on `SqliteRunRecorder`.
-    pub fn retention_info(&self) -> Option<RetentionStats> {
-        let retention = self.recorder.as_ref()?;
+    /// The stats (row count, timestamps) are obtained via the recorder's `stats()` method.
+    pub async fn retention_info(&self) -> Option<RetentionStats> {
+        let recorder = self.recorder.as_ref()?;
 
-        // Get the retention config (stored in the concrete recorder)
-        // This requires accessing the concrete type, so we use the same pattern
-        // as with_recorder - the caller sets up the right type at construction time
-        let config = retention.retention_config();
+        // Get the retention config
+        let config = recorder.retention_config();
+
+        // Get the stats via the async stats() method
+        let stats = match recorder.stats().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to get retention stats");
+                return Some(RetentionStats {
+                    max_age_days: config.max_age_days,
+                    max_rows: config.max_rows,
+                    enabled: config.enabled,
+                    sanitize: config.sanitize,
+                    current_row_count: None,
+                    oldest_record_ts: None,
+                    newest_record_ts: None,
+                });
+            }
+        };
 
         Some(RetentionStats {
             max_age_days: config.max_age_days,
             max_rows: config.max_rows,
             enabled: config.enabled,
             sanitize: config.sanitize,
+            current_row_count: Some(stats.current_row_count),
+            oldest_record_ts: stats.oldest_record_ts,
+            newest_record_ts: stats.newest_record_ts,
         })
     }
 
@@ -179,6 +196,12 @@ pub struct RetentionStats {
     pub max_rows: u64,
     pub enabled: bool,
     pub sanitize: bool,
+    /// Current row count in the database, if available.
+    pub current_row_count: Option<u64>,
+    /// ISO 8601 timestamp of the oldest record, if any.
+    pub oldest_record_ts: Option<String>,
+    /// ISO 8601 timestamp of the newest record, if any.
+    pub newest_record_ts: Option<String>,
 }
 
 impl BastionEnrichmentAdapter {
@@ -494,6 +517,10 @@ mod tests {
 
         async fn cleanup(&self) -> Result<u64, enrichment_engine::traits::EnrichmentError> {
             Ok(0)
+        }
+
+        async fn stats(&self) -> Result<enrichment_engine::models::RunRecorderStats, enrichment_engine::traits::EnrichmentError> {
+            Ok(enrichment_engine::models::RunRecorderStats::empty())
         }
     }
 

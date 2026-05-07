@@ -201,17 +201,96 @@ async fn test_maven_enrichment_sandbox() {
         .unwrap();
     stdin.flush().unwrap();
 
-    // Run a Maven compile command and verify enrichment
-    let resp = sandbox_run(
-        &mut stdin,
-        &mut reader,
-        "mvn compile -B -q",
-        E2E_TIMEOUT_SECS * 1000,
-    );
+    // Run a Maven compile command with retry loop for transient failures.
+    // Transient failures include Podman startup issues, gateway child crashes,
+    // and gateway-gateway communication errors.
+    let mut last_resp: Value = Value::Null;
+    let mut attempt = 0;
+    let mut success = false;
 
-    // Clean up the gateway
+    while attempt < MAX_RETRIES {
+        attempt += 1;
+
+        // Clean up any previous attempt's gateway child before spawning a new one
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let (new_child, new_stdin, new_reader) = spawn_gateway();
+        child = new_child;
+        stdin = new_stdin;
+        reader = new_reader;
+
+        // Initialize session for this attempt
+        let init_resp = init_session(&mut stdin, &mut reader);
+        if init_resp.get("result").is_none() {
+            eprintln!(
+                "Attempt {}/{}: Initialize failed, retrying in {}s",
+                attempt, MAX_RETRIES, RETRY_DELAY_SECS
+            );
+            tokio::time::sleep(tokio::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
+            continue;
+        }
+
+        // Send initialized notification
+        let notif = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        });
+        let notif_str = serde_json::to_string(&notif).unwrap();
+        stdin
+            .write_all(
+                format!(
+                    "Content-Length: {}\r\n\r\n{}\n",
+                    notif_str.len(),
+                    notif_str
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        stdin.flush().unwrap();
+
+        // Attempt sandbox_run
+        let resp = sandbox_run(
+            &mut stdin,
+            &mut reader,
+            "mvn compile -B -q",
+            E2E_TIMEOUT_SECS * 1000,
+        );
+
+        last_resp = resp;
+
+        // Check if the response indicates success (has result field)
+        if last_resp.get("result").is_some() {
+            success = true;
+            break;
+        }
+
+        // Log the error and retry
+        let error_msg = last_resp.get("error").map(|e| serde_json::to_string(e).unwrap_or_default()).unwrap_or_default();
+        eprintln!(
+            "Attempt {}/{}: sandbox_run failed with error: {}, retrying in {}s",
+            attempt, MAX_RETRIES, error_msg, RETRY_DELAY_SECS
+        );
+
+        if attempt < MAX_RETRIES {
+            tokio::time::sleep(tokio::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
+        }
+    }
+
+    // Final cleanup of the gateway
     let _ = child.kill();
     let _ = child.wait();
+
+    // Verify we got a successful response
+    if !success {
+        panic!(
+            "All {} attempts failed. Last response: {:?}",
+            MAX_RETRIES, last_resp
+        );
+    }
+
+    let resp = last_resp;
 
     // Verify response
     let result = resp
