@@ -209,13 +209,8 @@ impl FactPipeline {
         result: OperationResult,
         fs: &dyn FileSystem,
     ) -> Result<AgentContext, String> {
-        // Step 1: Find matching enrichers
-        let all_enrichers = self.catalog.find_enrichers(&invocation.command).await;
-        let mut detector = IntentDetector::new();
-        let matched = detector.detect(&invocation.command, &all_enrichers);
-
-        if matched.is_empty() {
-            // SC5: No enricher matched
+        // Step 1: Select matching enricher (or early return for no-match)
+        let Some(enricher) = self.select_enricher(&invocation).await else {
             return Ok(AgentContext {
                 facts: Vec::new(),
                 build_status: None,
@@ -229,12 +224,60 @@ impl FactPipeline {
                 verdict: None,
                 recommendations: None,
             });
+        };
+
+        // Step 2: Execute extractors (cached + per-call fallback)
+        let all_facts = self
+            .execute_extractors(&invocation, &result, fs, &enricher)
+            .await;
+
+        // Step 3: Evaluate rules and normalize
+        let (rule_output, normalized) = self
+            .evaluate_and_normalize(&invocation, &result, &enricher, all_facts)
+            .await;
+
+        // Step 4: Compose AgentContext
+        Ok(Self::compose_context(
+            &invocation,
+            &result,
+            &normalized,
+            &enricher,
+            rule_output.verdict,
+            if rule_output.recommendations.is_empty() {
+                None
+            } else {
+                Some(rule_output.recommendations)
+            },
+        ))
+    }
+
+    /// Find the first matching enricher for the invocation command.
+    /// Returns None if no enricher matches (no-match early return path).
+    async fn select_enricher(
+        &self,
+        invocation: &OperationInvocation,
+    ) -> Option<EnricherDescriptor> {
+        let all_enrichers = self.catalog.find_enrichers(&invocation.command).await;
+        let mut detector = IntentDetector::new();
+        let matched = detector.detect(&invocation.command, &all_enrichers);
+
+        if matched.is_empty() {
+            None
+        } else {
+            // Take the first matched enricher (MVP: single enricher per command)
+            Some(matched[0].clone())
         }
+    }
 
-        // Take the first matched enricher (MVP: single enricher per command)
-        let enricher = matched[0];
-
-        // Step 2: Run extractors with cached instances
+    /// Execute all extractors (cached + per-call fallback) for a matched enricher.
+    /// Returns all extracted facts. Errors are logged via `warn!` and isolated.
+    async fn execute_extractors(
+        &self,
+        invocation: &OperationInvocation,
+        result: &OperationResult,
+        fs: &dyn FileSystem,
+        enricher: &EnricherDescriptor,
+    ) -> Vec<Fact> {
         // Build cached extractors lazily on first run
         self.build_cached_extractors();
 
@@ -242,7 +285,6 @@ impl FactPipeline {
         let mut cached_extractor_ids: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
-        // Check if we have cached extractors for this enricher
         // Collect cached instances first, then drop the lock before awaiting
         let cached_instances: Vec<ExtractorInstance> = {
             let cached = self.cached_extractors.lock().unwrap();
@@ -270,7 +312,7 @@ impl FactPipeline {
         // Run cached extractors in parallel using join_all
         let futures: Vec<_> = cached_instances
             .iter()
-            .map(|instance| instance.extract(&invocation, &result, fs))
+            .map(|instance| instance.extract(invocation, result, fs))
             .collect();
         let results = join_all(futures).await;
         for facts in results {
@@ -280,7 +322,7 @@ impl FactPipeline {
         // For extractors not in cache, build per-call (handles empty cache fallback)
         for ext_config in &enricher.extractors {
             if !cached_extractor_ids.contains(&ext_config.id) {
-                match Self::run_extractor(ext_config, &invocation, &result, fs).await {
+                match Self::run_extractor(ext_config, invocation, result, fs).await {
                     Ok(facts) => all_facts.extend(facts),
                     Err(e) => {
                         warn!(enricher_id = %enricher.id, extractor_id = %ext_config.id, error = %e, "Skipping failed extractor");
@@ -289,10 +331,22 @@ impl FactPipeline {
             }
         }
 
-        // Step 2.5: Rule evaluation (if rule evaluator is configured)
+        all_facts
+    }
+
+    /// Evaluate rules (if configured) and normalize facts.
+    /// Returns (rule_output, normalized_facts).
+    async fn evaluate_and_normalize(
+        &self,
+        invocation: &OperationInvocation,
+        result: &OperationResult,
+        enricher: &EnricherDescriptor,
+        mut all_facts: Vec<Fact>,
+    ) -> (crate::models::RuleOutput, Vec<Fact>) {
+        // Rule evaluation (if rule evaluator is configured)
         let rule_output = if let Some(ref evaluator) = self.rule_evaluator {
             let output = evaluator
-                .evaluate(&enricher.id, &invocation, &result, &all_facts)
+                .evaluate(&enricher.id, invocation, result, &all_facts)
                 .await;
             // Merge rule-derived facts with extracted facts before normalization
             all_facts.extend(output.derived_facts.clone());
@@ -301,7 +355,7 @@ impl FactPipeline {
             crate::models::RuleOutput::empty()
         };
 
-        // Step 3: Normalize - build extractor config map for merge_mode
+        // Normalize - build extractor config map for merge_mode
         let extractor_config_map: HashMap<String, &crate::models::ExtractorConfig> = enricher
             .extractors
             .iter()
@@ -310,21 +364,7 @@ impl FactPipeline {
         let normalizer = FactNormalizer::new(NormalizerConfig::default());
         let normalized = normalizer.normalize_with_config(all_facts, &extractor_config_map);
 
-        // Step 4: Compose AgentContext
-        let context = Self::compose_context(
-            &invocation,
-            &result,
-            &normalized,
-            enricher,
-            rule_output.verdict,
-            if rule_output.recommendations.is_empty() {
-                None
-            } else {
-                Some(rule_output.recommendations)
-            },
-        );
-
-        Ok(context)
+        (rule_output, normalized)
     }
 
     async fn run_extractor(
