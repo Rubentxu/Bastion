@@ -5,6 +5,21 @@ use std::path::PathBuf;
 // Re-export RetentionConfig from enrichment-engine for use in infrastructure
 pub use enrichment_engine::models::RetentionConfig;
 
+/// Configuration for the record persistence semaphore.
+#[derive(Debug, Clone, Copy)]
+pub struct SemaphoreConfig {
+    /// Maximum number of concurrent record persistence operations.
+    pub max_concurrent_records: usize,
+}
+
+impl Default for SemaphoreConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_records: 64,
+        }
+    }
+}
+
 /// Configuration for the enrichment adapter.
 #[derive(Debug, Clone)]
 pub struct EnrichmentConfig {
@@ -14,6 +29,8 @@ pub struct EnrichmentConfig {
     pub catalog_dir: PathBuf,
     /// Retention policy for enrichment run records.
     pub retention: RetentionConfig,
+    /// Semaphore configuration for record persistence backpressure.
+    pub semaphore: SemaphoreConfig,
 }
 
 impl Default for EnrichmentConfig {
@@ -22,6 +39,7 @@ impl Default for EnrichmentConfig {
             enabled: true,
             catalog_dir: PathBuf::from(".bastion/catalog/enrichers"),
             retention: RetentionConfig::default(),
+            semaphore: SemaphoreConfig::default(),
         }
     }
 }

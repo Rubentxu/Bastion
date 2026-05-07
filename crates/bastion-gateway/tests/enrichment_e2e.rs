@@ -3,14 +3,13 @@
 //! Tests that Maven commands are enriched with facts, build status, and artifacts
 //! when the enrichment engine is enabled. Requires Podman and `BASTION_E2E_ENRICHMENT=1`.
 //!
-//! Run with: `BASTION_E2E_ENRICHMENT=1 cargo test --test enrichment_sandbox_test -- --ignored`
+//! Run with: `BASTION_E2E_ENRICHMENT=1 cargo test -p bastion-gateway --test enrichment_e2e -- --ignored`
 //!
 //! The test is `#[ignore]` by default to avoid requiring Podman in normal CI runs.
 
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 const E2E_TIMEOUT_SECS: u64 = 120;
 const MAX_RETRIES: u32 = 3;
@@ -19,17 +18,9 @@ const RETRY_DELAY_SECS: u64 = 5;
 /// Spawn the gateway binary and return (child, stdin, stdout_reader).
 fn spawn_gateway() -> (std::process::Child, impl Write, impl BufRead) {
     let binary = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
         .join("target/debug/bastion-gateway");
 
     let worker = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
         .join("target/debug/bastion-worker");
 
     let mut cmd = Command::new(&binary);
@@ -146,12 +137,34 @@ fn is_podman_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Send the `initialized` notification to the gateway.
+fn send_initialized_notification(stdin: &mut impl Write) {
+    let notif = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    });
+    let notif_str = serde_json::to_string(&notif).unwrap();
+    stdin
+        .write_all(
+            format!(
+                "Content-Length: {}\r\n\r\n{}\n",
+                notif_str.len(),
+                notif_str
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    stdin.flush().unwrap();
+}
+
 /// End-to-end test for Maven enrichment in a real sandbox.
 ///
 /// Verifies:
 /// 1. A Maven build command is enriched with facts
-/// 2. `source_extractor` is present and set to `"maven"`
-/// 3. `build_status` is present (e.g., "BUILD SUCCESS" or "BUILD FAILURE")
+/// 2. `enricher_id` is present and set to `"maven"` in `enrichment_meta`
+/// 3. `source` and `timestamp` are present in `enrichment_meta`
+/// 4. `build_status` is present (e.g., "BUILD SUCCESS" or "BUILD FAILURE")
 ///
 /// This test is `#[ignore]` by default and requires:
 /// - `BASTION_E2E_ENRICHMENT=1` environment variable
@@ -172,36 +185,8 @@ async fn test_maven_enrichment_sandbox() {
         return;
     }
 
-    let (mut child, mut stdin, mut reader) = spawn_gateway();
-
-    // Initialize session
-    let resp = init_session(&mut stdin, &mut reader);
-    assert!(
-        resp.get("result").is_some(),
-        "Initialize failed: {:?}",
-        resp
-    );
-
-    // Send initialized notification
-    let notif = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "initialized",
-        "params": {}
-    });
-    let notif_str = serde_json::to_string(&notif).unwrap();
-    stdin
-        .write_all(
-            format!(
-                "Content-Length: {}\r\n\r\n{}\n",
-                notif_str.len(),
-                notif_str
-            )
-            .as_bytes(),
-        )
-        .unwrap();
-    stdin.flush().unwrap();
-
     // Run a Maven compile command with retry loop for transient failures.
+    // Each attempt owns the full gateway lifecycle: spawn → init → sandbox_run.
     // Transient failures include Podman startup issues, gateway child crashes,
     // and gateway-gateway communication errors.
     let mut last_resp: Value = Value::Null;
@@ -211,44 +196,24 @@ async fn test_maven_enrichment_sandbox() {
     while attempt < MAX_RETRIES {
         attempt += 1;
 
-        // Clean up any previous attempt's gateway child before spawning a new one
-        let _ = child.kill();
-        let _ = child.wait();
+        // Spawn gateway for this attempt
+        let (mut child, mut stdin, mut reader) = spawn_gateway();
 
-        let (new_child, new_stdin, new_reader) = spawn_gateway();
-        child = new_child;
-        stdin = new_stdin;
-        reader = new_reader;
-
-        // Initialize session for this attempt
+        // Initialize session
         let init_resp = init_session(&mut stdin, &mut reader);
         if init_resp.get("result").is_none() {
             eprintln!(
                 "Attempt {}/{}: Initialize failed, retrying in {}s",
                 attempt, MAX_RETRIES, RETRY_DELAY_SECS
             );
+            let _ = child.kill();
+            let _ = child.wait();
             tokio::time::sleep(tokio::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
             continue;
         }
 
         // Send initialized notification
-        let notif = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "initialized",
-            "params": {}
-        });
-        let notif_str = serde_json::to_string(&notif).unwrap();
-        stdin
-            .write_all(
-                format!(
-                    "Content-Length: {}\r\n\r\n{}\n",
-                    notif_str.len(),
-                    notif_str
-                )
-                .as_bytes(),
-            )
-            .unwrap();
-        stdin.flush().unwrap();
+        send_initialized_notification(&mut stdin);
 
         // Attempt sandbox_run
         let resp = sandbox_run(
@@ -257,6 +222,10 @@ async fn test_maven_enrichment_sandbox() {
             "mvn compile -B -q",
             E2E_TIMEOUT_SECS * 1000,
         );
+
+        // Clean up gateway before checking result
+        let _ = child.kill();
+        let _ = child.wait();
 
         last_resp = resp;
 
@@ -277,10 +246,6 @@ async fn test_maven_enrichment_sandbox() {
             tokio::time::sleep(tokio::time::Duration::from_secs(RETRY_DELAY_SECS)).await;
         }
     }
-
-    // Final cleanup of the gateway
-    let _ = child.kill();
-    let _ = child.wait();
 
     // Verify we got a successful response
     if !success {
@@ -311,21 +276,39 @@ async fn test_maven_enrichment_sandbox() {
     let parsed: Value = serde_json::from_str(text)
         .expect("Expected JSON in sandbox_run text content");
 
-    // Verify enrichment fields are present
+    // Verify enrichment_meta fields are present: source, timestamp, enricher_id
     let enrichment_meta = parsed
         .get("enrichment_meta")
         .expect("Expected enrichment_meta in response");
 
-    let source_extractor = enrichment_meta
-        .get("source_extractor")
+    let source = enrichment_meta
+        .get("source")
         .and_then(|s| s.as_str())
-        .expect("Expected source_extractor string in enrichment_meta");
+        .expect("Expected 'source' string in enrichment_meta");
+    assert!(
+        !source.is_empty(),
+        "Expected non-empty source in enrichment_meta"
+    );
 
-    // The Maven extractor should have set source_extractor to "maven"
+    let timestamp = enrichment_meta
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .expect("Expected 'timestamp' string in enrichment_meta");
+    assert!(
+        !timestamp.is_empty(),
+        "Expected non-empty timestamp in enrichment_meta"
+    );
+
+    let enricher_id = enrichment_meta
+        .get("enricher_id")
+        .and_then(|s| s.as_str())
+        .expect("Expected 'enricher_id' string in enrichment_meta");
+
+    // The Maven enricher should have set enricher_id to "maven"
     assert_eq!(
-        source_extractor, "maven",
-        "Expected source_extractor == 'maven', got '{}'",
-        source_extractor
+        enricher_id, "maven",
+        "Expected enricher_id == 'maven', got '{}'",
+        enricher_id
     );
 
     let build_status = parsed
@@ -349,6 +332,6 @@ async fn test_maven_enrichment_sandbox() {
         "Expected non-empty facts from Maven extractor"
     );
 
-    println!("✅ Enrichment test passed: source_extractor={}, build_status={}, facts={}",
-        source_extractor, build_status, facts.len());
+    println!("✅ Enrichment test passed: enricher_id={}, source={}, timestamp={}, build_status={}, facts={}",
+        enricher_id, source, timestamp, build_status, facts.len());
 }

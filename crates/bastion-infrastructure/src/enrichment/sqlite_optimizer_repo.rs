@@ -8,8 +8,10 @@ use std::sync::Arc;
 use enrichment_engine::models::EnrichmentRunRecord;
 use enrichment_engine::optimizer::{AggregateStats, OptimizerRepository};
 use enrichment_engine::traits::EnrichmentError;
+use tokio::sync::oneshot;
 
 use crate::enrichment::sqlite_recorder::SqliteRunRecorder;
+use crate::enrichment::sqlite_worker::WorkerCommand;
 
 /// SQLite-backed implementation of `OptimizerRepository`.
 ///
@@ -30,40 +32,20 @@ impl SqliteOptimizerRepository {
 impl OptimizerRepository for SqliteOptimizerRepository {
     /// Read all run records, optionally filtered to those after a given timestamp.
     async fn read_records(&self, after: Option<&str>) -> Result<Vec<EnrichmentRunRecord>, EnrichmentError> {
-        let conn = self.recorder.conn.lock().await;
+        let after_opt = after.map(String::from);
 
-        let query = "SELECT id, timestamp, command, enricher_id, exit_code, duration_ms,
-                output_summary_stdout, output_summary_stderr,
-                facts_count, derived_facts_count, rule_hits_count,
-                diagnostics_count, artifact_count, confidence_avg,
-                verdict, recommendation_count, error
-         FROM enrichment_runs";
+        let (response_tx, response_rx) = oneshot::channel();
 
-        let query = if after.is_some() {
-            format!("{} WHERE timestamp >= ?1 ORDER BY timestamp ASC", query)
-        } else {
-            format!("{} ORDER BY timestamp ASC", query)
+        let cmd = WorkerCommand::ReadRecords {
+            after: after_opt,
+            response_tx,
         };
 
-        let mut stmt = conn
-            .prepare(&query)
-            .map_err(|e| EnrichmentError::Recorder(format!("Failed to prepare query: {}", e)))?;
+        self.recorder.worker.send_cmd(cmd);
 
-        let mut records = Vec::new();
-        let mut rows = if let Some(after_ts) = after {
-            stmt.query([after_ts])
-        } else {
-            stmt.query([])
-        }
-        .map_err(|e| EnrichmentError::Recorder(format!("Failed to query records: {}", e)))?;
-
-        while let Some(row) = rows.next().map_err(|e| EnrichmentError::Recorder(format!("Failed to fetch row: {}", e)))? {
-            if let Ok(record) = row_to_record(row) {
-                records.push(record);
-            }
-        }
-
-        Ok(records)
+        response_rx
+            .await
+            .map_err(|e| EnrichmentError::Recorder(format!("Worker response error: {}", e)))?
     }
 
     /// Read all records for a specific enricher.
@@ -71,26 +53,20 @@ impl OptimizerRepository for SqliteOptimizerRepository {
         &self,
         enricher_id: &str,
     ) -> Result<Vec<EnrichmentRunRecord>, EnrichmentError> {
-        let conn = self.recorder.conn.lock().await;
+        let enricher_id = enricher_id.to_string();
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, timestamp, command, enricher_id, exit_code, duration_ms,
-                        output_summary_stdout, output_summary_stderr,
-                        facts_count, derived_facts_count, rule_hits_count,
-                        diagnostics_count, artifact_count, confidence_avg,
-                        verdict, recommendation_count, error
-                 FROM enrichment_runs WHERE enricher_id = ?1 ORDER BY timestamp ASC",
-            )
-            .map_err(|e| EnrichmentError::Recorder(format!("Failed to prepare query: {}", e)))?;
+        let (response_tx, response_rx) = oneshot::channel();
 
-        let records = stmt
-            .query_map([enricher_id], row_to_record)
-            .map_err(|e| EnrichmentError::Recorder(format!("Failed to query records: {}", e)))?
-            .filter_map(|r| r.ok())
-            .collect();
+        let cmd = WorkerCommand::ReadRecordsByEnricher {
+            enricher_id,
+            response_tx,
+        };
 
-        Ok(records)
+        self.recorder.worker.send_cmd(cmd);
+
+        response_rx
+            .await
+            .map_err(|e| EnrichmentError::Recorder(format!("Worker response error: {}", e)))?
     }
 
     /// Compute aggregate statistics per enricher.
@@ -115,29 +91,6 @@ impl OptimizerRepository for SqliteOptimizerRepository {
 
         Ok(stats)
     }
-}
-
-/// Convert a sqlite row to EnrichmentRunRecord.
-fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<EnrichmentRunRecord> {
-    Ok(EnrichmentRunRecord::new(
-        row.get(0)?,
-        row.get(1)?,
-        row.get(2)?,
-        row.get(3)?,
-        row.get(4)?,
-        row.get::<_, i64>(5)? as u64,
-        row.get(6)?,
-        row.get(7)?,
-        row.get::<_, i32>(8)? as u32,
-        row.get::<_, i32>(9)? as u32,
-        row.get::<_, i32>(10)? as u32,
-        row.get::<_, i32>(11)? as u32,
-        row.get::<_, i32>(12)? as u32,
-        row.get(13)?,
-        row.get(14)?,
-        row.get::<_, i32>(15)? as u32,
-        row.get(16)?,
-    ))
 }
 
 #[cfg(test)]
@@ -207,13 +160,16 @@ mod tests {
         let repo = SqliteOptimizerRepository::new(recorder.clone());
 
         // Insert records for different enrichers
-        recorder.record(&make_record("rec-1", "maven", "2024-01-01T00:00:00Z"))
+        recorder
+            .record(&make_record("rec-1", "maven", "2024-01-01T00:00:00Z"))
             .await
             .unwrap();
-        recorder.record(&make_record("rec-2", "gradle", "2024-01-01T01:00:00Z"))
+        recorder
+            .record(&make_record("rec-2", "gradle", "2024-01-01T01:00:00Z"))
             .await
             .unwrap();
-        recorder.record(&make_record("rec-3", "maven", "2024-01-01T02:00:00Z"))
+        recorder
+            .record(&make_record("rec-3", "maven", "2024-01-01T02:00:00Z"))
             .await
             .unwrap();
 
@@ -234,11 +190,7 @@ mod tests {
 
         // Insert multiple records for same enricher
         for i in 0..5 {
-            let record = make_record(
-                format!("rec-{}", i).as_str(),
-                "maven",
-                "2024-01-01T00:00:00Z",
-            );
+            let record = make_record(format!("rec-{}", i).as_str(), "maven", "2024-01-01T00:00:00Z");
             recorder.record(&record).await.unwrap();
         }
 

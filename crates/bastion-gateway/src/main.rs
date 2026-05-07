@@ -31,6 +31,7 @@ use bastion_infrastructure::catalog::sqlite_experience_store::SqliteExperienceSt
 use bastion_infrastructure::catalog::toml_advice_parser::{AdviceConfigStore, AdviceRegistry};
 use bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry;
 use bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry;
+use enrichment_engine::traits::RunRecorder;
 
 use rmcp::{ServiceExt, service::RoleServer};
 
@@ -530,6 +531,7 @@ async fn main() -> Result<()> {
                 enabled: true,
                 catalog_dir: enrichers_dir.clone(),
                 retention: bastion_infrastructure::enrichment::RetentionConfig::default(),
+                semaphore: bastion_infrastructure::enrichment::SemaphoreConfig::default(),
             };
             let adapter = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::new(
                 catalog_repo,

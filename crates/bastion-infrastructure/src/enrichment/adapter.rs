@@ -5,6 +5,7 @@
 //! and extends the JSON response additively.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use bastion_domain::execution::command::{CommandResult, CommandSpec};
@@ -30,6 +31,9 @@ use super::fs::SandboxFileSystem;
 /// Optionally records enrichment runs via a `RunRecorder` for telemetry
 /// and Meta-Harness optimization. An optional `OptimizerRepository` enables
 /// the optimizer report MCP tool.
+///
+/// Uses an atomic counter to bound concurrent record persistence operations,
+/// providing backpressure when the database write path is overloaded.
 #[derive(Clone)]
 pub struct BastionEnrichmentAdapter {
     pipeline: Arc<FactPipeline>,
@@ -37,6 +41,9 @@ pub struct BastionEnrichmentAdapter {
     config: EnrichmentConfig,
     recorder: Option<Arc<dyn RunRecorder>>,
     optimizer_repo: Option<Arc<dyn OptimizerRepository>>,
+    /// Atomic counter tracking in-flight record persistence operations.
+    /// Bounded by `config.semaphore.max_concurrent_records`.
+    record_in_flight: Arc<AtomicUsize>,
 }
 
 impl BastionEnrichmentAdapter {
@@ -58,9 +65,10 @@ impl BastionEnrichmentAdapter {
         Self {
             pipeline: Arc::new(pipeline),
             provider,
-            config,
+            config: config.clone(),
             recorder: None,
             optimizer_repo: None,
+            record_in_flight: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -73,9 +81,10 @@ impl BastionEnrichmentAdapter {
         Self {
             pipeline,
             provider,
-            config,
+            config: config.clone(),
             recorder: None,
             optimizer_repo: None,
+            record_in_flight: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -105,6 +114,7 @@ impl BastionEnrichmentAdapter {
             config: self.config.clone(),
             recorder: Some(recorder),
             optimizer_repo: self.optimizer_repo.clone(),
+            record_in_flight: self.record_in_flight.clone(),
         })
     }
 
@@ -123,6 +133,7 @@ impl BastionEnrichmentAdapter {
             config: self.config.clone(),
             recorder: self.recorder.clone(),
             optimizer_repo: Some(optimizer_repo),
+            record_in_flight: self.record_in_flight.clone(),
         })
     }
 
@@ -263,8 +274,13 @@ impl BastionEnrichmentAdapter {
 
     /// Record an enrichment run asynchronously.
     ///
+    /// Record an enrichment run asynchronously.
+    ///
     /// This is fire-and-forget — errors are logged at warn level but do not
     /// block the caller.
+    ///
+    /// Uses an atomic counter to bound concurrent record persistence operations.
+    /// If the limit is reached, the record is dropped and a warning is logged.
     fn record_run(
         &self,
         invocation: &OperationInvocation,
@@ -279,12 +295,31 @@ impl BastionEnrichmentAdapter {
 
         let record = self.build_record(invocation, result, ctx, elapsed, error);
         let recorder = Arc::clone(recorder);
+        let in_flight = self.record_in_flight.clone();
+        let max = self.config.semaphore.max_concurrent_records;
+
+        // Try to acquire a slot: atomically increment and check if we're over limit
+        let prev = in_flight.fetch_add(1, Ordering::AcqRel);
+        if prev >= max {
+            // Over limit - undo the increment and drop the record
+            in_flight.fetch_sub(1, Ordering::AcqRel);
+            tracing::warn!(
+                run_id = %record.id,
+                enricher_id = %record.enricher_id,
+                in_flight = %prev,
+                limit = %max,
+                "Record persistence saturated, dropping record"
+            );
+            return;
+        }
 
         // Fire-and-forget: spawn recording task
+        // Decrement counter when task completes
         tokio::spawn(async move {
             if let Err(e) = recorder.record(&record).await {
                 tracing::warn!(error = %e, run_id = %record.id, "EnrichmentRunRecord failed to persist");
             }
+            in_flight.fetch_sub(1, Ordering::AcqRel);
         });
     }
 

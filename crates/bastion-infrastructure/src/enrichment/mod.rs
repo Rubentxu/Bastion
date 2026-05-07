@@ -10,9 +10,10 @@ pub mod schema_migration;
 pub mod sqlite_optimizer_repo;
 pub mod sqlite_repo;
 pub mod sqlite_recorder;
+pub(crate) mod sqlite_worker;
 
 pub use adapter::BastionEnrichmentAdapter;
-pub use config::{EnrichmentConfig, RetentionConfig};
+pub use config::{EnrichmentConfig, RetentionConfig, SemaphoreConfig};
 pub use schema_migration::SchemaMigration;
 pub use sqlite_optimizer_repo::SqliteOptimizerRepository;
 pub use sqlite_repo::{SqliteCatalogRepository, YamlCatalogImporter};
