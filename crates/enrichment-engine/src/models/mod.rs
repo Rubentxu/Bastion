@@ -21,7 +21,7 @@ use std::sync::Arc;
 pub struct ValidatedPattern {
     /// The pre-compiled regex.
     pub regex: Arc<Regex>,
-    /// The original pattern string (for debugging/logging).
+    /// The original pattern string (for debugging/logging and glob patterns).
     pub pattern_str: String,
     /// The fact key to emit.
     pub fact_key: String,
@@ -29,12 +29,19 @@ pub struct ValidatedPattern {
     pub extractor_id: String,
     /// Merge mode: "single" or "multi".
     pub merge_mode: String,
+    /// The extractor type: "regex" or "glob".
+    pub extractor_type: String,
 }
 
 impl ValidatedPattern {
     /// Create a new ValidatedPattern from a pattern string.
     /// Returns Err with message if the pattern is invalid.
-    pub fn new(extractor_id: &str, pattern: &str, fact_key: &str, merge_mode: &str) -> Result<Self, String> {
+    pub fn new(
+        extractor_id: &str,
+        pattern: &str,
+        fact_key: &str,
+        merge_mode: &str,
+    ) -> Result<Self, String> {
         let regex = Regex::new(pattern).map_err(|e| e.to_string())?;
         Ok(Self {
             regex: Arc::new(regex),
@@ -42,7 +49,22 @@ impl ValidatedPattern {
             fact_key: fact_key.to_string(),
             extractor_id: extractor_id.to_string(),
             merge_mode: merge_mode.to_string(),
+            extractor_type: "regex".to_string(),
         })
+    }
+
+    /// Create a new ValidatedPattern for a glob extractor (with dummy regex).
+    pub fn new_glob(extractor_id: &str, pattern: &str, fact_key: &str, merge_mode: &str) -> Self {
+        // Use a dummy regex that matches everything - glob extractors don't use it
+        let dummy_regex = Regex::new(".").unwrap();
+        Self {
+            regex: Arc::new(dummy_regex),
+            pattern_str: pattern.to_string(),
+            fact_key: fact_key.to_string(),
+            extractor_id: extractor_id.to_string(),
+            merge_mode: merge_mode.to_string(),
+            extractor_type: "glob".to_string(),
+        }
     }
 }
 
@@ -191,7 +213,11 @@ pub struct RunRecorderStats {
 
 impl RunRecorderStats {
     /// Create a new stats instance.
-    pub fn new(current_row_count: u64, oldest_record_ts: Option<String>, newest_record_ts: Option<String>) -> Self {
+    pub fn new(
+        current_row_count: u64,
+        oldest_record_ts: Option<String>,
+        newest_record_ts: Option<String>,
+    ) -> Self {
         Self {
             current_row_count,
             oldest_record_ts,

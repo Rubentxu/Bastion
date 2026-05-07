@@ -9,7 +9,7 @@ use crate::models::{Fact, OperationInvocation, OperationResult};
 use crate::traits::{Extractor, FileSystem};
 
 /// Extractor that glob-matches files and produces a Fact per matched file.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct GlobExtractor {
     name: String,
@@ -71,10 +71,10 @@ impl Extractor for GlobExtractor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::OperationInvocation;
+    use crate::traits::{EnrichmentError, FileSystem};
     use glob::Pattern;
     use std::path::PathBuf;
-    use crate::models::OperationInvocation;
-    use crate::traits::{FileSystem, EnrichmentError};
 
     struct FakeFs {
         files: Vec<PathBuf>,
@@ -92,7 +92,8 @@ mod tests {
             Ok(String::new())
         }
         async fn glob(&self, pattern: &str) -> Result<Vec<PathBuf>, EnrichmentError> {
-            let pat = Pattern::new(pattern).map_err(|e| EnrichmentError::FileSystem(e.to_string()))?;
+            let pat =
+                Pattern::new(pattern).map_err(|e| EnrichmentError::FileSystem(e.to_string()))?;
             let matches: Vec<PathBuf> = self
                 .files
                 .iter()

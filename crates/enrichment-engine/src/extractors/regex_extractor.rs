@@ -9,10 +9,10 @@ use async_trait::async_trait;
 use regex::Regex;
 
 use crate::models::{Fact, OperationInvocation, OperationResult, ValidatedPattern};
-use crate::traits::{Extractor as ExtractorTrait, FileSystem, EnrichmentError};
+use crate::traits::{EnrichmentError, Extractor as ExtractorTrait, FileSystem};
 
 /// Extractor that applies a named-capture regex to stdout/stderr.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RegexExtractor {
     name: String,
     pattern: Arc<Regex>,
@@ -35,7 +35,8 @@ impl RegexExtractor {
     ///
     /// Returns Err if the pattern is not a valid regex.
     pub fn new(name: &str, pattern: &str, fact_key: &str) -> Result<Self, EnrichmentError> {
-        let regex = Regex::new(pattern).map_err(|e| EnrichmentError::Config(format!("Invalid regex: {}", e)))?;
+        let regex = Regex::new(pattern)
+            .map_err(|e| EnrichmentError::Config(format!("Invalid regex: {}", e)))?;
         Ok(Self {
             name: name.to_string(),
             pattern: Arc::new(regex),
@@ -45,8 +46,14 @@ impl RegexExtractor {
     }
 
     /// Create a new regex extractor with merge mode (fallible).
-    pub fn with_merge_mode(name: &str, pattern: &str, fact_key: &str, merge_mode: &str) -> Result<Self, EnrichmentError> {
-        let regex = Regex::new(pattern).map_err(|e| EnrichmentError::Config(format!("Invalid regex: {}", e)))?;
+    pub fn with_merge_mode(
+        name: &str,
+        pattern: &str,
+        fact_key: &str,
+        merge_mode: &str,
+    ) -> Result<Self, EnrichmentError> {
+        let regex = Regex::new(pattern)
+            .map_err(|e| EnrichmentError::Config(format!("Invalid regex: {}", e)))?;
         Ok(Self {
             name: name.to_string(),
             pattern: Arc::new(regex),
@@ -57,7 +64,12 @@ impl RegexExtractor {
 
     /// Returns true if the pattern has any named capture groups.
     pub fn has_named_captures(&self) -> bool {
-        !self.pattern.capture_names().flatten().collect::<Vec<_>>().is_empty()
+        !self
+            .pattern
+            .capture_names()
+            .flatten()
+            .collect::<Vec<_>>()
+            .is_empty()
     }
 
     /// Returns the merge mode for this extractor.
@@ -151,7 +163,12 @@ mod tests {
     async fn test_regex_extractor_happy_path() {
         // SC1: Regex extraction happy path
         // Single capture: uses fact_key for backward compatibility
-        let extractor = RegexExtractor::new("build_status", r"(?P<status>BUILD\s+(SUCCESS|FAILURE))", "build_status").unwrap();
+        let extractor = RegexExtractor::new(
+            "build_status",
+            r"(?P<status>BUILD\s+(SUCCESS|FAILURE))",
+            "build_status",
+        )
+        .unwrap();
         let invocation = OperationInvocation::from_command("mvn package");
         let result = OperationResult {
             exit_code: 0,
@@ -170,7 +187,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_regex_extractor_empty_stdout() {
-        let extractor = RegexExtractor::new("build_status", r"(?P<status>BUILD\s+(SUCCESS|FAILURE))", "build_status").unwrap();
+        let extractor = RegexExtractor::new(
+            "build_status",
+            r"(?P<status>BUILD\s+(SUCCESS|FAILURE))",
+            "build_status",
+        )
+        .unwrap();
         let invocation = OperationInvocation::from_command("mvn package");
         let result = OperationResult {
             exit_code: 0,
@@ -186,7 +208,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_regex_extractor_no_match() {
-        let extractor = RegexExtractor::new("build_status", r"(?P<status>BUILD\s+(SUCCESS|FAILURE))", "build_status").unwrap();
+        let extractor = RegexExtractor::new(
+            "build_status",
+            r"(?P<status>BUILD\s+(SUCCESS|FAILURE))",
+            "build_status",
+        )
+        .unwrap();
         let invocation = OperationInvocation::from_command("mvn package");
         let result = OperationResult {
             exit_code: 0,
@@ -247,7 +274,8 @@ mod tests {
     #[tokio::test]
     async fn test_regex_extractor_no_named_captures_uses_fact_key() {
         // Backward compatibility: regex without named captures uses fact_key
-        let extractor = RegexExtractor::new("status", r"BUILD\s+(SUCCESS|FAILURE)", "build_status").unwrap();
+        let extractor =
+            RegexExtractor::new("status", r"BUILD\s+(SUCCESS|FAILURE)", "build_status").unwrap();
         let invocation = OperationInvocation::from_command("mvn package");
         let result = OperationResult {
             exit_code: 0,

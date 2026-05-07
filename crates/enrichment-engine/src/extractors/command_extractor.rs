@@ -71,7 +71,11 @@ struct Tokenizer;
 impl Tokenizer {
     /// Tokenize a command string.
     /// Returns Ok(tokens) on success, or Err(Diagnostic) on failure.
-    fn tokenize(command: &str, max_tokens: u32, max_input_len: u32) -> Result<Vec<String>, Diagnostic> {
+    fn tokenize(
+        command: &str,
+        max_tokens: u32,
+        max_input_len: u32,
+    ) -> Result<Vec<String>, Diagnostic> {
         // Check empty
         if command.is_empty() {
             return Err(Diagnostic::empty_command());
@@ -122,7 +126,10 @@ impl Tokenizer {
             // Start of a token
             token_count += 1;
             if token_count > max_tokens {
-                return Err(Diagnostic::command_too_long(token_count, command.len() as u32));
+                return Err(Diagnostic::command_too_long(
+                    token_count,
+                    command.len() as u32,
+                ));
             }
 
             let mut token = String::new();
@@ -154,11 +161,18 @@ impl Tokenizer {
                                         token.push('\\');
                                         token.push(c2);
                                     }
-                                    None => return Err(Diagnostic::unclosed_quote(&format!("\"{}", token))),
+                                    None => {
+                                        return Err(Diagnostic::unclosed_quote(&format!(
+                                            "\"{}",
+                                            token
+                                        )));
+                                    }
                                 }
                             }
                             Some(c2) => token.push(c2),
-                            None => return Err(Diagnostic::unclosed_quote(&format!("\"{}", token))),
+                            None => {
+                                return Err(Diagnostic::unclosed_quote(&format!("\"{}", token)));
+                            }
                         }
                     }
                 }
@@ -190,7 +204,12 @@ impl Tokenizer {
                                 match chars.next() {
                                     Some('\'') => break,
                                     Some(c3) => sq.push(c3),
-                                    None => return Err(Diagnostic::unclosed_quote(&format!("'{}", sq))),
+                                    None => {
+                                        return Err(Diagnostic::unclosed_quote(&format!(
+                                            "'{}",
+                                            sq
+                                        )));
+                                    }
                                 }
                             }
                             token.push_str(&sq);
@@ -199,21 +218,29 @@ impl Tokenizer {
                             loop {
                                 match chars.next() {
                                     Some('"') => break,
-                                    Some('\\') => {
-                                        match chars.next() {
-                                            Some('"') => token.push('"'),
-                                            Some('\\') => token.push('\\'),
-                                            Some('n') => token.push('\n'),
-                                            Some('t') => token.push('\t'),
-                                            Some(c3) => {
-                                                token.push('\\');
-                                                token.push(c3);
-                                            }
-                                            None => return Err(Diagnostic::unclosed_quote(&format!("\"{}", token))),
+                                    Some('\\') => match chars.next() {
+                                        Some('"') => token.push('"'),
+                                        Some('\\') => token.push('\\'),
+                                        Some('n') => token.push('\n'),
+                                        Some('t') => token.push('\t'),
+                                        Some(c3) => {
+                                            token.push('\\');
+                                            token.push(c3);
                                         }
-                                    }
+                                        None => {
+                                            return Err(Diagnostic::unclosed_quote(&format!(
+                                                "\"{}",
+                                                token
+                                            )));
+                                        }
+                                    },
                                     Some(c3) => token.push(c3),
-                                    None => return Err(Diagnostic::unclosed_quote(&format!("\"{}", token))),
+                                    None => {
+                                        return Err(Diagnostic::unclosed_quote(&format!(
+                                            "\"{}",
+                                            token
+                                        )));
+                                    }
                                 }
                             }
                         } else if c2 == '\\' {
@@ -273,7 +300,11 @@ struct Classifier;
 impl Classifier {
     /// Classify tokens into facts based on policy.
     /// `source_name` is the extractor name used for source_extractor field.
-    fn classify(tokens: &[String], policy: &crate::models::CommandExtractorPolicy, source_name: &str) -> Vec<Fact> {
+    fn classify(
+        tokens: &[String],
+        policy: &crate::models::CommandExtractorPolicy,
+        source_name: &str,
+    ) -> Vec<Fact> {
         let mut facts = Vec::new();
 
         if tokens.is_empty() {
@@ -303,9 +334,8 @@ impl Classifier {
         // Token[1] if non-flag → goal
         if tokens.len() > 1 {
             let token1 = &tokens[1];
-            let is_flag_like = token1.starts_with("-D")
-                || token1.starts_with("-P")
-                || token1.starts_with("-x");
+            let is_flag_like =
+                token1.starts_with("-D") || token1.starts_with("-P") || token1.starts_with("-x");
             if !is_flag_like {
                 let intent = infer_intent(token1, &policy.goal_map);
                 facts.push(Fact {
@@ -455,7 +485,7 @@ impl Classifier {
 }
 
 /// Command extractor.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommandExtractor {
     name: String,
     policy: crate::models::CommandExtractorPolicy,
@@ -473,7 +503,8 @@ impl CommandExtractor {
     /// Extract facts from a command string.
     fn extract_command(&self, command: &str) -> Vec<Fact> {
         // Tokenize
-        let token_result = Tokenizer::tokenize(command, self.policy.max_tokens, self.policy.max_input_len);
+        let token_result =
+            Tokenizer::tokenize(command, self.policy.max_tokens, self.policy.max_input_len);
 
         match token_result {
             Err(diag) => {
@@ -564,105 +595,150 @@ mod tests {
     fn test_tokenizer_reject_backtick() {
         let result = Tokenizer::tokenize("echo `whoami`", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('`'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('`'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_dollar_paren() {
         let result = Tokenizer::tokenize("echo $(whoami)", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('$'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('$'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_dollar_brace() {
         let result = Tokenizer::tokenize("echo ${HOME}", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('$'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('$'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_dollar_var() {
         let result = Tokenizer::tokenize("echo $HOME", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('$'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('$'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_pipe() {
         let result = Tokenizer::tokenize("cat f | grep x", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('|'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('|'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_ampersand() {
         let result = Tokenizer::tokenize("cmd && other", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('&'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('&'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_semicolon() {
         let result = Tokenizer::tokenize("mvn clean; rm /", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken(';'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken(';'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_redirect_out() {
         let result = Tokenizer::tokenize("echo x > f", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('>'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('>'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_redirect_append() {
         let result = Tokenizer::tokenize("echo x >> f", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('>'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('>'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_redirect_in() {
         let result = Tokenizer::tokenize("cat < f", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('<'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('<'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_glob_star() {
         let result = Tokenizer::tokenize("ls *.txt", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('*'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('*'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_glob_question() {
         let result = Tokenizer::tokenize("ls file?.txt", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('?'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('?'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_glob_bracket() {
         let result = Tokenizer::tokenize("ls [abc]", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('['.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('['.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_glob_brace() {
         let result = Tokenizer::tokenize("ls {a,b}", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('{'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('{'.to_string())
+        );
     }
 
     #[test]
     fn test_tokenizer_reject_nul() {
         let result = Tokenizer::tokenize("echo \0null", 64, 4096);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Diagnostic::UnsafeToken('\0'.to_string()));
+        assert_eq!(
+            result.unwrap_err(),
+            Diagnostic::UnsafeToken('\0'.to_string())
+        );
     }
 
     #[test]
@@ -712,12 +788,18 @@ mod tests {
     #[test]
     fn test_classify_maven() {
         // Use --settings=settings.xml format (equals sign)
-        let tokens = vec!["mvn".to_string(), "clean".to_string(), "package".to_string(),
-                         "-DskipTests".to_string(), "--settings=settings.xml".to_string()];
+        let tokens = vec![
+            "mvn".to_string(),
+            "clean".to_string(),
+            "package".to_string(),
+            "-DskipTests".to_string(),
+            "--settings=settings.xml".to_string(),
+        ];
         let policy = crate::models::CommandExtractorPolicy::default();
         let facts = Classifier::classify(&tokens, &policy, "test");
 
-        let fact_map: HashMap<&str, &str> = facts.iter()
+        let fact_map: HashMap<&str, &str> = facts
+            .iter()
             .map(|f| (f.key.as_str(), f.value.as_str()))
             .collect();
 
@@ -731,11 +813,17 @@ mod tests {
 
     #[test]
     fn test_classify_npm() {
-        let tokens = vec!["npm".to_string(), "install".to_string(), "--save-dev".to_string(), "express".to_string()];
+        let tokens = vec![
+            "npm".to_string(),
+            "install".to_string(),
+            "--save-dev".to_string(),
+            "express".to_string(),
+        ];
         let policy = crate::models::CommandExtractorPolicy::default();
         let facts = Classifier::classify(&tokens, &policy, "test");
 
-        let fact_map: HashMap<&str, &str> = facts.iter()
+        let fact_map: HashMap<&str, &str> = facts
+            .iter()
             .map(|f| (f.key.as_str(), f.value.as_str()))
             .collect();
 
@@ -749,11 +837,17 @@ mod tests {
 
     #[test]
     fn test_classify_gradle() {
-        let tokens = vec!["gradle".to_string(), "build".to_string(), "-x".to_string(), "test".to_string()];
+        let tokens = vec![
+            "gradle".to_string(),
+            "build".to_string(),
+            "-x".to_string(),
+            "test".to_string(),
+        ];
         let policy = crate::models::CommandExtractorPolicy::default();
         let facts = Classifier::classify(&tokens, &policy, "test");
 
-        let fact_map: HashMap<&str, &str> = facts.iter()
+        let fact_map: HashMap<&str, &str> = facts
+            .iter()
             .map(|f| (f.key.as_str(), f.value.as_str()))
             .collect();
 
@@ -771,7 +865,8 @@ mod tests {
         let policy = crate::models::CommandExtractorPolicy::default();
         let facts = Classifier::classify(&tokens, &policy, "test");
 
-        let fact_map: HashMap<&str, &str> = facts.iter()
+        let fact_map: HashMap<&str, &str> = facts
+            .iter()
             .map(|f| (f.key.as_str(), f.value.as_str()))
             .collect();
 
@@ -783,7 +878,12 @@ mod tests {
 
     #[test]
     fn test_classify_flags_suppressed_when_disabled() {
-        let tokens = vec!["npm".to_string(), "install".to_string(), "--save-dev".to_string(), "express".to_string()];
+        let tokens = vec![
+            "npm".to_string(),
+            "install".to_string(),
+            "--save-dev".to_string(),
+            "express".to_string(),
+        ];
         let mut policy = crate::models::CommandExtractorPolicy::default();
         policy.allow_flags = false;
         let facts = Classifier::classify(&tokens, &policy, "test");
@@ -797,7 +897,11 @@ mod tests {
 
     #[test]
     fn test_classify_options_suppressed_when_disabled() {
-        let tokens = vec!["mvn".to_string(), "clean".to_string(), "-DskipTests".to_string()];
+        let tokens = vec![
+            "mvn".to_string(),
+            "clean".to_string(),
+            "-DskipTests".to_string(),
+        ];
         let mut policy = crate::models::CommandExtractorPolicy::default();
         policy.allow_options = false;
         let facts = Classifier::classify(&tokens, &policy, "test");
@@ -808,7 +912,11 @@ mod tests {
 
     #[test]
     fn test_classify_targets_suppressed_when_disabled() {
-        let tokens = vec!["npm".to_string(), "install".to_string(), "express".to_string()];
+        let tokens = vec![
+            "npm".to_string(),
+            "install".to_string(),
+            "express".to_string(),
+        ];
         let mut policy = crate::models::CommandExtractorPolicy::default();
         policy.allow_targets = false;
         let facts = Classifier::classify(&tokens, &policy, "test");
@@ -821,10 +929,15 @@ mod tests {
     fn test_classify_goal_map_override() {
         let tokens = vec!["mvn".to_string(), "clean".to_string()];
         let mut policy = crate::models::CommandExtractorPolicy::default();
-        policy.goal_map = Some(vec![("clean".to_string(), "cleanup".to_string())].into_iter().collect());
+        policy.goal_map = Some(
+            vec![("clean".to_string(), "cleanup".to_string())]
+                .into_iter()
+                .collect(),
+        );
 
         let facts = Classifier::classify(&tokens, &policy, "test");
-        let fact_map: HashMap<&str, &str> = facts.iter()
+        let fact_map: HashMap<&str, &str> = facts
+            .iter()
             .map(|f| (f.key.as_str(), f.value.as_str()))
             .collect();
 
@@ -869,30 +982,44 @@ mod tests {
 
     #[test]
     fn test_fact_confidence_1_0_normal() {
-        let extractor = CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
+        let extractor =
+            CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
         let facts = extractor.extract_command("mvn clean");
         for fact in &facts {
             if fact.key != "command_executable" && fact.key != "command_tool" {
                 continue;
             }
-            assert_eq!(fact.confidence, 1.0, "Normal facts should have confidence 1.0");
+            assert_eq!(
+                fact.confidence, 1.0,
+                "Normal facts should have confidence 1.0"
+            );
         }
     }
 
     #[test]
     fn test_fact_confidence_0_0_diagnostic() {
-        let extractor = CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
+        let extractor =
+            CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
         let facts = extractor.extract_command("echo `whoami`");
-        let diag_facts: Vec<_> = facts.iter().filter(|f| f.tags.contains(&"diagnostic".to_string())).collect();
+        let diag_facts: Vec<_> = facts
+            .iter()
+            .filter(|f| f.tags.contains(&"diagnostic".to_string()))
+            .collect();
         assert!(!diag_facts.is_empty());
         for fact in diag_facts {
-            assert_eq!(fact.confidence, 0.0, "Diagnostic facts should have confidence 0.0");
+            assert_eq!(
+                fact.confidence, 0.0,
+                "Diagnostic facts should have confidence 0.0"
+            );
         }
     }
 
     #[test]
     fn test_fact_source_extractor_command() {
-        let extractor = CommandExtractor::with_policy("my_cmd_ext", crate::models::CommandExtractorPolicy::default());
+        let extractor = CommandExtractor::with_policy(
+            "my_cmd_ext",
+            crate::models::CommandExtractorPolicy::default(),
+        );
         let facts = extractor.extract_command("mvn clean");
         for fact in &facts {
             assert_eq!(fact.source_extractor, "my_cmd_ext");
@@ -901,8 +1028,10 @@ mod tests {
 
     #[test]
     fn test_fact_keys_match_spec() {
-        let extractor = CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
-        let facts = extractor.extract_command("mvn clean package -DskipTests --settings settings.xml");
+        let extractor =
+            CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
+        let facts =
+            extractor.extract_command("mvn clean package -DskipTests --settings settings.xml");
         let keys: Vec<_> = facts.iter().map(|f| f.key.clone()).collect();
 
         assert!(keys.contains(&"command_executable".to_string()));
@@ -917,8 +1046,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_extractor_implements_extractor_trait() {
-        use crate::traits::Extractor as ExtractorTrait;
         use crate::traits::EnrichmentError;
+        use crate::traits::Extractor as ExtractorTrait;
 
         struct FakeFs;
 
@@ -927,12 +1056,16 @@ mod tests {
             async fn read_to_string(&self, _path: &str) -> Result<String, EnrichmentError> {
                 Ok(String::new())
             }
-            async fn glob(&self, _pattern: &str) -> Result<Vec<std::path::PathBuf>, EnrichmentError> {
+            async fn glob(
+                &self,
+                _pattern: &str,
+            ) -> Result<Vec<std::path::PathBuf>, EnrichmentError> {
                 Ok(Vec::new())
             }
         }
 
-        let extractor = CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
+        let extractor =
+            CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
         let invocation = OperationInvocation::from_command("mvn clean package");
         let result = OperationResult {
             exit_code: 0,
@@ -944,16 +1077,25 @@ mod tests {
 
         let facts = extractor.extract(&invocation, &result, &FakeFs).await;
         assert!(!facts.is_empty());
-        assert!(facts.iter().any(|f| f.key == "command_executable" && f.value == "mvn"));
+        assert!(
+            facts
+                .iter()
+                .any(|f| f.key == "command_executable" && f.value == "mvn")
+        );
     }
 
     #[test]
     fn test_empty_command_returns_diagnostic() {
-        let extractor = CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
+        let extractor =
+            CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
         let facts = extractor.extract_command("");
         assert!(!facts.is_empty());
         // Should have diagnostic fact
-        assert!(facts.iter().any(|f| f.tags.contains(&"diagnostic".to_string())));
+        assert!(
+            facts
+                .iter()
+                .any(|f| f.tags.contains(&"diagnostic".to_string()))
+        );
     }
 
     #[test]
@@ -962,7 +1104,8 @@ mod tests {
         // Actually, the tokenizer itself doesn't change - strict affects whether we reject
         // The spec says strict=true rejects, but the tokenizer itself is the rejection point
         // So let's test that unsafe is still rejected
-        let extractor = CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
+        let extractor =
+            CommandExtractor::with_policy("test", crate::models::CommandExtractorPolicy::default());
         let facts = extractor.extract_command("echo `whoami`");
         // Should have diagnostic
         assert!(facts.iter().any(|f| f.key == "unsafe_token"));
