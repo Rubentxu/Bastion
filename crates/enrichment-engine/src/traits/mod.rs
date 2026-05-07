@@ -98,4 +98,18 @@ pub trait RunRecorder: Send + Sync {
     /// Errors should be logged but not propagated — the adapter handles
     /// failure reporting via `tracing::warn!`.
     async fn record(&self, run: &EnrichmentRunRecord) -> Result<(), EnrichmentError>;
+
+    /// Get the current retention configuration.
+    ///
+    /// Returns the retention policy that controls time-based and row-count
+    /// based cleanup of recorded data.
+    fn retention_config(&self) -> &crate::models::RetentionConfig;
+
+    /// Clean up old records based on retention policy.
+    ///
+    /// Deletes records older than `max_age_days` and reduces row count to `max_rows`.
+    /// This method is idempotent — safe to call multiple times.
+    ///
+    /// Returns the number of rows deleted.
+    async fn cleanup(&self) -> Result<u64, EnrichmentError>;
 }

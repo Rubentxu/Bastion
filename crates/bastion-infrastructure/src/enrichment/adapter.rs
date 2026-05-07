@@ -13,8 +13,9 @@ use bastion_domain::shared::id::SandboxId;
 use uuid::Uuid;
 
 use enrichment_engine::models::{AgentContext, EnrichmentRunRecord, OperationInvocation, OperationResult};
+use enrichment_engine::optimizer::{OptimizerReport, OptimizerRepository};
 use enrichment_engine::pipeline::FactPipeline;
-use enrichment_engine::traits::{CatalogRepository, RunRecorder};
+use enrichment_engine::traits::{CatalogRepository, EnrichmentError, RunRecorder};
 use enrichment_engine::truncate::truncate_string;
 
 use super::config::EnrichmentConfig;
@@ -27,13 +28,15 @@ use super::fs::SandboxFileSystem;
 /// call pipeline, map back to JSON extension.
 ///
 /// Optionally records enrichment runs via a `RunRecorder` for telemetry
-/// and Meta-Harness optimization.
+/// and Meta-Harness optimization. An optional `OptimizerRepository` enables
+/// the optimizer report MCP tool.
 #[derive(Clone)]
 pub struct BastionEnrichmentAdapter {
     pipeline: Arc<FactPipeline>,
     provider: Arc<dyn SandboxProvider>,
     config: EnrichmentConfig,
     recorder: Option<Arc<dyn RunRecorder>>,
+    optimizer_repo: Option<Arc<dyn OptimizerRepository>>,
 }
 
 impl BastionEnrichmentAdapter {
@@ -57,6 +60,7 @@ impl BastionEnrichmentAdapter {
             provider,
             config,
             recorder: None,
+            optimizer_repo: None,
         }
     }
 
@@ -71,6 +75,7 @@ impl BastionEnrichmentAdapter {
             provider,
             config,
             recorder: None,
+            optimizer_repo: None,
         }
     }
 
@@ -99,9 +104,84 @@ impl BastionEnrichmentAdapter {
             provider: self.provider.clone(),
             config: self.config.clone(),
             recorder: Some(recorder),
+            optimizer_repo: self.optimizer_repo.clone(),
         })
     }
 
+    /// Configure this adapter with an optimizer repository.
+    ///
+    /// Returns a new `Arc<Self>` with the optimizer repo set. The original adapter
+    /// is cloned, not modified.
+    ///
+    /// # Arguments
+    ///
+    /// * `optimizer_repo` - The optimizer repository for generating reports
+    pub fn with_optimizer_repo(self: Arc<Self>, optimizer_repo: Arc<dyn OptimizerRepository>) -> Arc<Self> {
+        Arc::new(Self {
+            pipeline: self.pipeline.clone(),
+            provider: self.provider.clone(),
+            config: self.config.clone(),
+            recorder: self.recorder.clone(),
+            optimizer_repo: Some(optimizer_repo),
+        })
+    }
+
+    /// Get an optimizer report from recorded enrichment runs.
+    ///
+    /// Returns `None` if the optimizer repository is not configured.
+    pub async fn get_optimizer_report(&self, after: Option<&str>) -> Result<Option<OptimizerReport>, EnrichmentError> {
+        let repo = match &self.optimizer_repo {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let records = repo.read_records(after).await?;
+        let report = enrichment_engine::optimizer::generate_report(&records);
+        Ok(Some(report))
+    }
+
+    /// Get the retention configuration and stats from the recorder.
+    ///
+    /// Returns `None` if no recorder is configured.
+    /// The stats (row count, timestamps) require direct database access which is
+    /// only available on `SqliteRunRecorder`.
+    pub fn retention_info(&self) -> Option<RetentionStats> {
+        let retention = self.recorder.as_ref()?;
+
+        // Get the retention config (stored in the concrete recorder)
+        // This requires accessing the concrete type, so we use the same pattern
+        // as with_recorder - the caller sets up the right type at construction time
+        let config = retention.retention_config();
+
+        Some(RetentionStats {
+            max_age_days: config.max_age_days,
+            max_rows: config.max_rows,
+            enabled: config.enabled,
+            sanitize: config.sanitize,
+        })
+    }
+
+    /// Get the optimizer repository reference, if configured.
+    pub fn optimizer_repo(&self) -> Option<&Arc<dyn OptimizerRepository>> {
+        self.optimizer_repo.as_ref()
+    }
+
+    /// Get the run recorder reference, if configured.
+    pub fn recorder(&self) -> Option<&Arc<dyn RunRecorder>> {
+        self.recorder.as_ref()
+    }
+}
+
+/// Retention statistics returned by the adapter.
+#[derive(Debug, Clone)]
+pub struct RetentionStats {
+    pub max_age_days: u32,
+    pub max_rows: u64,
+    pub enabled: bool,
+    pub sanitize: bool,
+}
+
+impl BastionEnrichmentAdapter {
     /// Enrich a sandbox command execution.
     ///
     /// Maps `CommandSpec` and `CommandResult` to the enrichment engine's types,
@@ -400,6 +480,20 @@ mod tests {
         async fn record(&self, run: &EnrichmentRunRecord) -> Result<(), enrichment_engine::traits::EnrichmentError> {
             self.records.lock().await.push(run.clone());
             Ok(())
+        }
+
+        fn retention_config(&self) -> &enrichment_engine::models::RetentionConfig {
+            static DEFAULT: enrichment_engine::models::RetentionConfig = enrichment_engine::models::RetentionConfig {
+                max_age_days: 90,
+                max_rows: 100_000,
+                enabled: false,
+                sanitize: false,
+            };
+            &DEFAULT
+        }
+
+        async fn cleanup(&self) -> Result<u64, enrichment_engine::traits::EnrichmentError> {
+            Ok(0)
         }
     }
 

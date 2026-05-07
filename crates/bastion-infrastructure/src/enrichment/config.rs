@@ -2,6 +2,9 @@
 
 use std::path::PathBuf;
 
+// Re-export RetentionConfig from enrichment-engine for use in infrastructure
+pub use enrichment_engine::models::RetentionConfig;
+
 /// Configuration for the enrichment adapter.
 #[derive(Debug, Clone)]
 pub struct EnrichmentConfig {
@@ -19,32 +22,6 @@ impl Default for EnrichmentConfig {
             enabled: true,
             catalog_dir: PathBuf::from(".bastion/catalog/enrichers"),
             retention: RetentionConfig::default(),
-        }
-    }
-}
-
-/// Retention policy configuration for enrichment run records.
-///
-/// Controls time-based and row-count-based cleanup of the `enrichment_runs.db`.
-#[derive(Debug, Clone)]
-pub struct RetentionConfig {
-    /// Maximum age of records in days. Records older than this are deleted.
-    pub max_age_days: u32,
-    /// Maximum number of rows to retain. Oldest rows are deleted when exceeded.
-    pub max_rows: u64,
-    /// Whether cleanup is enabled. When false, cleanup() returns immediately.
-    pub enabled: bool,
-    /// Whether sanitization is enabled. When true, commands are sanitized before persistence.
-    pub sanitize: bool,
-}
-
-impl Default for RetentionConfig {
-    fn default() -> Self {
-        Self {
-            max_age_days: 90,
-            max_rows: 100_000,
-            enabled: true,
-            sanitize: true,
         }
     }
 }

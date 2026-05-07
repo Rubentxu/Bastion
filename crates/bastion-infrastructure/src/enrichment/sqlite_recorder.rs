@@ -14,6 +14,7 @@ use enrichment_engine::models::EnrichmentRunRecord;
 use enrichment_engine::traits::{EnrichmentError, RunRecorder};
 
 use super::config::RetentionConfig;
+use super::schema_migration::SchemaMigration;
 
 /// SQLite-backed implementation of `RunRecorder`.
 ///
@@ -57,6 +58,10 @@ impl SqliteRunRecorder {
 
         let conn = rusqlite::Connection::open(db_path)
             .map_err(|e| DomainError::Internal(format!("Failed to open SQLite DB: {}", e)))?;
+
+        // Run schema migrations before any schema creation
+        // This ensures backward compatibility with existing databases
+        SchemaMigration::run(&conn)?;
 
         // Inline schema creation
         conn.execute_batch(
@@ -249,6 +254,54 @@ impl RunRecorder for SqliteRunRecorder {
         .map_err(|e| EnrichmentError::Recorder(format!("Failed to insert record: {}", e)))?;
 
         Ok(())
+    }
+
+    fn retention_config(&self) -> &enrichment_engine::models::RetentionConfig {
+        &self.retention
+    }
+
+    async fn cleanup(&self) -> Result<u64, EnrichmentError> {
+        if !self.retention.enabled {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock().await;
+        let mut total_deleted: u64 = 0;
+
+        // 1. Age-based deletion
+        let cutoff = Utc::now() - chrono::Duration::days(self.retention.max_age_days as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let deleted = conn
+            .execute(
+                "DELETE FROM enrichment_runs WHERE timestamp < ?1",
+                params![cutoff_str],
+            )
+            .map_err(|e| EnrichmentError::Recorder(format!("cleanup age-based delete failed: {}", e)))?;
+
+        total_deleted += deleted as u64;
+
+        // 2. Row-count cap deletion
+        let row_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM enrichment_runs", [], |row| row.get(0))
+            .map_err(|e| EnrichmentError::Recorder(format!("count query failed: {}", e)))?;
+
+        if row_count > self.retention.max_rows as i64 {
+            let to_delete = row_count - self.retention.max_rows as i64;
+            let deleted = conn
+                .execute(
+                    &format!(
+                        "DELETE FROM enrichment_runs WHERE id IN (SELECT id FROM enrichment_runs ORDER BY timestamp ASC LIMIT {})",
+                        to_delete
+                    ),
+                    [],
+                )
+                .map_err(|e| EnrichmentError::Recorder(format!("cleanup row-count delete failed: {}", e)))?;
+
+            total_deleted += deleted as u64;
+        }
+
+        Ok(total_deleted)
     }
 }
 

@@ -47,6 +47,7 @@ mod auth;
 mod auto_tls;
 mod catalog_tools;
 mod doctor_tools;
+mod enrichment_tools;
 mod registry;
 mod sandbox;
 mod server;
@@ -555,13 +556,17 @@ async fn main() -> Result<()> {
                         }
                     }
 
-                    let run_recorder: Arc<dyn enrichment_engine::traits::RunRecorder> = Arc::new(recorder);
+                    let concrete_recorder = Arc::new(recorder);
+                    let run_recorder: Arc<dyn enrichment_engine::traits::RunRecorder> = concrete_recorder.clone();
                     let adapter_arc = Arc::new(adapter);
-                    let adapter_with_recorder = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::with_recorder(adapter_arc, run_recorder);
+
+                    // Create optimizer repository from the same recorder
+                    let optimizer_repo = Arc::new(bastion_infrastructure::enrichment::SqliteOptimizerRepository::new(concrete_recorder));
+                    let adapter_with_recorder_and_optimizer = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::with_recorder(adapter_arc, run_recorder)
+                        .with_optimizer_repo(optimizer_repo);
                     tracing::info!("Enrichment catalog initialized at {}, runs recorded at {}", enrichment_catalog_db_path.display(), enrichment_runs_db_path.display());
-                    // adapter_with_recorder is Arc<BastionEnrichmentAdapter>, and BastionGateway expects Arc<Option<BastionEnrichmentAdapter>>
-                    // We can use Arc::new(Some(...)) on the unwrapped inner value
-                    let inner = Arc::try_unwrap(adapter_with_recorder).unwrap_or_else(|arc| (*arc).clone());
+                    // adapter_with_recorder_and_optimizer is Arc<BastionEnrichmentAdapter>, and BastionGateway expects Arc<Option<BastionEnrichmentAdapter>>
+                    let inner = Arc::try_unwrap(adapter_with_recorder_and_optimizer).unwrap_or_else(|arc| (*arc).clone());
                     (inner, Some(enrichment_runs_db_path.clone()))
                 }
                 Err(e) => {

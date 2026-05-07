@@ -135,7 +135,7 @@ pub struct BastionGateway {
     /// Catalog configuration (experience, assertions, doctors, advice)
     pub(crate) catalog_config: CatalogConfig,
     /// Optional enrichment adapter for sandbox command enrichment
-    enrichment_adapter: Arc<Option<BastionEnrichmentAdapter>>,
+    pub(crate) enrichment_adapter: Arc<Option<BastionEnrichmentAdapter>>,
     /// Enrichment configuration
     enrichment_config: EnrichmentConfig,
 }
@@ -1894,6 +1894,6 @@ Err(e) => {
     }
 }
 
-/// Combine server_handler, catalog_tools, doctor_tools, and advice_tools routers into a single ServerHandler impl.
-#[tool_handler(router = (Self::server_handler() + crate::catalog_tools::catalog_tools() + crate::doctor_tools::doctor_tools() + crate::advice_tools::advice_tools()))]
+/// Combine server_handler, catalog_tools, doctor_tools, advice_tools, and enrichment_tools routers into a single ServerHandler impl.
+#[tool_handler(router = (Self::server_handler() + crate::catalog_tools::catalog_tools() + crate::doctor_tools::doctor_tools() + crate::advice_tools::advice_tools() + crate::enrichment_tools::enrichment_tools()))]
 impl ServerHandler for BastionGateway {}

@@ -6,12 +6,14 @@
 pub mod adapter;
 pub mod config;
 pub mod fs;
+pub mod schema_migration;
 pub mod sqlite_optimizer_repo;
 pub mod sqlite_repo;
 pub mod sqlite_recorder;
 
 pub use adapter::BastionEnrichmentAdapter;
 pub use config::{EnrichmentConfig, RetentionConfig};
+pub use schema_migration::SchemaMigration;
 pub use sqlite_optimizer_repo::SqliteOptimizerRepository;
 pub use sqlite_repo::{SqliteCatalogRepository, YamlCatalogImporter};
 pub use sqlite_recorder::SqliteRunRecorder;
