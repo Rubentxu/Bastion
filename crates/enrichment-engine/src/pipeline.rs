@@ -121,6 +121,11 @@ impl FactPipeline {
         Arc::new(CompiledEnricherCache::from_enrichers(&enrichers))
     }
 
+    /// Get the number of enrichers in the catalog.
+    pub async fn catalog_count(&self) -> usize {
+        self.catalog.list_all().await.len()
+    }
+
     /// Run the full enrichment pipeline.
     ///
     /// 1. Detect intent (find matching enrichers)

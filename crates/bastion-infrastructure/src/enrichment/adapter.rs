@@ -14,6 +14,7 @@ use bastion_domain::shared::id::SandboxId;
 use uuid::Uuid;
 
 use enrichment_engine::models::{AgentContext, EnrichmentRunRecord, OperationInvocation, OperationResult};
+use enrichment_engine::metrics::{EnrichmentHealth, EnrichmentMetrics, EnrichmentMetricsSnapshot};
 use enrichment_engine::optimizer::{OptimizerReport, OptimizerRepository};
 use enrichment_engine::pipeline::FactPipeline;
 use enrichment_engine::traits::{CatalogRepository, EnrichmentError, RunRecorder};
@@ -44,6 +45,8 @@ pub struct BastionEnrichmentAdapter {
     /// Atomic counter tracking in-flight record persistence operations.
     /// Bounded by `config.semaphore.max_concurrent_records`.
     record_in_flight: Arc<AtomicUsize>,
+    /// Thread-safe metrics for observability.
+    metrics: Arc<EnrichmentMetrics>,
 }
 
 impl BastionEnrichmentAdapter {
@@ -69,6 +72,7 @@ impl BastionEnrichmentAdapter {
             recorder: None,
             optimizer_repo: None,
             record_in_flight: Arc::new(AtomicUsize::new(0)),
+            metrics: Arc::new(EnrichmentMetrics::new()),
         }
     }
 
@@ -85,6 +89,7 @@ impl BastionEnrichmentAdapter {
             recorder: None,
             optimizer_repo: None,
             record_in_flight: Arc::new(AtomicUsize::new(0)),
+            metrics: Arc::new(EnrichmentMetrics::new()),
         }
     }
 
@@ -115,6 +120,7 @@ impl BastionEnrichmentAdapter {
             recorder: Some(recorder),
             optimizer_repo: self.optimizer_repo.clone(),
             record_in_flight: self.record_in_flight.clone(),
+            metrics: self.metrics.clone(),
         })
     }
 
@@ -134,6 +140,7 @@ impl BastionEnrichmentAdapter {
             recorder: self.recorder.clone(),
             optimizer_repo: Some(optimizer_repo),
             record_in_flight: self.record_in_flight.clone(),
+            metrics: self.metrics.clone(),
         })
     }
 
@@ -198,6 +205,44 @@ impl BastionEnrichmentAdapter {
     pub fn recorder(&self) -> Option<&Arc<dyn RunRecorder>> {
         self.recorder.as_ref()
     }
+
+    /// Get a snapshot of current metrics counters and latency percentiles.
+    ///
+    /// Thread-safe: returns a clone of the current state without holding locks.
+    pub fn metrics(&self) -> EnrichmentMetricsSnapshot {
+        self.metrics.snapshot()
+    }
+
+    /// Get a health snapshot of the enrichment adapter.
+    ///
+    /// Returns operational status including whether enrichment is enabled,
+    /// catalog size, recent run counts, saturation events, and database stats.
+    pub async fn health(&self) -> EnrichmentHealth {
+        let metrics_snapshot = self.metrics.snapshot();
+
+        // Get catalog count from pipeline
+        let catalog_count = self.pipeline.catalog_count().await;
+
+        // Get DB row count from recorder if available
+        let db_row_count = if let Some(ref recorder) = self.recorder {
+            match recorder.stats().await {
+                Ok(stats) => Some(stats.current_row_count),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        EnrichmentHealth {
+            enabled: self.config.enabled,
+            catalog_enricher_count: catalog_count,
+            // recent_runs_5min: we don't have time-bucketed data, use total as approximation
+            recent_runs_5min: metrics_snapshot.total_success + metrics_snapshot.total_failure,
+            saturation_events: metrics_snapshot.saturation_drops,
+            db_row_count,
+            recorder_available: self.recorder.is_some(),
+        }
+    }
 }
 
 /// Retention statistics returned by the adapter.
@@ -248,11 +293,16 @@ impl BastionEnrichmentAdapter {
             Err(e) => {
                 tracing::warn!(error = %e, "Enrichment pipeline failed");
                 // Record even on pipeline error (partial results may exist)
+                self.metrics.record_failure();
+                self.metrics.record_latency(start.elapsed().as_millis() as u64);
                 self.record_run(&invocation, &result, None, start.elapsed(), Some(&e));
                 return None;
             }
         };
         let elapsed = start.elapsed();
+
+        // Record latency for all runs (success or empty)
+        self.metrics.record_latency(elapsed.as_millis() as u64);
 
         // Don't block on slow enrichment — trace and continue
         if elapsed > Duration::from_millis(100) {
@@ -265,6 +315,11 @@ impl BastionEnrichmentAdapter {
             self.record_run(&invocation, &result, Some(&ctx), elapsed, None);
             return None;
         }
+
+        // Record successful enrichment metrics
+        let facts_count = ctx.facts.len() as u32;
+        self.metrics.record_success();
+        self.metrics.record_facts(facts_count);
 
         // Record successful enrichment run
         self.record_run(&invocation, &result, Some(&ctx), elapsed, None);
@@ -297,12 +352,15 @@ impl BastionEnrichmentAdapter {
         let recorder = Arc::clone(recorder);
         let in_flight = self.record_in_flight.clone();
         let max = self.config.semaphore.max_concurrent_records;
+        let metrics = self.metrics.clone();
 
         // Try to acquire a slot: atomically increment and check if we're over limit
         let prev = in_flight.fetch_add(1, Ordering::AcqRel);
         if prev >= max {
             // Over limit - undo the increment and drop the record
             in_flight.fetch_sub(1, Ordering::AcqRel);
+            // Record saturation drop metric
+            metrics.record_saturation_drop();
             tracing::warn!(
                 run_id = %record.id,
                 enricher_id = %record.enricher_id,

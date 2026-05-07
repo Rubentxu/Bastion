@@ -1,9 +1,10 @@
-//! Enrichment MCP tools: optimizer report, retention info, and retention cleanup.
+//! Enrichment MCP tools: optimizer report, retention info, retention cleanup, and health.
 //!
-//! Exposes three MCP tools for managing and inspecting the enrichment run recorder:
+//! Exposes four MCP tools for managing and inspecting the enrichment run recorder:
 //! - `enrichment_optimizer_report`: Generate an optimizer report from recorded runs
 //! - `enrichment_retention_info`: Get current retention config and DB stats
 //! - `enrichment_retention_cleanup`: Run retention cleanup and get deleted/remaining counts
+//! - `enrichment_health`: Get operational health status of the enrichment adapter
 
 use std::sync::Arc;
 
@@ -33,6 +34,7 @@ pub fn enrichment_tools() -> ToolRouter<BastionGateway> {
         .with_route((BastionGateway::enrichment_optimizer_report_tool_attr(), BastionGateway::enrichment_optimizer_report))
         .with_route((BastionGateway::enrichment_retention_info_tool_attr(), BastionGateway::enrichment_retention_info))
         .with_route((BastionGateway::enrichment_retention_cleanup_tool_attr(), BastionGateway::enrichment_retention_cleanup))
+        .with_route((BastionGateway::enrichment_health_tool_attr(), BastionGateway::enrichment_health))
 }
 
 // ─── Tool implementations ────────────────────────────────────────────────────
@@ -203,5 +205,41 @@ impl BastionGateway {
                 .to_string()
             }
         }
+    }
+
+    /// Get operational health status of the enrichment adapter.
+    ///
+    /// Returns a JSON object with:
+    /// - `enabled`: Whether enrichment is enabled
+    /// - `catalog_enricher_count`: Number of enrichers in the catalog
+    /// - `recent_runs_5min`: Approximate total runs (success + failure)
+    /// - `saturation_events`: Number of saturation drop events
+    /// - `db_row_count`: Current row count in database (if recorder available)
+    /// - `recorder_available`: Whether a recorder is configured
+    #[tool(description = "Get operational health status of the enrichment adapter")]
+    async fn enrichment_health(&self) -> String {
+        // Get the enrichment adapter
+        let adapter = match &*self.enrichment_adapter {
+            Some(a) => a,
+            None => {
+                return serde_json::json!({
+                    "error": "enrichment adapter not configured"
+                })
+                .to_string();
+            }
+        };
+
+        // Get health snapshot from adapter
+        let health = adapter.health().await;
+
+        serde_json::json!({
+            "enabled": health.enabled,
+            "catalog_enricher_count": health.catalog_enricher_count,
+            "recent_runs_5min": health.recent_runs_5min,
+            "saturation_events": health.saturation_events,
+            "db_row_count": health.db_row_count,
+            "recorder_available": health.recorder_available
+        })
+        .to_string()
     }
 }

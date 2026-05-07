@@ -236,6 +236,33 @@ Commands are sanitized before recording when `RetentionConfig.sanitize = true`:
 | `--password <value>` | `--password ***` |
 | AWS keys (`AKIA...`) | `***` |
 | `--secret` flags | `--secret ***` |
+| `--api-key` flags | `--api-key ***` |
+| GitHub tokens (`ghp_`, `gho_`, `ght_`, `ghs_` + 8+ chars) | `ghp_***` |
+| OpenAI keys (`sk-` 48+ chars, `sk-proj-`, `sk-svcacct-`, `sk-admin-` 16+ chars) | `sk-***` |
+| JWT tokens (`eyJ...` with x.y.z structure, 50-1200 chars) | `eyJ***` |
+
+### Observability
+
+#### Metrics (`EnrichmentMetrics`)
+
+Thread-safe counters for pipeline telemetry (zero-alloc on hot path):
+
+- `total_success` — Successful enrichment runs
+- `total_failure` — Failed enrichment runs
+- `saturation_drops` — Records dropped due to backpressure
+- `facts_total` — Total facts extracted
+- `p50_latency_ms` / `p99_latency_ms` — Percentile latencies
+
+#### Health (`EnrichmentHealth`)
+
+Operational snapshot via `BastionEnrichmentAdapter::health()`:
+
+- `enabled` — Whether enrichment is active
+- `catalog_enricher_count` — Number of configured enrichers
+- `recent_runs_5min` — Approximate total runs
+- `saturation_events` — Backpressure drop count
+- `db_row_count` — Database size (if recorder wired)
+- `recorder_available` — Recorder presence
 
 ---
 

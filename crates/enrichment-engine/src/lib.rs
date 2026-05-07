@@ -40,6 +40,7 @@ pub use crate::traits::{CatalogRepository, EnrichmentError, Extractor, FactStore
 pub use crate::rules::{DefaultRuleEvaluator, Expr, ParseError, RuleEvaluator};
 pub use crate::optimizer::{OptimizerReport, EnricherScore, OptimizationRecommendation, RecAction, OptimizerRepository, AggregateStats};
 pub use crate::sanitizer::sanitize_command;
+pub use crate::metrics::{EnrichmentHealth, EnrichmentMetrics, EnrichmentMetricsSnapshot};
 
 // ─── Modules ─────────────────────────────────────────────────────────────────
 
@@ -47,6 +48,7 @@ pub mod composer;
 pub mod enrichers;
 pub mod extractors;
 pub mod intent;
+pub mod metrics;
 pub mod models;
 pub mod normalizer;
 pub mod optimizer;

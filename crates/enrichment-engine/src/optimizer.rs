@@ -202,18 +202,31 @@ pub fn generate_recommendation(score: &EnricherScore) -> OptimizationRecommendat
     }
 }
 
+/// Per-component breakdown suffix appended to recommendation reasons.
+fn build_component_breakdown(score: &EnricherScore) -> String {
+    format!(
+        " (artifact_yield={}, latency={}ms, error_rate={})",
+        score.artifact_yield,
+        score.avg_latency_ms as u64,
+        score.false_positive_rate
+    )
+}
+
 /// Determine the recommended action and reason based on score and confidence.
 fn determine_action_and_reason(score: &EnricherScore, confidence: f64) -> (RecAction, String) {
     let utility = score.utility_score;
     let runs = score.total_runs;
 
+    // Build the component breakdown suffix
+    let breakdown = build_component_breakdown(score);
+
     // Low confidence — always review
     if confidence < 0.8 {
         let reason = if runs == 0 {
-            "No runs recorded for this enricher.".to_string()
+            format!("No runs recorded for this enricher.{breakdown}")
         } else {
             format!(
-                "Insufficient data ({} runs). Need {} for full confidence.",
+                "Insufficient data ({} runs). Need {} for full confidence.{breakdown}",
                 runs, MIN_RUNS_FOR_CONFIDENCE
             )
         };
@@ -222,18 +235,33 @@ fn determine_action_and_reason(score: &EnricherScore, confidence: f64) -> (RecAc
 
     // High confidence thresholds
     if utility < 0.2 {
-        (RecAction::Remove, format!("Very low utility score ({:.2}). Recommend removal.", utility))
+        (
+            RecAction::Remove,
+            format!(
+                "Very low utility score ({:.2}). Recommend removal.{breakdown}",
+                utility
+            ),
+        )
     } else if utility < 0.4 {
         (
             RecAction::Deprioritize,
-            format!("Low utility score ({:.2}). Consider deprioritizing in catalog.", utility),
+            format!(
+                "Low utility score ({:.2}). Consider deprioritizing in catalog.{breakdown}",
+                utility
+            ),
         )
     } else if utility > 0.7 {
-        (RecAction::Keep, format!("High utility score ({:.2}). Keep in catalog.", utility))
+        (
+            RecAction::Keep,
+            format!("High utility score ({:.2}). Keep in catalog.{breakdown}", utility),
+        )
     } else {
         (
             RecAction::Review,
-            format!("Moderate utility score ({:.2}). Review configuration.", utility),
+            format!(
+                "Moderate utility score ({:.2}). Review configuration.{breakdown}",
+                utility
+            ),
         )
     }
 }
@@ -599,5 +627,72 @@ mod tests {
         assert!(json.contains("\"generated_at\""));
         assert!(json.contains("\"scores\""));
         assert!(json.contains("\"recommendations\""));
+    }
+
+    // ─── Recommendation reason format ──────────────────────────────────────────
+
+    #[test]
+    fn reason_format_keep_has_breakdown() {
+        let score = EnricherScore {
+            enricher_id: "great".to_string(),
+            total_runs: 20,
+            artifact_yield: 0.9,
+            diagnostic_hit_rate: 0.85,
+            false_positive_rate: 0.1,
+            avg_latency_ms: 500.0,
+            never_fired_rules: 1,
+            utility_score: 0.8,
+        };
+        let rec = generate_recommendation(&score);
+        assert_eq!(rec.action, RecAction::Keep);
+        // Reason must end with the breakdown suffix
+        assert!(
+            rec.reason.ends_with("(artifact_yield=0.9, latency=500ms, error_rate=0.1)"),
+            "reason = {}",
+            rec.reason
+        );
+    }
+
+    #[test]
+    fn reason_format_remove_has_breakdown() {
+        let score = EnricherScore {
+            enricher_id: "bad".to_string(),
+            total_runs: 20,
+            artifact_yield: 0.05,
+            diagnostic_hit_rate: 0.1,
+            false_positive_rate: 0.95,
+            avg_latency_ms: 5000.0,
+            never_fired_rules: 15,
+            utility_score: 0.1,
+        };
+        let rec = generate_recommendation(&score);
+        assert_eq!(rec.action, RecAction::Remove);
+        assert!(
+            rec.reason.ends_with("(artifact_yield=0.05, latency=5000ms, error_rate=0.95)"),
+            "reason = {}",
+            rec.reason
+        );
+    }
+
+    #[test]
+    fn reason_format_low_confidence_has_breakdown() {
+        let score = EnricherScore {
+            enricher_id: "cold".to_string(),
+            total_runs: 3,
+            artifact_yield: 0.5,
+            diagnostic_hit_rate: 0.5,
+            false_positive_rate: 0.5,
+            avg_latency_ms: 1000.0,
+            never_fired_rules: 1,
+            utility_score: 0.5,
+        };
+        let rec = generate_recommendation(&score);
+        assert_eq!(rec.action, RecAction::Review);
+        // Reason must contain the breakdown suffix
+        assert!(
+            rec.reason.contains("(artifact_yield=0.5, latency=1000ms, error_rate=0.5)"),
+            "reason = {}",
+            rec.reason
+        );
     }
 }
