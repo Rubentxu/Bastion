@@ -259,7 +259,7 @@ Operational snapshot via `BastionEnrichmentAdapter::health()`:
 
 - `enabled` — Whether enrichment is active
 - `catalog_enricher_count` — Number of configured enrichers
-- `recent_runs_5min` — Approximate total runs
+- `recent_runs_5min` — Runs completed in the last 5 minutes
 - `saturation_events` — Backpressure drop count
 - `db_row_count` — Database size (if recorder wired)
 - `recorder_available` — Recorder presence

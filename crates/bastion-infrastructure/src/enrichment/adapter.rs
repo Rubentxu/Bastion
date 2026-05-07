@@ -236,8 +236,7 @@ impl BastionEnrichmentAdapter {
         EnrichmentHealth {
             enabled: self.config.enabled,
             catalog_enricher_count: catalog_count,
-            // recent_runs_5min: we don't have time-bucketed data, use total as approximation
-            recent_runs_5min: metrics_snapshot.total_success + metrics_snapshot.total_failure,
+            recent_runs_5min: self.metrics.recent_runs_5min(),
             saturation_events: metrics_snapshot.saturation_drops,
             db_row_count,
             recorder_available: self.recorder.is_some(),

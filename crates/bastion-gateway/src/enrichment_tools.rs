@@ -212,7 +212,7 @@ impl BastionGateway {
     /// Returns a JSON object with:
     /// - `enabled`: Whether enrichment is enabled
     /// - `catalog_enricher_count`: Number of enrichers in the catalog
-    /// - `recent_runs_5min`: Approximate total runs (success + failure)
+    /// - `recent_runs_5min`: Total runs (success + failure) completed in the last 5 minutes
     /// - `saturation_events`: Number of saturation drop events
     /// - `db_row_count`: Current row count in database (if recorder available)
     /// - `recorder_available`: Whether a recorder is configured
