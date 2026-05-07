@@ -266,6 +266,50 @@ Operational snapshot via `BastionEnrichmentAdapter::health()`:
 
 ---
 
+## WebAssembly Support
+
+`enrichment-engine` supports compilation to WebAssembly via the `wasm32-wasip1` target.
+
+### Supported Target
+
+| Item | Value |
+|------|-------|
+| **Target** | `wasm32-wasip1` |
+| **Setup** | `rustup target add wasm32-wasip1` |
+| **CI gate** | `cargo check --target wasm32-wasip1 -p enrichment-engine` |
+
+### Supported Crates
+
+The following crates compile cleanly for `wasm32-wasip1` and are verified in CI on every PR:
+
+- `enrichment-engine`
+- `bastion-domain`
+- `bastion-application`
+
+### Unsupported Crates
+
+The following crates contain runtime or network dependencies that prevent `wasm32-wasip1` compilation and are **not** gated:
+
+- `bastion-gateway` — depends on `hyper` → `socket2`
+- `bastion-infrastructure` — depends on `hyper` → `socket2`
+- `bastion-worker` — infrastructure runtime deps
+- `bastion-bootstrap` — infrastructure runtime deps
+
+Attempting `cargo check --target wasm32-wasip1 --workspace` will fail due to these structural blockers. This is expected and documented behavior — **do not file issues for workspace-level wasm failures**.
+
+### Blockers
+
+The primary blocker is `socket2`, which does not support `wasm32-wasip1`. This is a structural constraint of the WASI sockets API, not a code-level issue fixable within the Bastion project.
+
+### Local Verification
+
+```bash
+rustup target add wasm32-wasip1
+cargo check --target wasm32-wasip1 -p enrichment-engine
+```
+
+---
+
 ## Cross-References
 
 | Topic | Location |

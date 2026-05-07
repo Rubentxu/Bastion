@@ -42,3 +42,4 @@ Thanks for your interest in contributing! Bastion follows Domain-Driven Design (
 - [ ] `cargo test --workspace` passes
 - [ ] New code has appropriate tests
 - [ ] Public APIs are documented
+- [ ] `cargo check --target wasm32-wasip1 -p enrichment-engine` passes (if changing enrichment crates)
