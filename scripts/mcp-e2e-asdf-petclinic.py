@@ -18,7 +18,7 @@ import urllib.error
 HOST = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
 PORT = sys.argv[2] if len(sys.argv) > 2 else "18765"
 URL = f"http://{HOST}:{PORT}/"
-PROVIDER = sys.argv[3] if len(sys.argv) > 3 else "local"
+PROVIDER = sys.argv[3] if len(sys.argv) > 3 else "podman"
 
 # ─── Report accumulators ───────────────────────────────────────────────────
 passes = 0
