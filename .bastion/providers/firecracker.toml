@@ -1,12 +1,13 @@
-# Embedded default firecracker provider configuration
+# Firecracker microVM provider configuration
+# Requires KVM and a kernel + rootfs image
 
 name = "firecracker"
 kind = "firecracker"
 plugin = "builtin"
 default = false
-socket = "/tmp/firecracker.sock"
+# socket unused for firecracker — binary is auto-detected
 image = "bastion/firecracker:latest"
-worker_binary = "target/debug/bastion-worker"
+worker_binary = "target/release/bastion-worker"
 
 [capabilities]
 supports_snapshots = true

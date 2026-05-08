@@ -139,7 +139,6 @@ impl ProviderRegistry {
     ) -> Result<Arc<dyn SandboxProvider>, RegistryError> {
         match config.kind.as_str() {
             "podman" => {
-                // PodmanProvider::new requires socket, image, worker_binary
                 let socket = config
                     .socket
                     .clone()
@@ -160,6 +159,71 @@ impl ProviderRegistry {
                 )
                 .map_err(|e| RegistryError::Watcher(e.to_string()))?;
                 Ok(Arc::new(podman) as Arc<dyn SandboxProvider>)
+            }
+            "gvisor" => {
+                let runsc_binary = PathBuf::from("/usr/local/bin/runsc");
+                let image = config
+                    .image
+                    .clone()
+                    .unwrap_or_else(|| "debian".to_string());
+                let rootfs_dir = PathBuf::from("/tmp/bastion-gvisor-rootfs");
+                std::fs::create_dir_all(&rootfs_dir).ok();
+                let worker_binary = config
+                    .worker_binary
+                    .clone()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("target/release/bastion-worker"));
+                let gateway_addr = "127.0.0.1:50052".to_string();
+
+                let gvisor = crate::provider::GVisorProvider::new(
+                    runsc_binary,
+                    &image,
+                    rootfs_dir,
+                    worker_binary,
+                    gateway_addr,
+                )
+                .map_err(|e| RegistryError::Watcher(e.to_string()))?;
+                Ok(Arc::new(gvisor) as Arc<dyn SandboxProvider>)
+            }
+            "firecracker" => {
+                let firecracker_binary = if let Some(sock) = &config.socket {
+                    PathBuf::from(sock)
+                } else {
+                    // Try common locations
+                    let candidates = [
+                        "/usr/bin/firecracker",
+                        "/usr/local/bin/firecracker",
+                    ];
+                    let mut found = None;
+                    for c in &candidates {
+                        if Path::new(c).exists() {
+                            found = Some(PathBuf::from(c));
+                            break;
+                        }
+                    }
+                    found.unwrap_or_else(|| PathBuf::from("/home/rubentxu/.local/bin/firecracker"))
+                };
+                let kernel_path = PathBuf::from("/boot/vmlinuz");
+                let rootfs_path = PathBuf::from("/var/lib/bastion/firecracker/rootfs.ext4");
+                let vm_dir = PathBuf::from("/tmp/bastion-firecracker-vms");
+                std::fs::create_dir_all(&vm_dir).ok();
+                let worker_binary = config
+                    .worker_binary
+                    .clone()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("target/release/bastion-worker"));
+                let gateway_addr = "127.0.0.1:50052".to_string();
+
+                let firecracker = crate::provider::FirecrackerProvider::new(
+                    firecracker_binary,
+                    kernel_path,
+                    rootfs_path,
+                    vm_dir,
+                    worker_binary,
+                    gateway_addr,
+                )
+                .map_err(|e| RegistryError::Watcher(e.to_string()))?;
+                Ok(Arc::new(firecracker) as Arc<dyn SandboxProvider>)
             }
             "local" => {
                 // LocalProvider: uses temp directory for workspaces

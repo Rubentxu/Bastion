@@ -1,12 +1,13 @@
-# Embedded default gvisor provider configuration
+# gVisor provider configuration
+# Uses runsc for OCI-compatible sandboxing
 
 name = "gvisor"
 kind = "gvisor"
 plugin = "builtin"
 default = false
-socket = "/tmp/gvisor.sock"
-image = "bastion/gvisor:latest"
-worker_binary = "target/debug/bastion-worker"
+# socket unused for gvisor — runsc binary is auto-detected
+image = "debian"
+worker_binary = "target/release/bastion-worker"
 
 [capabilities]
 supports_snapshots = false
