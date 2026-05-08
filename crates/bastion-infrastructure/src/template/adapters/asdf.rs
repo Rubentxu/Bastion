@@ -13,7 +13,7 @@ use bastion_domain::template::{
 pub struct AsdfAdapter;
 
 const ASDF_SETUP: &str = "git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.14.0";
-const ASDF_SOURCE: &str = ". ~/.asdf/asdf.sh";
+const ASDF_SOURCE: &str = "export ASDF_DIR=\"$HOME/.asdf\" && . \"$ASDF_DIR/asdf.sh\"";
 
 /// Install prerequisites needed for asdf (git, curl, etc.)
 const PREREQ_INSTALL: &str = "apt-get update && apt-get install -y git curl unzip";

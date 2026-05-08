@@ -112,16 +112,28 @@ impl GVisorProvider {
     }
 
     /// Execute a shell command inside a gVisor container and collect output.
+    ///
+    /// If `env_vars` is provided, they are prepended as `KEY=VALUE` exports
+    /// before the command, since `runsc exec` does not have a native env option.
     async fn exec_in_container(
         &self,
         container_id: &str,
         shell_cmd: &str,
+        env_vars: Option<&HashMap<String, String>>,
     ) -> Result<(Vec<u8>, Vec<u8>, i32), DomainError> {
         tracing::debug!(container_id, shell_cmd, "Running runsc exec");
 
+        // If env_vars provided, prepend them as exports in the shell command
+        let full_cmd = if let Some(vars) = env_vars {
+            let exports: Vec<String> = vars.iter().map(|(k, v)| format!("export {k}={v}")).collect();
+            format!("{} && {}", exports.join(" && "), shell_cmd)
+        } else {
+            shell_cmd.to_string()
+        };
+
         let output = self
             .runsc_cmd()
-            .args(["exec", container_id, "sh", "-c", shell_cmd])
+            .args(["exec", container_id, "sh", "-c", &full_cmd])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .output()
@@ -648,7 +660,7 @@ impl SandboxProvider for GVisorProvider {
             )
         };
 
-        let (stdout, stderr, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd).await?;
+        let (stdout, stderr, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd, Some(&command.env_vars)).await?;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         tracing::info!(
@@ -786,7 +798,7 @@ impl SandboxProvider for GVisorProvider {
         let encoded = base64::engine::general_purpose::STANDARD.encode(content);
         let shell_cmd = format!("printf '%s' '{}' | base64 -d > '{}'", encoded, path);
 
-        let (_, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd).await?;
+        let (_, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd, None).await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(
@@ -814,7 +826,7 @@ impl SandboxProvider for GVisorProvider {
         tracing::info!(sandbox_id = %id, path, "Reading file via runsc exec (fallback)");
 
         let shell_cmd = format!("base64 -w0 < '{}' 2>/dev/null || base64 < '{}'", path, path);
-        let (stdout, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd).await?;
+        let (stdout, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd, None).await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(
@@ -823,9 +835,11 @@ impl SandboxProvider for GVisorProvider {
             )));
         }
 
+        // Decode base64 — strip whitespace as safety net
         use base64::Engine;
+        let cleaned: Vec<u8> = stdout.iter().copied().filter(|&b| b != b'\n' && b != b'\r' && b != b' ').collect();
         let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&stdout)
+            .decode(&cleaned)
             .map_err(|e| DomainError::Internal(format!("Failed to decode base64: {e}")))?;
 
         Ok(decoded)
@@ -846,7 +860,7 @@ impl SandboxProvider for GVisorProvider {
         tracing::info!(sandbox_id = %id, dir, "Listing files via runsc exec (fallback)");
 
         let shell_cmd = format!("ls -la '{}' 2>/dev/null || ls -la '{}'", dir, dir);
-        let (stdout, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd).await?;
+        let (stdout, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd, None).await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(

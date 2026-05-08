@@ -1090,10 +1090,16 @@ impl BastionGateway {
             let duration_ms = t0.elapsed().as_millis() as u64;
 
             // Generate env_ref and store the environment for later use by sandbox_run
+            // Include path_prefix as PATH env var so sandbox_run can find installed tools
             let env_ref = format!("registry:{}:{}", sandbox_id, capability);
             {
+                let mut env = plan.env.clone();
+                if !plan.path_prefix.is_empty() {
+                    let path_prefix = plan.path_prefix.join(":");
+                    env.insert("PATH".to_string(), format!("{}:$PATH", path_prefix));
+                }
                 let mut envs = self.prepared_environments.write().await;
-                envs.insert(env_ref.clone(), plan.env.clone());
+                envs.insert(env_ref.clone(), env);
             }
             // Auto-inject: register this env_ref as the default for this sandbox
             {
@@ -1180,10 +1186,16 @@ impl BastionGateway {
                 let duration_ms = t0.elapsed().as_millis() as u64;
 
                 // Generate env_ref and store the environment for later use by sandbox_run
+                // Include path_prefix as PATH env var so sandbox_run can find installed tools
                 let env_ref = format!("resolver:{}:{}", sandbox_id, capability);
                 {
+                    let mut env = plan.env.clone();
+                    if !plan.path_prefix.is_empty() {
+                        let path_prefix = plan.path_prefix.join(":");
+                        env.insert("PATH".to_string(), format!("{}:$PATH", path_prefix));
+                    }
                     let mut envs = self.prepared_environments.write().await;
-                    envs.insert(env_ref.clone(), plan.env.clone());
+                    envs.insert(env_ref.clone(), env);
                 }
                 // Auto-inject: register this env_ref as the default for this sandbox
                 {
@@ -1405,9 +1417,10 @@ impl BastionGateway {
         let result = match (mode, effective_backend) {
             ("push", SyncBackend::Tar) | ("push", SyncBackend::Auto) => {
                 // tar pipe: local tar -> podman exec tar
+                // Create target dir inside container before extracting
                 let cmd = format!(
-                    "tar czf - -C \"$(dirname '{}')\" \"$(basename '{}')\" 2>/dev/null | podman exec -i {} tar xzf - -C \"{}\"",
-                    source, source, container_name, target
+                    "tar czf - -C \"$(dirname '{}')\" \"$(basename '{}')\" 2>/dev/null | podman exec -i {} sh -c 'mkdir -p \"{}\" && tar xzf - -C \"{}\"'",
+                    source, source, container_name, target, target
                 );
                 tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),
@@ -1419,10 +1432,12 @@ impl BastionGateway {
                 .await
             }
             ("pull", SyncBackend::Tar) | ("pull", SyncBackend::Auto) => {
-                // tar pipe: podman exec tar -> local tar
+                // Use podman cp for pull — it handles paths correctly without
+                // shell quoting issues that plague tar pipes across host/container.
+                // Create target directory on host before copying.
                 let cmd = format!(
-                    "podman exec {} tar czf - -C \"$(dirname '{}')\" \"$(basename '{}')\" 2>/dev/null | tar xzf - -C \"{}\"",
-                    container_name, source, source, target
+                    "mkdir -p \"{}\" && podman cp {}:{} \"{}/\"",
+                    target, container_name, source, target
                 );
                 tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),
