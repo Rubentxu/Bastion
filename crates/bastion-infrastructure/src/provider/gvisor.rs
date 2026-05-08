@@ -242,6 +242,34 @@ impl GVisorProvider {
         tracing::debug!(container_id, "Worker process spawned");
     }
 
+    /// Wait for the worker to connect to the gateway.
+    /// Polls the command router to check if the worker has registered.
+    async fn wait_for_worker_connection(
+        &self,
+        sandbox_id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), DomainError> {
+        let deadline = std::time::Instant::now() + timeout;
+
+        loop {
+            if std::time::Instant::now() > deadline {
+                return Err(DomainError::Timeout(format!(
+                    "Worker in sandbox {} did not connect within timeout",
+                    sandbox_id
+                )));
+            }
+
+            if let Some(ref router) = self.command_router {
+                if router.is_worker_connected(sandbox_id) {
+                    tracing::info!(sandbox_id, "Worker connected to gateway");
+                    return Ok(());
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
     /// Verify the worker binary is static musl.
     /// This is required because gVisor runsc containers use musl libc.
     fn verify_worker_binary(&self) -> Result<(), DomainError> {
@@ -277,6 +305,8 @@ impl GVisorProvider {
         // gVisor runsc containers use musl libc, so the binary must be static musl
         self.verify_worker_binary()?;
 
+        // Strip tag from image name (e.g. "debian:bookworm-slim" -> "debian")
+        let image_name = image.split(':').next().unwrap_or(image);
         let bundle_dir = self.rootfs_dir.join(sandbox_id);
         let rootfs_dest = bundle_dir.join("rootfs");
 
@@ -284,7 +314,7 @@ impl GVisorProvider {
             .map_err(|e| DomainError::Internal(format!("Cannot create bundle directory: {e}")))?;
 
         // Copy base rootfs image
-        let base_rootfs = self.rootfs_dir.join(image);
+        let base_rootfs = self.rootfs_dir.join(image_name);
         if !base_rootfs.exists() {
             std::fs::remove_dir_all(&bundle_dir).ok();
             return Err(DomainError::Config(format!(
@@ -397,9 +427,10 @@ impl GVisorProvider {
                 }
             ],
             "linux": {
+                // NOTE: network namespace removed — rootless runsc does not support
+                // sandbox-level networking. The container uses host network (--network=host equivalent).
                 "namespaces": [
                     { "type": "pid" },
-                    { "type": "network" },
                     { "type": "ipc" },
                     { "type": "uts" },
                     { "type": "mount" }
@@ -504,10 +535,12 @@ impl SandboxProvider for GVisorProvider {
         _env_vars: &HashMap<String, String>,
         timeout_ms: u64,
     ) -> Result<Sandbox, DomainError> {
+        // For gVisor, map template names like "debian:bookworm-slim" to directory names.
+        // Strip the tag suffix since rootfs directories don't use tags (e.g. "debian" not "debian:bookworm-slim").
         let image = if template.is_empty() {
             self.default_image.clone()
         } else {
-            template.to_string()
+            template.split(':').next().unwrap_or(&template).to_string()
         };
         let sandbox_id = id.to_string();
         let secret = format!("secret-{}", uuid::Uuid::new_v4());
@@ -627,6 +660,10 @@ impl SandboxProvider for GVisorProvider {
         if let Some(ref router) = self.command_router {
             router.set_sandbox_secret(&sandbox_id, &secret);
         }
+
+        // Wait for worker to connect to gateway (with generous timeout for slow startup)
+        self.wait_for_worker_connection(&sandbox_id, std::time::Duration::from_secs(30))
+            .await?;
 
         // Build domain entity
         let mut sandbox = Sandbox::new(

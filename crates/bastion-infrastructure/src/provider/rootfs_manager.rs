@@ -263,9 +263,10 @@ impl RootfsManager for DefaultRootfsManager {
                 }
             ],
             "linux": {
+                // NOTE: network namespace removed — rootless runsc does not support
+                // sandbox-level networking. Container uses host network (--network=host equivalent).
                 "namespaces": [
                     { "type": "pid" },
-                    { "type": "network" },
                     { "type": "ipc" },
                     { "type": "uts" },
                     { "type": "mount" }
