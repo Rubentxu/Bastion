@@ -6,8 +6,8 @@
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
-use bastion_domain::shared::id::SandboxId;
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 use bastion_domain::template::ProviderKind;
 
 /// Creates and restores Snapshots using podman/docker commands.
@@ -75,10 +75,7 @@ impl SnapshotManager {
     }
 
     /// Restore a sandbox from a snapshot.
-    pub async fn restore_snapshot(
-        &self,
-        snapshot_id: &str,
-    ) -> Result<Sandbox, DomainError> {
+    pub async fn restore_snapshot(&self, snapshot_id: &str) -> Result<Sandbox, DomainError> {
         let name = Self::snapshot_name_from_id(snapshot_id);
         let image_tag = format!("bastion-snap-{}:latest", name);
 
@@ -166,7 +163,10 @@ impl SnapshotManager {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DomainError::Internal(format!("Failed to delete snapshot: {}", stderr)));
+            return Err(DomainError::Internal(format!(
+                "Failed to delete snapshot: {}",
+                stderr
+            )));
         }
         Ok(())
     }
@@ -183,7 +183,10 @@ impl SnapshotManager {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DomainError::Internal(format!("Failed to list snapshots: {}", stderr)));
+            return Err(DomainError::Internal(format!(
+                "Failed to list snapshots: {}",
+                stderr
+            )));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -216,14 +219,13 @@ impl SnapshotManager {
         Ok(snapshots)
     }
 
-    pub(crate)     fn snapshot_name_from_id(snapshot_id: &str) -> String {
-        let id = snapshot_id
-            .strip_prefix("snap:")
-            .unwrap_or(snapshot_id);
+    pub(crate) fn snapshot_name_from_id(snapshot_id: &str) -> String {
+        let id = snapshot_id.strip_prefix("snap:").unwrap_or(snapshot_id);
 
         // Split on last '-', but only if the last part looks like a timestamp (all digits)
         if let Some((name, suffix)) = id.rsplit_once('-')
-            && suffix.chars().all(|c| c.is_ascii_digit()) && suffix.len() >= 10
+            && suffix.chars().all(|c| c.is_ascii_digit())
+            && suffix.len() >= 10
         {
             return name.to_string();
         }

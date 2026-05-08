@@ -10,7 +10,7 @@ pub mod podman;
 pub mod registry;
 pub mod wasm;
 
-pub use config::{ProviderConfig, ProviderCapabilitiesConfig};
+pub use config::{ProviderCapabilitiesConfig, ProviderConfig};
 pub use docker::DockerProvider;
 pub use factory::{ProviderFactory, ProviderInfo};
 pub use firecracker::FirecrackerProvider;

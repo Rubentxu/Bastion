@@ -90,10 +90,7 @@ pub trait ProviderMaterializer: Send + Sync {
     fn provider_kind(&self) -> ProviderKind;
 
     /// Check whether the provider can materialize this artifact.
-    async fn can_materialize(
-        &self,
-        artifact: &TemplateArtifact,
-    ) -> Result<bool, DomainError>;
+    async fn can_materialize(&self, artifact: &TemplateArtifact) -> Result<bool, DomainError>;
 
     /// Materialize the artifact into the sandbox.
     async fn materialize(

@@ -22,7 +22,9 @@ use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus};
+use bastion_domain::sandbox::value_objects::{
+    NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus,
+};
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
 
@@ -90,9 +92,8 @@ impl GVisorProvider {
             )));
         }
 
-        std::fs::create_dir_all(&rootfs_dir).map_err(|e| {
-            DomainError::Config(format!("Cannot create rootfs directory: {e}"))
-        })?;
+        std::fs::create_dir_all(&rootfs_dir)
+            .map_err(|e| DomainError::Config(format!("Cannot create rootfs directory: {e}")))?;
 
         Ok(Self {
             runsc_binary,
@@ -118,7 +119,8 @@ impl GVisorProvider {
     ) -> Result<(Vec<u8>, Vec<u8>, i32), DomainError> {
         tracing::debug!(container_id, shell_cmd, "Running runsc exec");
 
-        let output = self.runsc_cmd()
+        let output = self
+            .runsc_cmd()
             .args(["exec", container_id, "sh", "-c", shell_cmd])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -132,12 +134,7 @@ impl GVisorProvider {
 
     /// Start the bastion-worker process in the container via exec.
     /// The worker connects OUTBOUND to the gateway (JNLP pattern).
-    fn start_worker_in_container(
-        &self,
-        container_id: &str,
-        sandbox_id: &str,
-        secret: &str,
-    ) {
+    fn start_worker_in_container(&self, container_id: &str, sandbox_id: &str, secret: &str) {
         let runsc = self.runsc_binary.clone();
         let cid = container_id.to_string();
         let sid = sandbox_id.to_string();
@@ -199,10 +196,7 @@ impl GVisorProvider {
             || (file_output.contains("musl") && file_output.contains("static"));
 
         if !is_static_musl {
-            tracing::warn!(
-                "Worker binary may not be static musl: {}",
-                file_output
-            );
+            tracing::warn!("Worker binary may not be static musl: {}", file_output);
             // Don't fail - just warn. The binary might still work.
         }
 
@@ -213,11 +207,7 @@ impl GVisorProvider {
     ///
     /// Copies the base rootfs image, generates config.json, and injects
     /// the worker binary. Returns the path to the bundle directory.
-    fn create_oci_bundle(
-        &self,
-        sandbox_id: &str,
-        image: &str,
-    ) -> Result<PathBuf, DomainError> {
+    fn create_oci_bundle(&self, sandbox_id: &str, image: &str) -> Result<PathBuf, DomainError> {
         // Verify worker binary is static musl before injection
         // gVisor runsc containers use musl libc, so the binary must be static musl
         self.verify_worker_binary()?;
@@ -225,9 +215,8 @@ impl GVisorProvider {
         let bundle_dir = self.rootfs_dir.join(sandbox_id);
         let rootfs_dest = bundle_dir.join("rootfs");
 
-        std::fs::create_dir_all(&rootfs_dest).map_err(|e| {
-            DomainError::Internal(format!("Cannot create bundle directory: {e}"))
-        })?;
+        std::fs::create_dir_all(&rootfs_dest)
+            .map_err(|e| DomainError::Internal(format!("Cannot create bundle directory: {e}")))?;
 
         // Copy base rootfs image
         let base_rootfs = self.rootfs_dir.join(image);
@@ -361,7 +350,8 @@ impl GVisorProvider {
 
     /// Check if a container is running via runsc list.
     async fn container_is_running(&self, container_id: &str) -> Result<bool, DomainError> {
-        let output = self.runsc_cmd()
+        let output = self
+            .runsc_cmd()
             .args(["list"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -401,12 +391,11 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), DomainError> {
     for entry in std::fs::read_dir(src).map_err(|e| {
         DomainError::Internal(format!("Cannot read directory {}: {e}", src.display()))
     })? {
-        let entry = entry.map_err(|e| {
-            DomainError::Internal(format!("Cannot read dir entry: {e}"))
-        })?;
-        let ty = entry.file_type().map_err(|e| {
-            DomainError::Internal(format!("Cannot get file type: {e}"))
-        })?;
+        let entry =
+            entry.map_err(|e| DomainError::Internal(format!("Cannot read dir entry: {e}")))?;
+        let ty = entry
+            .file_type()
+            .map_err(|e| DomainError::Internal(format!("Cannot get file type: {e}")))?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
 
@@ -420,10 +409,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), DomainError> {
                 DomainError::Internal(format!("Cannot read symlink {}: {e}", src_path.display()))
             })?;
             std::os::unix::fs::symlink(&target, &dst_path).map_err(|e| {
-                DomainError::Internal(format!(
-                    "Cannot create symlink {}: {e}",
-                    dst_path.display()
-                ))
+                DomainError::Internal(format!("Cannot create symlink {}: {e}", dst_path.display()))
             })?;
         } else {
             std::fs::copy(&src_path, &dst_path).map_err(|e| {
@@ -463,9 +449,17 @@ impl SandboxProvider for GVisorProvider {
         let bundle_dir = self.create_oci_bundle(&sandbox_id, &image)?;
 
         // Spawn runsc run (this process owns the container's lifetime)
-        let mut child = self.runsc_cmd()
+        let mut child = self
+            .runsc_cmd()
             .args([
-                    &format!("--network={}", if network.allow_internet { "bridge" } else { "none" }),
+                &format!(
+                    "--network={}",
+                    if network.allow_internet {
+                        "bridge"
+                    } else {
+                        "none"
+                    }
+                ),
                 "run",
                 "-bundle",
                 &bundle_dir.to_string_lossy(),
@@ -498,10 +492,7 @@ impl SandboxProvider for GVisorProvider {
         }
 
         // Store container state
-        let state = ContainerState {
-            child,
-            bundle_dir,
-        };
+        let state = ContainerState { child, bundle_dir };
         self.containers.insert(sandbox_id.clone(), state);
 
         // Wait briefly for container to initialize
@@ -510,7 +501,11 @@ impl SandboxProvider for GVisorProvider {
         // Verify container is running
         let mut attempts = 0;
         loop {
-            if self.container_is_running(&sandbox_id).await.unwrap_or(false) {
+            if self
+                .container_is_running(&sandbox_id)
+                .await
+                .unwrap_or(false)
+            {
                 break;
             }
             attempts += 1;
@@ -561,7 +556,8 @@ impl SandboxProvider for GVisorProvider {
         };
 
         // Force-delete the container via runsc (best-effort)
-        let _ = self.runsc_cmd()
+        let _ = self
+            .runsc_cmd()
             .args(["delete", "-force", &sandbox_id])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -612,14 +608,16 @@ impl SandboxProvider for GVisorProvider {
         {
             tracing::info!(sandbox_id = %id, "Routing command via worker registry");
             let timeout_ms = command.timeout_ms.unwrap_or(30000);
-            return router.route_run_command(
-                &sandbox_id,
-                &command.command,
-                &command.args,
-                command.working_dir.as_deref().unwrap_or("/workspace"),
-                &command.env_vars,
-                timeout_ms,
-            ).await;
+            return router
+                .route_run_command(
+                    &sandbox_id,
+                    &command.command,
+                    &command.args,
+                    command.working_dir.as_deref().unwrap_or("/workspace"),
+                    &command.env_vars,
+                    timeout_ms,
+                )
+                .await;
         }
 
         // Fallback to runsc exec
@@ -637,7 +635,8 @@ impl SandboxProvider for GVisorProvider {
             format!(
                 "{} {}",
                 command.command,
-                command.args
+                command
+                    .args
                     .iter()
                     .map(|a| if a.contains(' ') {
                         format!("\"{}\"", a)
@@ -649,8 +648,7 @@ impl SandboxProvider for GVisorProvider {
             )
         };
 
-        let (stdout, stderr, exit_code) =
-            self.exec_in_container(&sandbox_id, &shell_cmd).await?;
+        let (stdout, stderr, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd).await?;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         tracing::info!(
@@ -682,14 +680,16 @@ impl SandboxProvider for GVisorProvider {
         {
             tracing::info!(sandbox_id = %id, "Streaming command via worker registry");
             let timeout_ms = command.timeout_ms.unwrap_or(30000);
-            return router.route_run_command_stream(
-                &sandbox_id,
-                &command.command,
-                &command.args,
-                command.working_dir.as_deref().unwrap_or("/workspace"),
-                &command.env_vars,
-                timeout_ms,
-            ).await;
+            return router
+                .route_run_command_stream(
+                    &sandbox_id,
+                    &command.command,
+                    &command.args,
+                    command.working_dir.as_deref().unwrap_or("/workspace"),
+                    &command.env_vars,
+                    timeout_ms,
+                )
+                .await;
         }
 
         // Fallback: execute and stream results
@@ -705,7 +705,8 @@ impl SandboxProvider for GVisorProvider {
             format!(
                 "{} {}",
                 command.command,
-                command.args
+                command
+                    .args
                     .iter()
                     .map(|a| if a.contains(' ') {
                         format!("\"{}\"", a)
@@ -734,14 +735,10 @@ impl SandboxProvider for GVisorProvider {
             match output {
                 Ok(output) => {
                     if !output.stdout.is_empty() {
-                        let _ = tx
-                            .send(Ok(CommandChunk::stdout(output.stdout)))
-                            .await;
+                        let _ = tx.send(Ok(CommandChunk::stdout(output.stdout))).await;
                     }
                     if !output.stderr.is_empty() {
-                        let _ = tx
-                            .send(Ok(CommandChunk::stderr(output.stderr)))
-                            .await;
+                        let _ = tx.send(Ok(CommandChunk::stderr(output.stderr))).await;
                     }
                     let exit_code = output.status.code().unwrap_or(-1);
                     let _ = tx.send(Ok(CommandChunk::exit_code(exit_code))).await;
@@ -756,8 +753,8 @@ impl SandboxProvider for GVisorProvider {
             }
         });
 
-        let stream = ReceiverStream::new(rx)
-            .map(|r| r.map_err(|e| DomainError::Internal(e.to_string())));
+        let stream =
+            ReceiverStream::new(rx).map(|r| r.map_err(|e| DomainError::Internal(e.to_string())));
         Ok(Box::pin(stream))
     }
 
@@ -802,11 +799,7 @@ impl SandboxProvider for GVisorProvider {
         Ok(())
     }
 
-    async fn read_file(
-        &self,
-        id: &SandboxId,
-        path: &str,
-    ) -> Result<Vec<u8>, DomainError> {
+    async fn read_file(&self, id: &SandboxId, path: &str) -> Result<Vec<u8>, DomainError> {
         let sandbox_id = id.to_string();
 
         // Try registry-based routing first
@@ -821,8 +814,7 @@ impl SandboxProvider for GVisorProvider {
         tracing::info!(sandbox_id = %id, path, "Reading file via runsc exec (fallback)");
 
         let shell_cmd = format!("base64 -w0 < '{}' 2>/dev/null || base64 < '{}'", path, path);
-        let (stdout, _, exit_code) =
-            self.exec_in_container(&sandbox_id, &shell_cmd).await?;
+        let (stdout, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd).await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(
@@ -839,11 +831,7 @@ impl SandboxProvider for GVisorProvider {
         Ok(decoded)
     }
 
-    async fn list_files(
-        &self,
-        id: &SandboxId,
-        dir: &str,
-    ) -> Result<Vec<FileEntry>, DomainError> {
+    async fn list_files(&self, id: &SandboxId, dir: &str) -> Result<Vec<FileEntry>, DomainError> {
         let sandbox_id = id.to_string();
 
         // Try registry-based routing first
@@ -858,8 +846,7 @@ impl SandboxProvider for GVisorProvider {
         tracing::info!(sandbox_id = %id, dir, "Listing files via runsc exec (fallback)");
 
         let shell_cmd = format!("ls -la '{}' 2>/dev/null || ls -la '{}'", dir, dir);
-        let (stdout, _, exit_code) =
-            self.exec_in_container(&sandbox_id, &shell_cmd).await?;
+        let (stdout, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd).await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(
@@ -891,15 +878,14 @@ impl SandboxProvider for GVisorProvider {
         "gvisor"
     }
 
-    async fn list_sandboxes(
-        &self,
-        filter: &SandboxFilter,
-    ) -> Result<Vec<Sandbox>, DomainError> {
+    async fn list_sandboxes(&self, filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
         let mut sandboxes = Vec::new();
         let limit = filter.limit.unwrap_or(u32::MAX) as usize;
 
         // Collect keys to avoid holding DashMap lock while calling try_wait
-        let sandbox_ids: Vec<String> = self.containers.iter()
+        let sandbox_ids: Vec<String> = self
+            .containers
+            .iter()
             .map(|item| item.key().clone())
             .take(limit)
             .collect();
@@ -948,7 +934,9 @@ impl SandboxProvider for GVisorProvider {
         let sandbox_id = id.to_string();
 
         // Check if we have this container tracked
-        let mut container = self.containers.get_mut(&sandbox_id)
+        let mut container = self
+            .containers
+            .get_mut(&sandbox_id)
             .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
 
         // Check if container process is still alive
@@ -985,7 +973,9 @@ impl SandboxProvider for GVisorProvider {
         let sandbox_id = id.to_string();
 
         // Verify the container exists
-        let _ = self.containers.get(&sandbox_id)
+        let _ = self
+            .containers
+            .get(&sandbox_id)
             .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
 
         // gVisor containers don't have a native timeout mechanism.
@@ -1064,11 +1054,17 @@ mod tests {
         let entries = parse_ls_output(output, "/workspace");
         assert_eq!(entries.len(), 2);
 
-        let dir_entry = entries.iter().find(|e| e.path == "/workspace/dir1").unwrap();
+        let dir_entry = entries
+            .iter()
+            .find(|e| e.path == "/workspace/dir1")
+            .unwrap();
         assert!(dir_entry.is_directory);
         assert_eq!(dir_entry.size_bytes, 4096);
 
-        let file_entry = entries.iter().find(|e| e.path == "/workspace/file.txt").unwrap();
+        let file_entry = entries
+            .iter()
+            .find(|e| e.path == "/workspace/file.txt")
+            .unwrap();
         assert!(!file_entry.is_directory);
         assert_eq!(file_entry.size_bytes, 100);
     }

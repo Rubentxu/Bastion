@@ -5,17 +5,17 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
 use hmac::Mac;
 use tokio::sync::mpsc;
-use tonic::{Request, Response, Status, Streaming};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
 use bastion_domain::execution::command::CommandResult;
@@ -27,6 +27,7 @@ use bastion_domain::shared::DomainError;
 
 use crate::sandbox::v2::worker_registry_server::WorkerRegistry;
 use crate::sandbox::v2::*;
+use crate::server::AuthConfig;
 
 type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
@@ -38,7 +39,12 @@ struct PendingChallenge {
 }
 
 /// Verify HMAC proof from worker
-fn verify_hmac_proof(secret: &str, worker_nonce: &[u8], gateway_nonce: &[u8], proof: &[u8]) -> bool {
+fn verify_hmac_proof(
+    secret: &str,
+    worker_nonce: &[u8],
+    gateway_nonce: &[u8],
+    proof: &[u8],
+) -> bool {
     let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
         Ok(m) => m,
         Err(_) => return false,
@@ -46,6 +52,20 @@ fn verify_hmac_proof(secret: &str, worker_nonce: &[u8], gateway_nonce: &[u8], pr
     mac.update(worker_nonce);
     mac.update(gateway_nonce);
     mac.verify_slice(proof).is_ok()
+}
+
+/// Verify HMAC proof against any of the configured pre-shared keys.
+/// Returns true if the proof is valid for at least one configured key.
+/// Used when `pre_shared_key_enabled = true`.
+fn verify_hmac_proof_against_keys(
+    pre_shared_keys: &[String],
+    worker_nonce: &[u8],
+    gateway_nonce: &[u8],
+    proof: &[u8],
+) -> bool {
+    pre_shared_keys
+        .iter()
+        .any(|key| verify_hmac_proof(key, worker_nonce, gateway_nonce, proof))
 }
 
 /// Token bucket for rate limiting
@@ -97,9 +117,9 @@ pub(crate) struct WorkerHandle {
 /// Circuit breaker states for WorkerHandle
 #[derive(PartialEq)]
 enum CircuitState {
-    Closed,      // Normal operation
-    HalfOpen,   // Testing with reduced load
-    Open,       // Failing fast, no requests
+    Closed,   // Normal operation
+    HalfOpen, // Testing with reduced load
+    Open,     // Failing fast, no requests
 }
 
 impl WorkerHandle {
@@ -181,12 +201,15 @@ pub struct RegistryService {
     /// AutoTLS instance for worker certificate generation
     #[allow(dead_code)]
     auto_tls: Arc<crate::auto_tls::AutoTls>,
+    /// Authentication config (pre-shared key settings)
+    auth_config: AuthConfig,
 }
 
 impl RegistryService {
     pub fn new(
         jwt_manager: crate::auth::JwtManager,
         auto_tls: Arc<crate::auto_tls::AutoTls>,
+        auth_config: AuthConfig,
     ) -> Self {
         Self {
             workers: Arc::new(DashMap::new()),
@@ -196,6 +219,7 @@ impl RegistryService {
             pending_challenges: Arc::new(DashMap::new()),
             jwt_manager,
             auto_tls,
+            auth_config,
         }
     }
 
@@ -214,8 +238,8 @@ impl RegistryService {
                     .workers
                     .iter()
                     .filter(|entry| entry.cmd_tx.is_closed())
-                .map(|entry| entry.key().clone())
-                .collect();
+                    .map(|entry| entry.key().clone())
+                    .collect();
 
                 for id in dead_workers {
                     tracing::warn!(sandbox_id = %id, "Watchdog: removing dead worker");
@@ -229,7 +253,8 @@ impl RegistryService {
     pub fn register_worker(&self, sandbox_id: String, handle: WorkerHandle) {
         self.workers.insert(sandbox_id.clone(), handle);
         // Initialize rate limiter: 20 burst, 10 tokens/sec refill
-        self.rate_limiters.insert(sandbox_id, Mutex::new(TokenBucket::new(20.0, 10.0)));
+        self.rate_limiters
+            .insert(sandbox_id, Mutex::new(TokenBucket::new(20.0, 10.0)));
     }
 
     /// Remove a worker from the registry
@@ -241,7 +266,9 @@ impl RegistryService {
     /// Get the session token for a worker
     #[allow(dead_code)]
     pub fn get_session_token(&self, sandbox_id: &str) -> Option<String> {
-        self.workers.get(sandbox_id).map(|h| h.session_token.clone())
+        self.workers
+            .get(sandbox_id)
+            .map(|h| h.session_token.clone())
     }
 
     /// Set secret for a sandbox (for challenge-response auth)
@@ -266,7 +293,9 @@ impl RegistryService {
         timeout: Duration,
     ) -> Result<Vec<WorkerMessage>, RegistryError> {
         let handle = {
-            let entry = self.workers.get(sandbox_id)
+            let entry = self
+                .workers
+                .get(sandbox_id)
                 .ok_or_else(|| RegistryError::WorkerNotFound(sandbox_id.to_string()))?;
 
             // Check circuit breaker
@@ -289,15 +318,22 @@ impl RegistryService {
         let sandbox_id = sandbox_id.to_string();
 
         // Extract command type for audit logging before moving command
-        let command_type = format!("{:?}", command.payload.as_ref().map(|p| match p {
-            gateway_command::Payload::Run(_) => "run_command",
-            gateway_command::Payload::Read(_) => "read_file",
-            gateway_command::Payload::Write(_) => "write_file",
-            gateway_command::Payload::List(_) => "list_files",
-            gateway_command::Payload::Ping(_) => "ping",
-            gateway_command::Payload::Shutdown(_) => "shutdown",
-            gateway_command::Payload::Cancel(_) => "cancel",
-        }).unwrap_or("unknown"));
+        let command_type = format!(
+            "{:?}",
+            command
+                .payload
+                .as_ref()
+                .map(|p| match p {
+                    gateway_command::Payload::Run(_) => "run_command",
+                    gateway_command::Payload::Read(_) => "read_file",
+                    gateway_command::Payload::Write(_) => "write_file",
+                    gateway_command::Payload::List(_) => "list_files",
+                    gateway_command::Payload::Ping(_) => "ping",
+                    gateway_command::Payload::Shutdown(_) => "shutdown",
+                    gateway_command::Payload::Cancel(_) => "cancel",
+                })
+                .unwrap_or("unknown")
+        );
 
         // Check rate limit before sending command
         if let Some(limiter) = self.rate_limiters.get(&sandbox_id)
@@ -344,7 +380,8 @@ impl RegistryService {
                 }
             }
             Ok(messages)
-        }).await;
+        })
+        .await;
 
         // Cleanup
         self.pending_multi.remove(&command_id);
@@ -355,8 +392,14 @@ impl RegistryService {
 
                 // Audit trail logging
                 let exit_code = match messages.last() {
-                    Some(WorkerMessage { payload: Some(worker_message::Payload::Exit(e)), .. }) => e.exit_code.to_string(),
-                    Some(WorkerMessage { payload: Some(worker_message::Payload::Error(err)), .. }) => format!("error: {}", err.error),
+                    Some(WorkerMessage {
+                        payload: Some(worker_message::Payload::Exit(e)),
+                        ..
+                    }) => e.exit_code.to_string(),
+                    Some(WorkerMessage {
+                        payload: Some(worker_message::Payload::Error(err)),
+                        ..
+                    }) => format!("error: {}", err.error),
                     _ => "unknown".to_string(),
                 };
 
@@ -443,11 +486,10 @@ impl CommandRouter for RegistryService {
         };
 
         // Collect ALL messages for this command_id
-        let responses = self.collect_responses(
-            sandbox_id,
-            cmd,
-            Duration::from_millis(timeout_ms),
-        ).await.map_err(|e| DomainError::Internal(e.to_string()))?;
+        let responses = self
+            .collect_responses(sandbox_id, cmd, Duration::from_millis(timeout_ms))
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         // Aggregate responses into CommandResult
         let mut stdout = Vec::new();
@@ -458,8 +500,12 @@ impl CommandRouter for RegistryService {
 
         for msg in responses {
             match msg.payload {
-                Some(worker_message::Payload::Stdout(chunk)) => stdout.extend_from_slice(&chunk.data),
-                Some(worker_message::Payload::Stderr(chunk)) => stderr.extend_from_slice(&chunk.data),
+                Some(worker_message::Payload::Stdout(chunk)) => {
+                    stdout.extend_from_slice(&chunk.data)
+                }
+                Some(worker_message::Payload::Stderr(chunk)) => {
+                    stderr.extend_from_slice(&chunk.data)
+                }
                 Some(worker_message::Payload::Exit(result)) => {
                     exit_code = result.exit_code;
                     duration_ms = result.duration_ms as u64;
@@ -507,8 +553,9 @@ impl CommandRouter for RegistryService {
         };
 
         let handle = {
-            let entry = self.workers.get(sandbox_id)
-                .ok_or_else(|| DomainError::Internal(format!("Worker not found: {}", sandbox_id)))?;
+            let entry = self.workers.get(sandbox_id).ok_or_else(|| {
+                DomainError::Internal(format!("Worker not found: {}", sandbox_id))
+            })?;
 
             if entry.is_circuit_open() {
                 return Err(DomainError::Internal(format!(
@@ -530,7 +577,10 @@ impl CommandRouter for RegistryService {
             && let Ok(mut guard) = limiter.lock()
             && !guard.try_consume()
         {
-            return Err(DomainError::Internal(format!("Rate limited for {}", sandbox_id)));
+            return Err(DomainError::Internal(format!(
+                "Rate limited for {}",
+                sandbox_id
+            )));
         }
 
         // Create channel for streaming output chunks
@@ -559,7 +609,11 @@ impl CommandRouter for RegistryService {
                 match result {
                     Ok(msg) => match msg.payload {
                         Some(worker_message::Payload::Stdout(chunk)) => {
-                            if chunk_tx.send(Ok(CommandChunk::stdout(chunk.data))).await.is_err() {
+                            if chunk_tx
+                                .send(Ok(CommandChunk::stdout(chunk.data)))
+                                .await
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -584,9 +638,7 @@ impl CommandRouter for RegistryService {
                             break;
                         }
                         Some(worker_message::Payload::Error(err)) => {
-                            let _ = chunk_tx
-                                .send(Err(DomainError::Internal(err.error)))
-                                .await;
+                            let _ = chunk_tx.send(Err(DomainError::Internal(err.error))).await;
                             break;
                         }
                         _ => {}
@@ -628,11 +680,10 @@ impl CommandRouter for RegistryService {
             })),
         };
 
-        let responses = self.collect_responses(
-            sandbox_id,
-            cmd,
-            Duration::from_secs(30),
-        ).await.map_err(|e| DomainError::Internal(e.to_string()))?;
+        let responses = self
+            .collect_responses(sandbox_id, cmd, Duration::from_secs(30))
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         // Check for errors
         for msg in responses {
@@ -644,11 +695,7 @@ impl CommandRouter for RegistryService {
         Ok(())
     }
 
-    async fn route_read_file(
-        &self,
-        sandbox_id: &str,
-        path: &str,
-    ) -> Result<Vec<u8>, DomainError> {
+    async fn route_read_file(&self, sandbox_id: &str, path: &str) -> Result<Vec<u8>, DomainError> {
         let command_id = Uuid::new_v4().to_string();
 
         let cmd = GatewayCommand {
@@ -661,11 +708,10 @@ impl CommandRouter for RegistryService {
             })),
         };
 
-        let responses = self.collect_responses(
-            sandbox_id,
-            cmd,
-            Duration::from_secs(30),
-        ).await.map_err(|e| DomainError::Internal(e.to_string()))?;
+        let responses = self
+            .collect_responses(sandbox_id, cmd, Duration::from_secs(30))
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         // Aggregate file chunks
         let mut content = Vec::new();
@@ -701,30 +747,33 @@ impl CommandRouter for RegistryService {
             })),
         };
 
-        let responses = self.collect_responses(
-            sandbox_id,
-            cmd,
-            Duration::from_secs(30),
-        ).await.map_err(|e| DomainError::Internal(e.to_string()))?;
+        let responses = self
+            .collect_responses(sandbox_id, cmd, Duration::from_secs(30))
+            .await
+            .map_err(|e| DomainError::Internal(e.to_string()))?;
 
         // Extract file list
         for msg in responses {
             match msg.payload {
                 Some(worker_message::Payload::FileList(list)) => {
-                    return Ok(list.entries.into_iter().map(|e| {
-                        let modified_at = if e.modified_epoch_ms > 0 {
-                            chrono::DateTime::from_timestamp_millis(e.modified_epoch_ms)
-                        } else {
-                            None
-                        };
-                        FileEntry {
-                            path: e.path,
-                            is_directory: e.is_directory,
-                            size_bytes: e.size_bytes as u64,
-                            permissions: e.permissions,
-                            modified_at,
-                        }
-                    }).collect());
+                    return Ok(list
+                        .entries
+                        .into_iter()
+                        .map(|e| {
+                            let modified_at = if e.modified_epoch_ms > 0 {
+                                chrono::DateTime::from_timestamp_millis(e.modified_epoch_ms)
+                            } else {
+                                None
+                            };
+                            FileEntry {
+                                path: e.path,
+                                is_directory: e.is_directory,
+                                size_bytes: e.size_bytes as u64,
+                                permissions: e.permissions,
+                                modified_at,
+                            }
+                        })
+                        .collect());
                 }
                 Some(worker_message::Payload::Error(err)) => {
                     return Err(DomainError::Internal(err.error));
@@ -776,10 +825,13 @@ impl WorkerRegistry for RegistryService {
 
         // Challenge mode: generate gateway nonce and store both nonces for later verification
         let gateway_nonce = generate_nonce();
-        self.pending_challenges.insert(req.sandbox_id.clone(), PendingChallenge {
-            worker_nonce: req.worker_nonce,
-            gateway_nonce: gateway_nonce.clone(),
-        });
+        self.pending_challenges.insert(
+            req.sandbox_id.clone(),
+            PendingChallenge {
+                worker_nonce: req.worker_nonce,
+                gateway_nonce: gateway_nonce.clone(),
+            },
+        );
 
         Ok(Response::new(RegisterResponse {
             status: i32::from(register_response::Status::Challenge),
@@ -820,26 +872,37 @@ impl WorkerRegistry for RegistryService {
             }
         };
 
-        // Look up the secret for this sandbox
-        let secret = match self.get_secret(sandbox_id) {
-            Some(s) => s,
-            None => {
-                tracing::warn!(sandbox_id = %sandbox_id, "No secret found for sandbox");
-                return Ok(Response::new(RegisterResponse {
-                    status: i32::from(register_response::Status::Rejected),
-                    gateway_nonce: Vec::new(),
-                    session_token: String::new(),
-                    negotiated_version: None,
-                    heartbeat_interval_ms: 10000,
-                    command_timeout_ms: 30000,
-                    session_expiry_ms: 3600000,
-                    gateway_version: env!("CARGO_PKG_VERSION").to_string(),
-                }));
+        // Verify HMAC proof using pre-shared keys (if enabled) or per-sandbox secret (legacy)
+        let hmac_valid = if self.auth_config.pre_shared_key_enabled {
+            // Pre-shared key mode: verify against any configured key
+            if self.auth_config.pre_shared_keys.is_empty() {
+                tracing::warn!(sandbox_id = %sandbox_id, "Pre-shared key mode enabled but no keys configured");
+                false
+            } else {
+                verify_hmac_proof_against_keys(
+                    &self.auth_config.pre_shared_keys,
+                    &pending.worker_nonce,
+                    &pending.gateway_nonce,
+                    &req.proof,
+                )
+            }
+        } else {
+            // Legacy mode: verify against per-sandbox secret
+            match self.get_secret(sandbox_id) {
+                Some(secret) => verify_hmac_proof(
+                    &secret,
+                    &pending.worker_nonce,
+                    &pending.gateway_nonce,
+                    &req.proof,
+                ),
+                None => {
+                    tracing::warn!(sandbox_id = %sandbox_id, "No secret found for sandbox");
+                    false
+                }
             }
         };
 
-        // Verify HMAC proof
-        if !verify_hmac_proof(&secret, &pending.worker_nonce, &pending.gateway_nonce, &req.proof) {
+        if !hmac_valid {
             tracing::warn!(sandbox_id = %sandbox_id, "HMAC verification failed");
             return Ok(Response::new(RegisterResponse {
                 status: i32::from(register_response::Status::Rejected),
@@ -867,7 +930,8 @@ impl WorkerRegistry for RegistryService {
         }))
     }
 
-    type CommandStreamStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<GatewayCommand, Status>> + Send>>;
+    type CommandStreamStream =
+        Pin<Box<dyn tokio_stream::Stream<Item = Result<GatewayCommand, Status>> + Send>>;
 
     async fn command_stream(
         &self,
@@ -876,7 +940,9 @@ impl WorkerRegistry for RegistryService {
         let mut in_stream = request.into_inner();
 
         // First message should be ReadySignal
-        let first_msg = in_stream.next().await
+        let first_msg = in_stream
+            .next()
+            .await
             .ok_or_else(|| Status::invalid_argument("Empty stream"))?
             .map_err(|e| Status::internal(format!("Stream error: {}", e)))?;
 
@@ -886,7 +952,9 @@ impl WorkerRegistry for RegistryService {
                 (ready.session_token.clone(), ready.session_token)
             }
             _ => {
-                return Err(Status::invalid_argument("Expected ReadySignal as first message"));
+                return Err(Status::invalid_argument(
+                    "Expected ReadySignal as first message",
+                ));
             }
         };
 
@@ -952,8 +1020,7 @@ impl WorkerRegistry for RegistryService {
         });
 
         // Return command stream
-        let out_stream = ReceiverStream::new(cmd_rx)
-            .map(Ok);
+        let out_stream = ReceiverStream::new(cmd_rx).map(Ok);
 
         Ok(Response::new(Box::pin(out_stream)))
     }
@@ -971,6 +1038,158 @@ fn generate_nonce() -> Vec<u8> {
         nonce.push(((ts >> (i * 8)) & 0xff) as u8);
     }
     nonce
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: compute HMAC-SHA256 proof for testing
+    fn compute_hmac(secret: &str, worker_nonce: &[u8], gateway_nonce: &[u8]) -> Vec<u8> {
+        use hmac::Mac;
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(worker_nonce);
+        mac.update(gateway_nonce);
+        mac.finalize().into_bytes().to_vec()
+    }
+
+    #[test]
+    fn test_verify_hmac_proof_valid() {
+        let secret = "test-secret-key";
+        let worker_nonce = b"worker-nonce-123";
+        let gateway_nonce = b"gateway-nonce-456";
+        let proof = compute_hmac(secret, worker_nonce, gateway_nonce);
+
+        assert!(verify_hmac_proof(
+            secret,
+            worker_nonce,
+            gateway_nonce,
+            &proof
+        ));
+    }
+
+    #[test]
+    fn test_verify_hmac_proof_invalid() {
+        let secret = "test-secret-key";
+        let worker_nonce = b"worker-nonce-123";
+        let gateway_nonce = b"gateway-nonce-456";
+        let wrong_proof = b"invalid-proof-data".to_vec();
+
+        assert!(!verify_hmac_proof(
+            secret,
+            worker_nonce,
+            gateway_nonce,
+            &wrong_proof
+        ));
+    }
+
+    #[test]
+    fn test_verify_hmac_proof_wrong_secret() {
+        let secret = "correct-secret";
+        let wrong_secret = "wrong-secret";
+        let worker_nonce = b"worker-nonce-123";
+        let gateway_nonce = b"gateway-nonce-456";
+        let proof = compute_hmac(secret, worker_nonce, gateway_nonce);
+
+        assert!(!verify_hmac_proof(
+            wrong_secret,
+            worker_nonce,
+            gateway_nonce,
+            &proof
+        ));
+    }
+
+    #[test]
+    fn test_verify_hmac_proof_against_keys_known_key_accepted() {
+        // GIVEN pre-shared keys ["key1", "key2", "key3"]
+        let pre_shared_keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+        let worker_nonce = b"worker-nonce";
+        let gateway_nonce = b"gateway-nonce";
+
+        // WHEN worker presents proof made with "key2"
+        let proof = compute_hmac("key2", worker_nonce, gateway_nonce);
+
+        // THEN verification succeeds
+        assert!(verify_hmac_proof_against_keys(
+            &pre_shared_keys,
+            worker_nonce,
+            gateway_nonce,
+            &proof
+        ));
+    }
+
+    #[test]
+    fn test_verify_hmac_proof_against_keys_unknown_key_rejected() {
+        // GIVEN pre-shared keys ["key1", "key2"]
+        let pre_shared_keys = vec!["key1".to_string(), "key2".to_string()];
+        let worker_nonce = b"worker-nonce";
+        let gateway_nonce = b"gateway-nonce";
+
+        // WHEN worker presents proof made with "unknown-key"
+        let proof = compute_hmac("unknown-key", worker_nonce, gateway_nonce);
+
+        // THEN verification fails
+        assert!(!verify_hmac_proof_against_keys(
+            &pre_shared_keys,
+            worker_nonce,
+            gateway_nonce,
+            &proof
+        ));
+    }
+
+    #[test]
+    fn test_verify_hmac_proof_against_keys_empty_keys_rejected() {
+        // GIVEN no pre-shared keys configured
+        let pre_shared_keys: Vec<String> = vec![];
+        let worker_nonce = b"worker-nonce";
+        let gateway_nonce = b"gateway-nonce";
+        let proof = compute_hmac("any-key", worker_nonce, gateway_nonce);
+
+        // THEN verification fails (no keys to validate against)
+        assert!(!verify_hmac_proof_against_keys(
+            &pre_shared_keys,
+            worker_nonce,
+            gateway_nonce,
+            &proof
+        ));
+    }
+
+    #[test]
+    fn test_verify_hmac_proof_against_keys_first_key_matched() {
+        // GIVEN pre-shared keys ["key1", "key2", "key3"]
+        let pre_shared_keys = vec!["key1".to_string(), "key2".to_string(), "key3".to_string()];
+        let worker_nonce = b"worker-nonce";
+        let gateway_nonce = b"gateway-nonce";
+
+        // WHEN worker presents proof made with "key1" (first key)
+        let proof = compute_hmac("key1", worker_nonce, gateway_nonce);
+
+        // THEN verification succeeds
+        assert!(verify_hmac_proof_against_keys(
+            &pre_shared_keys,
+            worker_nonce,
+            gateway_nonce,
+            &proof
+        ));
+    }
+
+    #[test]
+    fn test_auth_config_default_disabled() {
+        let auth_config = AuthConfig::default();
+        assert!(!auth_config.pre_shared_key_enabled);
+        assert!(auth_config.pre_shared_keys.is_empty());
+    }
+
+    #[test]
+    fn test_auth_config_with_pre_shared_keys() {
+        let auth_config = AuthConfig {
+            pre_shared_key_enabled: true,
+            pre_shared_keys: vec!["my-secret-key".to_string(), "another-key".to_string()],
+        };
+        assert!(auth_config.pre_shared_key_enabled);
+        assert_eq!(auth_config.pre_shared_keys.len(), 2);
+        assert_eq!(auth_config.pre_shared_keys[0], "my-secret-key");
+    }
 }
 
 // Re-export for convenience

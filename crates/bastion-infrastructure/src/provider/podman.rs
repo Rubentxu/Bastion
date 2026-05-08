@@ -9,9 +9,9 @@
 //! directly from the host filesystem read-only.
 
 use async_trait::async_trait;
-use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::Docker;
 use bollard::container::LogOutput;
+use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,7 +27,9 @@ use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus};
+use bastion_domain::sandbox::value_objects::{
+    NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus,
+};
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
 
@@ -58,7 +60,11 @@ impl std::fmt::Debug for PodmanProvider {
 
 impl PodmanProvider {
     /// Connect to Podman via Unix socket.
-    pub fn new(socket_path: &str, default_image: &str, worker_binary: PathBuf) -> Result<Self, DomainError> {
+    pub fn new(
+        socket_path: &str,
+        default_image: &str,
+        worker_binary: PathBuf,
+    ) -> Result<Self, DomainError> {
         let docker = Docker::connect_with_unix(socket_path, 120, bollard::API_DEFAULT_VERSION)
             .map_err(|e| DomainError::ProviderUnavailable(e.to_string()))?;
 
@@ -100,7 +106,11 @@ impl PodmanProvider {
         command: &str,
     ) -> Result<(Vec<u8>, Vec<u8>, i32), DomainError> {
         let exec_config = bollard::exec::CreateExecOptions {
-            cmd: Some(vec!["sh".to_string(), "-c".to_string(), command.to_string()]),
+            cmd: Some(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                command.to_string(),
+            ]),
             attach_stdout: Some(true),
             attach_stderr: Some(true),
             ..Default::default()
@@ -231,7 +241,9 @@ impl SandboxProvider for PodmanProvider {
         let worker_binary_abs = self.worker_binary.canonicalize().unwrap_or_else(|_| {
             // Fallback: convert to absolute path if canonicalize fails
             if self.worker_binary.is_relative() {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp")).join(&self.worker_binary)
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
+                    .join(&self.worker_binary)
             } else {
                 self.worker_binary.clone()
             }
@@ -243,7 +255,9 @@ impl SandboxProvider for PodmanProvider {
         if let Some(ref source_path) = self.source_mount {
             let source_abs = source_path.canonicalize().unwrap_or_else(|_| {
                 if source_path.is_relative() {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp")).join(source_path)
+                    std::env::current_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
+                        .join(source_path)
                 } else {
                     source_path.clone()
                 }
@@ -286,7 +300,8 @@ impl SandboxProvider for PodmanProvider {
         tracing::info!(sandbox_id = %id, "Container started successfully");
 
         // Start the bastion-worker process in the container
-        self.start_worker_in_container(&container_name, id.as_str(), &generated_secret).await?;
+        self.start_worker_in_container(&container_name, id.as_str(), &generated_secret)
+            .await?;
 
         // Build domain entity
         let mut sandbox = Sandbox::new(
@@ -349,7 +364,9 @@ impl SandboxProvider for PodmanProvider {
                 if err_str.contains("404") || err_str.contains("No such container") {
                     Ok(false)
                 } else {
-                    Err(DomainError::Internal(format!("Failed to inspect container: {e}")))
+                    Err(DomainError::Internal(format!(
+                        "Failed to inspect container: {e}"
+                    )))
                 }
             }
         }
@@ -366,14 +383,16 @@ impl SandboxProvider for PodmanProvider {
         {
             tracing::info!(sandbox_id = %id, "Routing command via worker registry");
             let timeout_ms = command.timeout_ms.unwrap_or(30000);
-            return router.route_run_command(
-                id.as_str(),
-                &command.command,
-                &command.args,
-                command.working_dir.as_deref().unwrap_or("/workspace"),
-                &command.env_vars,
-                timeout_ms,
-            ).await;
+            return router
+                .route_run_command(
+                    id.as_str(),
+                    &command.command,
+                    &command.args,
+                    command.working_dir.as_deref().unwrap_or("/workspace"),
+                    &command.env_vars,
+                    timeout_ms,
+                )
+                .await;
         }
 
         // Fallback to exec
@@ -390,16 +409,24 @@ impl SandboxProvider for PodmanProvider {
         let shell_cmd = if command.args.is_empty() {
             command.command.clone()
         } else {
-            format!("{} {}",
+            format!(
+                "{} {}",
                 command.command,
-                command.args.iter()
-                    .map(|a| if a.contains(' ') { format!("\"{}\"", a) } else { a.clone() })
+                command
+                    .args
+                    .iter()
+                    .map(|a| if a.contains(' ') {
+                        format!("\"{}\"", a)
+                    } else {
+                        a.clone()
+                    })
                     .collect::<Vec<_>>()
                     .join(" ")
             )
         };
 
-        let (stdout, stderr, exit_code) = self.exec_in_container(&container_name, &shell_cmd).await?;
+        let (stdout, stderr, exit_code) =
+            self.exec_in_container(&container_name, &shell_cmd).await?;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         tracing::info!(
@@ -429,14 +456,16 @@ impl SandboxProvider for PodmanProvider {
         {
             tracing::info!(sandbox_id = %id, "Streaming command via worker registry");
             let timeout_ms = command.timeout_ms.unwrap_or(30000);
-            return router.route_run_command_stream(
-                id.as_str(),
-                &command.command,
-                &command.args,
-                command.working_dir.as_deref().unwrap_or("/workspace"),
-                &command.env_vars,
-                timeout_ms,
-            ).await;
+            return router
+                .route_run_command_stream(
+                    id.as_str(),
+                    &command.command,
+                    &command.args,
+                    command.working_dir.as_deref().unwrap_or("/workspace"),
+                    &command.env_vars,
+                    timeout_ms,
+                )
+                .await;
         }
 
         let container_name = id.to_string();
@@ -451,16 +480,24 @@ impl SandboxProvider for PodmanProvider {
         let shell_cmd = if command.args.is_empty() {
             command.command.clone()
         } else {
-            format!("{} {}",
+            format!(
+                "{} {}",
                 command.command,
-                command.args.iter()
-                    .map(|a| if a.contains(' ') { format!("\"{}\"", a) } else { a.clone() })
+                command
+                    .args
+                    .iter()
+                    .map(|a| if a.contains(' ') {
+                        format!("\"{}\"", a)
+                    } else {
+                        a.clone()
+                    })
                     .collect::<Vec<_>>()
                     .join(" ")
             )
         };
 
-        let (stdout, stderr, exit_code) = self.exec_in_container(&container_name, &shell_cmd).await?;
+        let (stdout, stderr, exit_code) =
+            self.exec_in_container(&container_name, &shell_cmd).await?;
 
         // Create an mpsc channel-based stream for the result
         let (tx, rx) = mpsc::channel::<Result<CommandChunk, DomainError>>(4);
@@ -480,8 +517,8 @@ impl SandboxProvider for PodmanProvider {
         });
 
         // Convert mpsc to Stream
-        let stream = ReceiverStream::new(rx)
-            .map(|r| r.map_err(|e| DomainError::Internal(e.to_string())));
+        let stream =
+            ReceiverStream::new(rx).map(|r| r.map_err(|e| DomainError::Internal(e.to_string())));
 
         Ok(Box::pin(stream))
     }
@@ -518,7 +555,10 @@ impl SandboxProvider for PodmanProvider {
         let (_, _, exit_code) = self.exec_in_container(&container_name, &shell_cmd).await?;
 
         if exit_code != 0 {
-            return Err(DomainError::Internal(format!("Failed to write file: exit code {}", exit_code)));
+            return Err(DomainError::Internal(format!(
+                "Failed to write file: exit code {}",
+                exit_code
+            )));
         }
 
         tracing::info!(sandbox_id = %id, path, "File written");
@@ -544,7 +584,10 @@ impl SandboxProvider for PodmanProvider {
         let (stdout, _, exit_code) = self.exec_in_container(&container_name, &shell_cmd).await?;
 
         if exit_code != 0 {
-            return Err(DomainError::Internal(format!("Failed to read file: exit code {}", exit_code)));
+            return Err(DomainError::Internal(format!(
+                "Failed to read file: exit code {}",
+                exit_code
+            )));
         }
 
         // Decode base64
@@ -575,7 +618,10 @@ impl SandboxProvider for PodmanProvider {
         let (stdout, _, exit_code) = self.exec_in_container(&container_name, &shell_cmd).await?;
 
         if exit_code != 0 {
-            return Err(DomainError::Internal(format!("Failed to list files: exit code {}", exit_code)));
+            return Err(DomainError::Internal(format!(
+                "Failed to list files: exit code {}",
+                exit_code
+            )));
         }
 
         // Parse ls -la output
@@ -597,12 +643,15 @@ impl SandboxProvider for PodmanProvider {
         // Send SIGTERM to the container's init process
         // This sends SIGTERM to PID 1 in the container, which should
         // propagate to the process group
-        let kill_result = self.docker.kill_container(
-            &container_name,
-            Some(bollard::query_parameters::KillContainerOptions {
-                signal: "SIGTERM".to_string(),
-            }),
-        ).await;
+        let kill_result = self
+            .docker
+            .kill_container(
+                &container_name,
+                Some(bollard::query_parameters::KillContainerOptions {
+                    signal: "SIGTERM".to_string(),
+                }),
+            )
+            .await;
 
         match kill_result {
             Ok(()) => {
@@ -615,13 +664,17 @@ impl SandboxProvider for PodmanProvider {
                     Ok(true) => {
                         tracing::warn!(sandbox_id = %id, "Container still alive after SIGTERM, sending SIGKILL");
                         // Force kill
-                        self.docker.kill_container(
-                            &container_name,
-                            Some(bollard::query_parameters::KillContainerOptions {
-                                signal: "SIGKILL".to_string(),
-                            }),
-                        ).await
-                        .map_err(|e| DomainError::Internal(format!("Failed to SIGKILL container: {e}")))?;
+                        self.docker
+                            .kill_container(
+                                &container_name,
+                                Some(bollard::query_parameters::KillContainerOptions {
+                                    signal: "SIGKILL".to_string(),
+                                }),
+                            )
+                            .await
+                            .map_err(|e| {
+                                DomainError::Internal(format!("Failed to SIGKILL container: {e}"))
+                            })?;
                         Ok(true)
                     }
                     Ok(false) => {
@@ -660,17 +713,15 @@ impl SandboxProvider for PodmanProvider {
         "podman"
     }
 
-    async fn list_sandboxes(
-        &self,
-        filter: &SandboxFilter,
-    ) -> Result<Vec<Sandbox>, DomainError> {
+    async fn list_sandboxes(&self, filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
         use bollard::query_parameters::ListContainersOptionsBuilder;
 
-        let options = ListContainersOptionsBuilder::default()
-            .all(true)
-            .build();
+        let options = ListContainersOptionsBuilder::default().all(true).build();
 
-        let containers = self.docker.list_containers(Some(options)).await
+        let containers = self
+            .docker
+            .list_containers(Some(options))
+            .await
             .map_err(|e| DomainError::Internal(format!("Failed to list containers: {e}")))?;
 
         let mut sandboxes = Vec::new();
@@ -678,7 +729,9 @@ impl SandboxProvider for PodmanProvider {
 
         for container in containers.iter().take(limit) {
             // Try to get sandbox ID from container name or ID
-            let sandbox_id = container.names.as_ref()
+            let sandbox_id = container
+                .names
+                .as_ref()
                 .and_then(|names| names.first())
                 .and_then(|name| name.strip_prefix('/'))
                 .map(|s| s.to_string())
@@ -705,7 +758,7 @@ impl SandboxProvider for PodmanProvider {
             let sandbox = Sandbox::new(
                 SandboxId::new(&sandbox_id),
                 bastion_domain::shared::id::TemplateId::new(
-                    container.image.as_deref().unwrap_or_default()
+                    container.image.as_deref().unwrap_or_default(),
                 ),
                 bastion_domain::shared::id::ProviderId::new("podman"),
                 ResourcesSpec::default(),
@@ -721,7 +774,10 @@ impl SandboxProvider for PodmanProvider {
     async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
         let container_name = id.to_string();
 
-        let info = self.docker.inspect_container(&container_name, None).await
+        let info = self
+            .docker
+            .inspect_container(&container_name, None)
+            .await
             .map_err(|e| {
                 if format!("{e}").contains("404") || format!("{e}").contains("No such container") {
                     DomainError::NotFound(id.to_string())
@@ -730,7 +786,9 @@ impl SandboxProvider for PodmanProvider {
                 }
             })?;
 
-        let state = info.state.as_ref()
+        let state = info
+            .state
+            .as_ref()
             .ok_or_else(|| DomainError::Internal("Container has no state".to_string()))?;
 
         let status = match state.status.as_ref().map(|s| s.as_ref()) {
@@ -745,9 +803,10 @@ impl SandboxProvider for PodmanProvider {
         let mut sandbox = Sandbox::new(
             id.clone(),
             bastion_domain::shared::id::TemplateId::new(
-                info.config.as_ref()
+                info.config
+                    .as_ref()
                     .and_then(|c| c.image.clone())
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
             ),
             bastion_domain::shared::id::ProviderId::new("podman"),
             ResourcesSpec::default(),
@@ -770,7 +829,10 @@ impl SandboxProvider for PodmanProvider {
     async fn set_timeout(&self, id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
         // Verify the container exists
         let container_name = id.to_string();
-        let _ = self.docker.inspect_container(&container_name, None).await
+        let _ = self
+            .docker
+            .inspect_container(&container_name, None)
+            .await
             .map_err(|e| {
                 if format!("{e}").contains("404") || format!("{e}").contains("No such container") {
                     DomainError::NotFound(id.to_string())
@@ -792,20 +854,24 @@ fn parse_ls_output(output: &str) -> Vec<FileEntry> {
     use chrono::Utc;
 
     let mut entries = Vec::new();
-    
-    for line in output.lines().skip(1) { // Skip total line
+
+    for line in output.lines().skip(1) {
+        // Skip total line
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 8 {
             let permissions = parts[0].to_string();
             let is_directory = permissions.starts_with('d');
             let path = parts.last().map(|s| s.to_string()).unwrap_or_default();
-            
+
             // Size is at index 4
-            let size_bytes = parts.get(4).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-            
+            let size_bytes = parts
+                .get(4)
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+
             // For modified_at, use current time as placeholder (parsing ls date format is complex)
             let modified_at = Utc::now();
-            
+
             if !path.is_empty() && path != "." && path != ".." {
                 entries.push(FileEntry {
                     path,
@@ -817,6 +883,6 @@ fn parse_ls_output(output: &str) -> Vec<FileEntry> {
             }
         }
     }
-    
+
     entries
 }

@@ -76,7 +76,9 @@ pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
         grace_period_ms: u64,
     ) -> Result<bool, DomainError> {
         let _ = (id, grace_period_ms);
-        Err(DomainError::UnsupportedOperation("cancel_command".to_string()))
+        Err(DomainError::UnsupportedOperation(
+            "cancel_command".to_string(),
+        ))
     }
 
     // ── File Operations ────────────────────────────────────────
@@ -98,7 +100,11 @@ pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
     // ── Snapshot Operations ─────────────────────────────────────
 
     /// Create a snapshot of the sandbox state.
-    async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+    async fn create_snapshot(
+        &self,
+        _id: &SandboxId,
+        _name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
         Err(DomainError::UnsupportedOperation("snapshots".to_string()))
     }
 
@@ -121,10 +127,7 @@ pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
     ///
     /// Returns sandboxes that are currently running or have recently
     /// been managed by this provider instance.
-    async fn list_sandboxes(
-        &self,
-        _filter: &SandboxFilter,
-    ) -> Result<Vec<Sandbox>, DomainError> {
+    async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
         Err(DomainError::UnsupportedOperation(
             "list_sandboxes".to_string(),
         ))
@@ -142,13 +145,7 @@ pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
     ///
     /// Updates the `expires_at` field of the sandbox. The backend
     /// may enforce minimum/maximum timeout limits.
-    async fn set_timeout(
-        &self,
-        _id: &SandboxId,
-        _timeout_ms: u64,
-    ) -> Result<(), DomainError> {
-        Err(DomainError::UnsupportedOperation(
-            "set_timeout".to_string(),
-        ))
+    async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+        Err(DomainError::UnsupportedOperation("set_timeout".to_string()))
     }
 }

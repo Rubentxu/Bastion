@@ -41,7 +41,11 @@ impl FactNormalizer {
     ///
     /// When merge_mode is "single": deduplicate by key (max confidence wins).
     /// When merge_mode is "multi": preserve all facts with same key unless value is identical.
-    pub fn normalize_with_config(&self, facts: Vec<Fact>, extractor_config: &HashMap<String, &ExtractorConfig>) -> Vec<Fact> {
+    pub fn normalize_with_config(
+        &self,
+        facts: Vec<Fact>,
+        extractor_config: &HashMap<String, &ExtractorConfig>,
+    ) -> Vec<Fact> {
         // Group by key
         let mut by_key: HashMap<String, Vec<Fact>> = HashMap::new();
         for fact in facts {
@@ -63,9 +67,11 @@ impl FactNormalizer {
                 result.extend(facts_with_key);
             } else {
                 // Single-value mode: keep max confidence
-                let best = facts_with_key
-                    .into_iter()
-                    .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal));
+                let best = facts_with_key.into_iter().max_by(|a, b| {
+                    a.confidence
+                        .partial_cmp(&b.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
                 if let Some(fact) = best {
                     result.push(fact);
                 }
@@ -165,7 +171,12 @@ mod tests {
         assert_eq!(jars.len(), 2);
     }
 
-    fn fact_with_extractor(key: &str, value: &str, confidence: f32, source_extractor: &str) -> Fact {
+    fn fact_with_extractor(
+        key: &str,
+        value: &str,
+        confidence: f32,
+        source_extractor: &str,
+    ) -> Fact {
         Fact {
             key: key.to_string(),
             value: value.to_string(),

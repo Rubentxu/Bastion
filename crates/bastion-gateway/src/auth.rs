@@ -2,10 +2,10 @@
 //!
 //! Handles issuance and verification of JWT tokens for worker sessions.
 
-use std::path::PathBuf;
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -40,17 +40,14 @@ impl JwtManager {
     /// Generates a new HMAC key if one doesn't exist.
     pub fn init_or_load(base_dir: &PathBuf) -> Result<Self> {
         let key_path = base_dir.join("jwt-secret.key");
-        
+
         let secret = if key_path.exists() {
-            std::fs::read_to_string(&key_path)
-                .context("Failed to read JWT secret")?
+            std::fs::read_to_string(&key_path).context("Failed to read JWT secret")?
         } else {
             // Generate a new 256-bit HMAC key
             let secret = generate_hmac_key();
-            std::fs::create_dir_all(base_dir)
-                .context("Failed to create JWT directory")?;
-            std::fs::write(&key_path, &secret)
-                .context("Failed to write JWT secret")?;
+            std::fs::create_dir_all(base_dir).context("Failed to create JWT directory")?;
+            std::fs::write(&key_path, &secret).context("Failed to write JWT secret")?;
             // Set restrictive permissions on the key file
             #[cfg(unix)]
             {
@@ -102,14 +99,14 @@ fn generate_hmac_key() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    
+
     // Use sha2 to hash the timestamp with some random bytes
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(ts.to_le_bytes());
     hasher.update(rand_bytes());
     let result = hasher.finalize();
-    
+
     hex::encode(result)
 }
 
@@ -134,10 +131,10 @@ mod tests {
     fn test_jwt_issue_and_verify() {
         let temp_dir = tempfile::tempdir().unwrap();
         let manager = JwtManager::init_or_load(&temp_dir.path().to_path_buf()).unwrap();
-        
+
         let token = manager.issue("test-sandbox", None).unwrap();
         assert!(!token.is_empty());
-        
+
         let claims = manager.verify(&token).unwrap();
         assert_eq!(claims.sub, "test-sandbox");
         assert!(claims.exp > claims.iat);
@@ -147,10 +144,12 @@ mod tests {
     fn test_jwt_with_cap_hash() {
         let temp_dir = tempfile::tempdir().unwrap();
         let manager = JwtManager::init_or_load(&temp_dir.path().to_path_buf()).unwrap();
-        
-        let token = manager.issue("test-sandbox", Some("abc123".to_string())).unwrap();
+
+        let token = manager
+            .issue("test-sandbox", Some("abc123".to_string()))
+            .unwrap();
         let claims = manager.verify(&token).unwrap();
-        
+
         assert_eq!(claims.sub, "test-sandbox");
         assert_eq!(claims.cap_hash, Some("abc123".to_string()));
     }
@@ -159,7 +158,7 @@ mod tests {
     fn test_jwt_invalid_token() {
         let temp_dir = tempfile::tempdir().unwrap();
         let manager = JwtManager::init_or_load(&temp_dir.path().to_path_buf()).unwrap();
-        
+
         let result = manager.verify("invalid.token.here");
         assert!(result.is_err());
     }
@@ -168,10 +167,10 @@ mod tests {
     fn test_jwt_different_keys() {
         let temp_dir1 = tempfile::tempdir().unwrap();
         let temp_dir2 = tempfile::tempdir().unwrap();
-        
+
         let manager1 = JwtManager::init_or_load(&temp_dir1.path().to_path_buf()).unwrap();
         let manager2 = JwtManager::init_or_load(&temp_dir2.path().to_path_buf()).unwrap();
-        
+
         let token = manager1.issue("test-sandbox", None).unwrap();
         let result = manager2.verify(&token);
         assert!(result.is_err()); // Different key should fail verification

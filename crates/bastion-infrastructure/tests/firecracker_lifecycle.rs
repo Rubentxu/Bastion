@@ -39,11 +39,17 @@ fn provider() -> bastion_infrastructure::provider::FirecrackerProvider {
 
     let worker_bin = std::env::var("WORKER_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("target/x86_64-unknown-linux-musl/release/bastion-worker"));
+        .unwrap_or_else(|_| {
+            PathBuf::from("target/x86_64-unknown-linux-musl/release/bastion-worker")
+        });
 
     // Unique directory per test to prevent interference
     let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let data_dir = PathBuf::from(format!("/tmp/bastion-fc-test-{}-{}", std::process::id(), count));
+    let data_dir = PathBuf::from(format!(
+        "/tmp/bastion-fc-test-{}-{}",
+        std::process::id(),
+        count
+    ));
     std::fs::create_dir_all(&data_dir).ok();
 
     bastion_infrastructure::provider::FirecrackerProvider::new(

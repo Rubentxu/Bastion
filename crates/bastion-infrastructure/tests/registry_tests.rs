@@ -2,14 +2,14 @@
 //!
 //! These tests verify TOML loading, resolution, and fallback behavior.
 
-use std::path::Path;
-use tempfile::TempDir;
-use bastion_infrastructure::provider::config::{ProviderConfig, ProviderCapabilitiesConfig};
-use bastion_infrastructure::provider::registry::ProviderRegistry;
+use bastion_domain::template::ToolchainStrategy;
+use bastion_infrastructure::provider::config::{ProviderCapabilitiesConfig, ProviderConfig};
 use bastion_infrastructure::provider::factory::ProviderFactory;
+use bastion_infrastructure::provider::registry::ProviderRegistry;
 use bastion_infrastructure::template::capability_config::CapabilityConfig;
 use bastion_infrastructure::template::capability_registry::CapabilityRegistry;
-use bastion_domain::template::ToolchainStrategy;
+use std::path::Path;
+use tempfile::TempDir;
 
 /// Helper: write a file to a temp dir and return its path.
 fn write_temp_file(dir: &TempDir, name: &str, content: &str) -> std::path::PathBuf {
@@ -199,7 +199,10 @@ expected_exit_code = 0
 "#;
         let config: CapabilityConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.name, "python-build");
-        assert_eq!(config.description.as_deref(), Some("Python build environment"));
+        assert_eq!(
+            config.description.as_deref(),
+            Some("Python build environment")
+        );
         assert_eq!(config.toolchains.len(), 1);
 
         let toolchain = &config.toolchains[0];
@@ -330,7 +333,9 @@ mod capability_registry_tests {
     fn test_capability_registry_resolve_jvm_build_auto() {
         let dir = create_capability_toml_dir();
         let registry = CapabilityRegistry::new();
-        registry.load_from_dir(dir.path()).expect("Failed to load capabilities");
+        registry
+            .load_from_dir(dir.path())
+            .expect("Failed to load capabilities");
 
         // Auto strategy should select highest priority (sdkman, priority 10)
         let plan = registry.resolve("jvm-build", ToolchainStrategy::Auto);
@@ -345,7 +350,9 @@ mod capability_registry_tests {
     fn test_capability_registry_resolve_jvm_build_system_package() {
         let dir = create_capability_toml_dir();
         let registry = CapabilityRegistry::new();
-        registry.load_from_dir(dir.path()).expect("Failed to load capabilities");
+        registry
+            .load_from_dir(dir.path())
+            .expect("Failed to load capabilities");
 
         // SystemPackage strategy should select apt (priority 20)
         let plan = registry.resolve("jvm-build", ToolchainStrategy::SystemPackage);
@@ -358,7 +365,9 @@ mod capability_registry_tests {
     fn test_capability_registry_resolve_jvm_build_version_manager() {
         let dir = create_capability_toml_dir();
         let registry = CapabilityRegistry::new();
-        registry.load_from_dir(dir.path()).expect("Failed to load capabilities");
+        registry
+            .load_from_dir(dir.path())
+            .expect("Failed to load capabilities");
 
         // VersionManager strategy should select sdkman (priority 10) - it's a version manager too
         let plan = registry.resolve("jvm-build", ToolchainStrategy::VersionManager);
@@ -370,7 +379,9 @@ mod capability_registry_tests {
     fn test_capability_registry_resolve_unknown_capability() {
         let dir = create_capability_toml_dir();
         let registry = CapabilityRegistry::new();
-        registry.load_from_dir(dir.path()).expect("Failed to load capabilities");
+        registry
+            .load_from_dir(dir.path())
+            .expect("Failed to load capabilities");
 
         let plan = registry.resolve("unknown-capability", ToolchainStrategy::Auto);
         assert!(plan.is_none());
@@ -400,7 +411,9 @@ mod capability_registry_tests {
     fn test_capability_registry_node_build_asdf() {
         let dir = create_capability_toml_dir();
         let registry = CapabilityRegistry::new();
-        registry.load_from_dir(dir.path()).expect("Failed to load capabilities");
+        registry
+            .load_from_dir(dir.path())
+            .expect("Failed to load capabilities");
 
         let plan = registry.resolve("node-build", ToolchainStrategy::Auto);
         assert!(plan.is_some());
@@ -441,7 +454,9 @@ expected_exit_code = 0
     fn test_capability_registry_contains_and_list() {
         let dir = create_capability_toml_dir();
         let registry = CapabilityRegistry::new();
-        registry.load_from_dir(dir.path()).expect("Failed to load capabilities");
+        registry
+            .load_from_dir(dir.path())
+            .expect("Failed to load capabilities");
 
         assert!(registry.contains("jvm-build"));
         assert!(registry.contains("node-build"));
@@ -457,7 +472,9 @@ expected_exit_code = 0
     fn test_capability_registry_get_config() {
         let dir = create_capability_toml_dir();
         let registry = CapabilityRegistry::new();
-        registry.load_from_dir(dir.path()).expect("Failed to load capabilities");
+        registry
+            .load_from_dir(dir.path())
+            .expect("Failed to load capabilities");
 
         let config = registry.get_config("jvm-build");
         assert!(config.is_some());

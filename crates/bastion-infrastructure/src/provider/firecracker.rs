@@ -25,9 +25,11 @@ use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus};
-use bastion_domain::shared::id::SandboxId;
+use bastion_domain::sandbox::value_objects::{
+    NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus,
+};
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 
 /// VM state including serial I/O handles.
 struct VmState {
@@ -110,9 +112,8 @@ impl FirecrackerProvider {
             )));
         }
 
-        std::fs::create_dir_all(&vm_dir).map_err(|e| {
-            DomainError::Config(format!("Cannot create VM directory: {e}"))
-        })?;
+        std::fs::create_dir_all(&vm_dir)
+            .map_err(|e| DomainError::Config(format!("Cannot create VM directory: {e}")))?;
 
         // Detect read-only filesystems (squashfs) by magic bytes
         let rootfs_readonly = Self::detect_readonly(&rootfs_path);
@@ -180,9 +181,10 @@ impl FirecrackerProvider {
         let mut header_buf = Vec::new();
         let mut buf = [0u8; 1];
         loop {
-            let n = stream.read(&mut buf).await.map_err(|e| {
-                DomainError::Internal(format!("Failed to read headers: {e}"))
-            })?;
+            let n = stream
+                .read(&mut buf)
+                .await
+                .map_err(|e| DomainError::Internal(format!("Failed to read headers: {e}")))?;
             if n == 0 {
                 break;
             }
@@ -200,10 +202,7 @@ impl FirecrackerProvider {
         }
 
         let headers_str = String::from_utf8_lossy(&header_buf);
-        let status_line = headers_str
-            .lines()
-            .next()
-            .unwrap_or("HTTP/1.1 500 ?");
+        let status_line = headers_str.lines().next().unwrap_or("HTTP/1.1 500 ?");
         let status_code: u16 = status_line
             .split_whitespace()
             .nth(1)
@@ -223,9 +222,10 @@ impl FirecrackerProvider {
         if content_length > 0 {
             let mut total = 0;
             while total < content_length {
-                let n = stream.read(&mut body_buf[total..]).await.map_err(|e| {
-                    DomainError::Internal(format!("Failed to read body: {e}"))
-                })?;
+                let n = stream
+                    .read(&mut body_buf[total..])
+                    .await
+                    .map_err(|e| DomainError::Internal(format!("Failed to read body: {e}")))?;
                 if n == 0 {
                     break;
                 }
@@ -244,7 +244,8 @@ impl FirecrackerProvider {
 
         // Firecracker returns 204 No Content for many operations
         if status_code >= 400 {
-            let fault = json.get("fault_message")
+            let fault = json
+                .get("fault_message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error");
             return Err(DomainError::Internal(format!(
@@ -295,7 +296,9 @@ impl FirecrackerProvider {
         let deadline = std::time::Instant::now() + timeout;
 
         let serial_buf = {
-            let vm = self.vms.get(&id.to_string())
+            let vm = self
+                .vms
+                .get(&id.to_string())
                 .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
             vm.serial_buf.clone()
         };
@@ -308,7 +311,9 @@ impl FirecrackerProvider {
             {
                 let guard = serial_buf.lock().await;
                 let text = String::from_utf8_lossy(&guard);
-                if text.contains("root@") && (text.contains(":~#") || text.contains(":~$") || text.contains("login:")) {
+                if text.contains("root@")
+                    && (text.contains(":~#") || text.contains(":~$") || text.contains("login:"))
+                {
                     return Ok(());
                 }
             }
@@ -372,10 +377,7 @@ impl FirecrackerProvider {
             || (file_output.contains("musl") && file_output.contains("static"));
 
         if !is_static_musl {
-            tracing::warn!(
-                "Worker binary may not be static musl: {}",
-                file_output
-            );
+            tracing::warn!("Worker binary may not be static musl: {}", file_output);
             // Don't fail - just warn. The binary might still work.
         }
 
@@ -400,23 +402,35 @@ impl FirecrackerProvider {
             }
         };
         if std::fs::create_dir_all(&mount_point).is_err() {
-            tracing::warn!("Cannot create mount point {:?}, skipping worker injection", mount_point);
+            tracing::warn!(
+                "Cannot create mount point {:?}, skipping worker injection",
+                mount_point
+            );
             return Ok(());
         }
 
         let mount_cmd = std::process::Command::new("mount")
-            .args(["-o", "loop", &*target.to_string_lossy(), &*mount_point.to_string_lossy()])
+            .args([
+                "-o",
+                "loop",
+                &*target.to_string_lossy(),
+                &*mount_point.to_string_lossy(),
+            ])
             .output();
 
         match mount_cmd {
             Err(e) => {
-                tracing::warn!("Mount failed ({e}), cannot inject worker binary — ensure worker is pre-baked in rootfs");
+                tracing::warn!(
+                    "Mount failed ({e}), cannot inject worker binary — ensure worker is pre-baked in rootfs"
+                );
                 let _ = std::fs::remove_dir_all(&mount_point);
                 return Ok(());
             }
             Ok(output) if !output.status.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::warn!("Mount failed: {stderr}, cannot inject worker binary — ensure worker is pre-baked in rootfs");
+                tracing::warn!(
+                    "Mount failed: {stderr}, cannot inject worker binary — ensure worker is pre-baked in rootfs"
+                );
                 let _ = std::fs::remove_dir_all(&mount_point);
                 return Ok(());
             }
@@ -490,9 +504,8 @@ impl SandboxProvider for FirecrackerProvider {
         let sandbox_dir = self.sandbox_dir(id);
         let socket_path = self.socket_path(id);
 
-        std::fs::create_dir_all(&sandbox_dir).map_err(|e| {
-            DomainError::Internal(format!("Cannot create sandbox directory: {e}"))
-        })?;
+        std::fs::create_dir_all(&sandbox_dir)
+            .map_err(|e| DomainError::Internal(format!("Cannot create sandbox directory: {e}")))?;
 
         tracing::info!(
             sandbox_id = %id,
@@ -525,9 +538,7 @@ impl SandboxProvider for FirecrackerProvider {
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| {
-                DomainError::Internal(format!("Failed to spawn Firecracker: {e}"))
-            })?;
+            .map_err(|e| DomainError::Internal(format!("Failed to spawn Firecracker: {e}")))?;
 
         // Take ownership of stdout and stdin
         let mut child_stdout = child.stdout.take().expect("stdout not captured");
@@ -565,7 +576,8 @@ impl SandboxProvider for FirecrackerProvider {
 
         // 3. Configure boot source
         let kernel_path_str = self.kernel_path.to_string_lossy();
-        let boot_args = "console=ttyS0 reboot=k panic=1 ip=10.0.2.2::10.0.2.1:255.255.255.0::eth0:off";
+        let boot_args =
+            "console=ttyS0 reboot=k panic=1 ip=10.0.2.2::10.0.2.1:255.255.255.0::eth0:off";
         Self::api_request(
             &socket_path,
             "PUT",
@@ -593,7 +605,9 @@ impl SandboxProvider for FirecrackerProvider {
         .await?;
 
         // 5. Configure machine — honor ResourcesSpec with safety clamps
-        let vcpu_count = resources.cpu_count.clamp(1, self.capabilities().max_cpu_count);
+        let vcpu_count = resources
+            .cpu_count
+            .clamp(1, self.capabilities().max_cpu_count);
         let mem_size_mib = (resources.memory_mb).clamp(128, self.capabilities().max_memory_mb);
         Self::api_request(
             &socket_path,
@@ -741,14 +755,16 @@ impl SandboxProvider for FirecrackerProvider {
         {
             tracing::info!(sandbox_id = %id, "Routing command via worker registry");
             let timeout_ms = command.timeout_ms.unwrap_or(30000);
-            return router.route_run_command(
-                &id.to_string(),
-                &command.command,
-                &command.args,
-                command.working_dir.as_deref().unwrap_or("/workspace"),
-                &command.env_vars,
-                timeout_ms,
-            ).await;
+            return router
+                .route_run_command(
+                    &id.to_string(),
+                    &command.command,
+                    &command.args,
+                    command.working_dir.as_deref().unwrap_or("/workspace"),
+                    &command.env_vars,
+                    timeout_ms,
+                )
+                .await;
         }
 
         // Fallback to serial console
@@ -762,7 +778,9 @@ impl SandboxProvider for FirecrackerProvider {
 
         // Get serial buffer and stdin
         let (serial_buf, stdin) = {
-            let vm = self.vms.get(&id.to_string())
+            let vm = self
+                .vms
+                .get(&id.to_string())
                 .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
             (vm.serial_buf.clone(), vm.stdin.clone())
         };
@@ -770,7 +788,9 @@ impl SandboxProvider for FirecrackerProvider {
         // Send newline to get fresh prompt
         {
             let mut stdin_guard = stdin.lock().await;
-            stdin_guard.write_all(b"\n").await
+            stdin_guard
+                .write_all(b"\n")
+                .await
                 .map_err(|e| DomainError::Internal(format!("Failed to write: {e}")))?;
         }
         sleep(Duration::from_millis(300)).await;
@@ -781,22 +801,32 @@ impl SandboxProvider for FirecrackerProvider {
         };
 
         // Use a unique marker on a SHORT separate line to avoid truncation
-        let marker = format!("E{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros() % 999999);
-        
+        let marker = format!(
+            "E{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros()
+                % 999999
+        );
+
         // Send commands one line at a time for reliability.
         // Disable local echo and prompt to keep output clean.
         let commands = vec![
-            format!("stty -echo 2>/dev/null; PS1=''; echo __{}_S__", marker),   // start marker
-            full_cmd,                                                             // actual command
-            format!("echo __{}_E__:$?", marker),                                  // end marker with exit code
+            format!("stty -echo 2>/dev/null; PS1=''; echo __{}_S__", marker), // start marker
+            full_cmd,                                                         // actual command
+            format!("echo __{}_E__:$?", marker), // end marker with exit code
         ];
 
         for cmd in &commands {
             let mut stdin_guard = stdin.lock().await;
-            stdin_guard.write_all(cmd.as_bytes()).await
+            stdin_guard
+                .write_all(cmd.as_bytes())
+                .await
                 .map_err(|e| DomainError::Internal(format!("Failed to write: {e}")))?;
-            stdin_guard.write_all(b"\n").await
+            stdin_guard
+                .write_all(b"\n")
+                .await
                 .map_err(|e| DomainError::Internal(format!("Failed to write: {e}")))?;
             drop(stdin_guard);
             sleep(Duration::from_millis(20)).await;
@@ -832,19 +862,22 @@ impl SandboxProvider for FirecrackerProvider {
 
                         // Extract output: everything between start marker and end marker
                         let start_marker = format!("__{}_S__", marker);
-                        let out_start = tail.find(&start_marker)
+                        let out_start = tail
+                            .find(&start_marker)
                             .map(|p| p + start_marker.len())
                             .unwrap_or(0);
-                        let out_end = tail.rfind(&format!("__{}_E__:", marker)).unwrap_or(tail.len());
-                        
+                        let out_end = tail
+                            .rfind(&format!("__{}_E__:", marker))
+                            .unwrap_or(tail.len());
+
                         let cmd_output = if out_start < out_end {
                             tail[out_start..out_end]
                                 .lines()
                                 .filter(|l| {
                                     let trimmed = l.trim();
                                     !trimmed.is_empty()
-                                    && !trimmed.contains(&start_marker)
-                                    && !trimmed.contains("__E__")
+                                        && !trimmed.contains(&start_marker)
+                                        && !trimmed.contains("__E__")
                                 })
                                 .collect::<Vec<_>>()
                                 .join("\n")
@@ -856,7 +889,7 @@ impl SandboxProvider for FirecrackerProvider {
 
                         let duration_ms = start.elapsed().as_millis() as u64;
                         tracing::info!(sandbox_id = %id, exit_code, duration_ms, "Command completed");
-                        
+
                         return Ok(CommandResult {
                             exit_code,
                             stdout: cmd_output.into_bytes(),
@@ -883,18 +916,20 @@ impl SandboxProvider for FirecrackerProvider {
         {
             tracing::info!(sandbox_id = %id, "Streaming command via worker registry");
             let timeout_ms = _command.timeout_ms.unwrap_or(30000);
-            return router.route_run_command_stream(
-                &id.to_string(),
-                &_command.command,
-                &_command.args,
-                _command.working_dir.as_deref().unwrap_or("/workspace"),
-                &_command.env_vars,
-                timeout_ms,
-            ).await;
+            return router
+                .route_run_command_stream(
+                    &id.to_string(),
+                    &_command.command,
+                    &_command.args,
+                    _command.working_dir.as_deref().unwrap_or("/workspace"),
+                    &_command.env_vars,
+                    timeout_ms,
+                )
+                .await;
         }
 
         Err(DomainError::UnsupportedOperation(
-            "Streaming command execution requires a connected worker via the CommandRouter".to_string(),
+            "firecracker does not support streaming".to_string(),
         ))
     }
 
@@ -909,7 +944,9 @@ impl SandboxProvider for FirecrackerProvider {
             && router.is_worker_connected(&id.to_string())
         {
             tracing::info!(sandbox_id = %id, path, "Writing file via worker registry");
-            return router.route_write_file(&id.to_string(), path, content).await;
+            return router
+                .route_write_file(&id.to_string(), path, content)
+                .await;
         }
 
         // Fallback to serial console
@@ -923,19 +960,14 @@ impl SandboxProvider for FirecrackerProvider {
             let stdout = String::from_utf8_lossy(&result.stdout);
             return Err(DomainError::Internal(format!(
                 "Failed to write file (exit {}): {}",
-                result.exit_code,
-                stdout
+                result.exit_code, stdout
             )));
         }
 
         Ok(())
     }
 
-    async fn read_file(
-        &self,
-        id: &SandboxId,
-        path: &str,
-    ) -> Result<Vec<u8>, DomainError> {
+    async fn read_file(&self, id: &SandboxId, path: &str) -> Result<Vec<u8>, DomainError> {
         // Try registry-based routing first
         if let Some(ref router) = self.command_router
             && router.is_worker_connected(&id.to_string())
@@ -960,11 +992,7 @@ impl SandboxProvider for FirecrackerProvider {
         Ok(result.stdout)
     }
 
-    async fn list_files(
-        &self,
-        id: &SandboxId,
-        dir: &str,
-    ) -> Result<Vec<FileEntry>, DomainError> {
+    async fn list_files(&self, id: &SandboxId, dir: &str) -> Result<Vec<FileEntry>, DomainError> {
         // Try registry-based routing first
         if let Some(ref router) = self.command_router
             && router.is_worker_connected(&id.to_string())
@@ -1047,9 +1075,8 @@ impl SandboxProvider for FirecrackerProvider {
         );
 
         // Create snapshot directory
-        std::fs::create_dir_all(&snapshot_dir).map_err(|e| {
-            DomainError::Internal(format!("Cannot create snapshot directory: {e}"))
-        })?;
+        std::fs::create_dir_all(&snapshot_dir)
+            .map_err(|e| DomainError::Internal(format!("Cannot create snapshot directory: {e}")))?;
 
         // 1. Pause the VM
         Self::api_request(
@@ -1090,12 +1117,8 @@ impl SandboxProvider for FirecrackerProvider {
         .await?;
 
         // 4. Calculate total size of snapshot files
-        let size_bytes = std::fs::metadata(&state_file)
-            .map(|m| m.len())
-            .unwrap_or(0)
-            + std::fs::metadata(&mem_file)
-                .map(|m| m.len())
-                .unwrap_or(0);
+        let size_bytes = std::fs::metadata(&state_file).map(|m| m.len()).unwrap_or(0)
+            + std::fs::metadata(&mem_file).map(|m| m.len()).unwrap_or(0);
 
         let snapshot_id = format!("{}-{}", id, name);
 
@@ -1115,15 +1138,13 @@ impl SandboxProvider for FirecrackerProvider {
         })
     }
 
-    async fn restore_snapshot(
-        &self,
-        _snapshot_id: &str,
-    ) -> Result<Sandbox, DomainError> {
+    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
         // Restore requires the original sandbox_id which is not available from snapshot_id alone.
         // This would need additional design work to track the mapping.
         Err(DomainError::UnsupportedOperation(
             "restore_snapshot requires additional context (original sandbox_id). \
-             This is complex without storing the mapping during create_snapshot.".to_string(),
+             This is complex without storing the mapping during create_snapshot."
+                .to_string(),
         ))
     }
 
@@ -1145,15 +1166,14 @@ impl SandboxProvider for FirecrackerProvider {
         "firecracker"
     }
 
-    async fn list_sandboxes(
-        &self,
-        filter: &SandboxFilter,
-    ) -> Result<Vec<Sandbox>, DomainError> {
+    async fn list_sandboxes(&self, filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
         let mut sandboxes = Vec::new();
         let limit = filter.limit.unwrap_or(u32::MAX) as usize;
 
         // Collect keys to avoid holding DashMap lock while calling try_wait
-        let sandbox_ids: Vec<String> = self.vms.iter()
+        let sandbox_ids: Vec<String> = self
+            .vms
+            .iter()
             .map(|item| item.key().clone())
             .take(limit)
             .collect();
@@ -1202,7 +1222,9 @@ impl SandboxProvider for FirecrackerProvider {
         let sandbox_id = id.to_string();
 
         // Check if we have this VM tracked
-        let mut vm = self.vms.get_mut(&sandbox_id)
+        let mut vm = self
+            .vms
+            .get_mut(&sandbox_id)
             .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
 
         // Check if VM process is still alive
@@ -1239,7 +1261,9 @@ impl SandboxProvider for FirecrackerProvider {
         let sandbox_id = id.to_string();
 
         // Verify the VM exists
-        let _ = self.vms.get(&sandbox_id)
+        let _ = self
+            .vms
+            .get(&sandbox_id)
             .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
 
         // Firecracker doesn't have a native timeout mechanism at the VM level.

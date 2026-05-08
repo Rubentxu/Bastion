@@ -54,16 +54,21 @@ impl IntentDetector {
     /// Matches by checking if any of the enricher's `match_patterns` regexes
     /// match the command string. Uses cached compiled patterns to avoid
     /// recompilation per call.
-    pub fn detect<'a>(&mut self, command: &str, enrichers: &'a [EnricherDescriptor]) -> Vec<&'a EnricherDescriptor> {
+    pub fn detect<'a>(
+        &mut self,
+        command: &str,
+        enrichers: &'a [EnricherDescriptor],
+    ) -> Vec<&'a EnricherDescriptor> {
         enrichers
             .iter()
             .filter(|e| {
-                e.enabled && e.match_patterns.iter().any(|p| {
-                    self.cache
-                        .get_or_compile(p)
-                        .map(|re| re.is_match(command))
-                        .unwrap_or(false)
-                })
+                e.enabled
+                    && e.match_patterns.iter().any(|p| {
+                        self.cache
+                            .get_or_compile(p)
+                            .map(|re| re.is_match(command))
+                            .unwrap_or(false)
+                    })
             })
             .collect()
     }
@@ -94,7 +99,10 @@ mod tests {
     #[test]
     fn test_detect_maven_commands() {
         let enrichers = vec![
-            enricher("maven", vec![r"^mvn\s+(package|install|verify|test|compile|clean|deploy)"]),
+            enricher(
+                "maven",
+                vec![r"^mvn\s+(package|install|verify|test|compile|clean|deploy)"],
+            ),
             enricher("gradle", vec![r"^gradle\s+\w+"]),
         ];
 

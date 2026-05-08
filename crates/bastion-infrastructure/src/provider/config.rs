@@ -2,8 +2,8 @@
 //!
 //! These types allow loading provider definitions from `.bastion/providers/*.toml` files.
 
-use serde::Deserialize;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
+use serde::Deserialize;
 
 /// TOML-deserializable provider configuration.
 #[derive(Debug, Clone, Deserialize)]

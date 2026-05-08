@@ -3,8 +3,8 @@
 //! Exposes `advice_list`, `advice_get`, `advice_suggest`, and `advice_configure`
 //! as MCP tools.
 
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{schemars, tool};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -89,10 +89,7 @@ pub fn advice_tools() -> ToolRouter<BastionGateway> {
 impl BastionGateway {
     /// List all registered advice descriptors.
     #[tool(description = "List all loaded advice descriptors")]
-    async fn advice_list(
-        &self,
-        Parameters(_params): Parameters<AdviceListParams>,
-    ) -> String {
+    async fn advice_list(&self, Parameters(_params): Parameters<AdviceListParams>) -> String {
         let registry = match &self.catalog_config.advice_registry {
             Some(r) => r,
             None => {
@@ -131,10 +128,7 @@ impl BastionGateway {
 
     /// Get a single advice descriptor by ID.
     #[tool(description = "Get a single advice descriptor by ID")]
-    async fn advice_get(
-        &self,
-        Parameters(params): Parameters<AdviceGetParams>,
-    ) -> String {
+    async fn advice_get(&self, Parameters(params): Parameters<AdviceGetParams>) -> String {
         let registry = match &self.catalog_config.advice_registry {
             Some(r) => r,
             None => {
@@ -165,11 +159,10 @@ impl BastionGateway {
     }
 
     /// Suggest advice based on current context (failures, patterns).
-    #[tool(description = "Suggest advice based on assertion failures, doctor failures, and experience patterns")]
-    async fn advice_suggest(
-        &self,
-        Parameters(params): Parameters<AdviceSuggestParams>,
-    ) -> String {
+    #[tool(
+        description = "Suggest advice based on assertion failures, doctor failures, and experience patterns"
+    )]
+    async fn advice_suggest(&self, Parameters(params): Parameters<AdviceSuggestParams>) -> String {
         let registry = match &self.catalog_config.advice_registry {
             Some(r) => r,
             None => {

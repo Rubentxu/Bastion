@@ -17,8 +17,10 @@ impl AgentContextComposer {
         let mut result = template.to_string();
 
         // Build a map from fact key -> value
-        let fact_map: std::collections::HashMap<&str, &str> =
-            facts.iter().map(|f| (f.key.as_str(), f.value.as_str())).collect();
+        let fact_map: std::collections::HashMap<&str, &str> = facts
+            .iter()
+            .map(|f| (f.key.as_str(), f.value.as_str()))
+            .collect();
 
         // Replace all {{key}} patterns
         let re = regex::Regex::new(r"\{\{(\w+)\}\}").expect("Invalid template regex");
@@ -34,7 +36,10 @@ impl AgentContextComposer {
 
     /// Extract a scalar fact value by key, returning None if not found.
     pub fn get_fact<'a>(facts: &'a [Fact], key: &str) -> Option<&'a str> {
-        facts.iter().find(|f| f.key == key).map(|f| f.value.as_str())
+        facts
+            .iter()
+            .find(|f| f.key == key)
+            .map(|f| f.value.as_str())
     }
 }
 
@@ -79,6 +84,9 @@ mod tests {
         ];
         let template = "Build {{status}}. Artifacts: {{artifacts_count}} JAR(s). Tests: {{tests_run}} run, {{tests_failed}} failed.";
         let result = AgentContextComposer::compose(template, &facts);
-        assert_eq!(result, "Build SUCCESS. Artifacts: 3 JAR(s). Tests: 10 run, 1 failed.");
+        assert_eq!(
+            result,
+            "Build SUCCESS. Artifacts: 3 JAR(s). Tests: 10 run, 1 failed."
+        );
     }
 }

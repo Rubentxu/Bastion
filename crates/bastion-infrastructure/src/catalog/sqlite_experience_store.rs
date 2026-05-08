@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 use rusqlite::params;
+use tokio::sync::Mutex;
 
 use bastion_domain::catalog::experience::{ExperienceRecord, ExperienceStatus, ExperienceStore};
 use bastion_domain::shared::{DomainError, id::SandboxId};
@@ -26,12 +26,13 @@ impl SqliteExperienceStore {
         let is_memory = db_path.to_str() == Some(":memory:");
 
         if !is_memory && let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| DomainError::Internal(format!("Failed to create DB directory: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                DomainError::Internal(format!("Failed to create DB directory: {}", e))
+            })?;
         }
 
         let conn = rusqlite::Connection::open(db_path)
-        .map_err(|e| DomainError::Internal(format!("Failed to open SQLite DB: {}", e)))?;
+            .map_err(|e| DomainError::Internal(format!("Failed to open SQLite DB: {}", e)))?;
 
         conn.execute_batch(
             r#"
@@ -78,8 +79,7 @@ impl SqliteExperienceStore {
                 record.stdout_summary,
                 record.stderr_summary,
                 format!("{:?}", record.status).to_lowercase(),
-                serde_json::to_string(&record.metadata)
-                    .unwrap_or_else(|_| "{}".to_string()),
+                serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".to_string()),
             ],
         )
         .map_err(|e| DomainError::Internal(format!("Failed to insert experience: {}", e)))?;
@@ -158,7 +158,8 @@ impl ExperienceStore for SqliteExperienceStore {
 
         let mut records = Vec::new();
         for row in rows {
-            let row = row.map_err(|e| DomainError::Internal(format!("Failed to read row: {}", e)))?;
+            let row =
+                row.map_err(|e| DomainError::Internal(format!("Failed to read row: {}", e)))?;
             records.push(row_to_experience(row)?);
         }
         Ok(records)
@@ -196,7 +197,8 @@ impl ExperienceStore for SqliteExperienceStore {
 
         let mut records = Vec::new();
         for row in rows {
-            let row = row.map_err(|e| DomainError::Internal(format!("Failed to read row: {}", e)))?;
+            let row =
+                row.map_err(|e| DomainError::Internal(format!("Failed to read row: {}", e)))?;
             records.push(row_to_experience(row)?);
         }
         Ok(records)
@@ -220,8 +222,10 @@ struct ExperienceRow {
 }
 
 fn row_to_experience(row: ExperienceRow) -> Result<ExperienceRecord, DomainError> {
-    let status = serde_json::from_str::<ExperienceStatus>(&format!("\"{}\"", row.status))
-        .map_err(|e| DomainError::Internal(format!("Failed to parse status '{}': {}", row.status, e)))?;
+    let status =
+        serde_json::from_str::<ExperienceStatus>(&format!("\"{}\"", row.status)).map_err(|e| {
+            DomainError::Internal(format!("Failed to parse status '{}': {}", row.status, e))
+        })?;
 
     let metadata: serde_json::Value = serde_json::from_str(&row.metadata)
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
@@ -230,11 +234,11 @@ fn row_to_experience(row: ExperienceRow) -> Result<ExperienceRecord, DomainError
         .map_err(|e| DomainError::Internal(format!("Failed to parse started_at: {}", e)))?
         .with_timezone(&chrono::Utc);
 
-    let ended_at = row.ended_at.map(|s| {
-        chrono::DateTime::parse_from_rfc3339(&s)
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-    }).transpose()
-    .map_err(|e| DomainError::Internal(format!("Failed to parse ended_at: {}", e)))?;
+    let ended_at = row
+        .ended_at
+        .map(|s| chrono::DateTime::parse_from_rfc3339(&s).map(|dt| dt.with_timezone(&chrono::Utc)))
+        .transpose()
+        .map_err(|e| DomainError::Internal(format!("Failed to parse ended_at: {}", e)))?;
 
     let sandbox_id = row.sandbox_id.map(SandboxId::new);
 
@@ -283,9 +287,18 @@ mod tests {
     async fn test_find_by_trace_id() {
         let store = create_test_store();
 
-        let r1 = ExperienceRecord::new("sandbox_run").with_trace_id("t1").completed(0).with_stdout(b"a");
-        let r2 = ExperienceRecord::new("sandbox_run").with_trace_id("t1").completed(1).with_stdout(b"b");
-        let r3 = ExperienceRecord::new("sandbox_run").with_trace_id("t2").completed(0).with_stdout(b"c");
+        let r1 = ExperienceRecord::new("sandbox_run")
+            .with_trace_id("t1")
+            .completed(0)
+            .with_stdout(b"a");
+        let r2 = ExperienceRecord::new("sandbox_run")
+            .with_trace_id("t1")
+            .completed(1)
+            .with_stdout(b"b");
+        let r3 = ExperienceRecord::new("sandbox_run")
+            .with_trace_id("t2")
+            .completed(0)
+            .with_stdout(b"c");
 
         store.save(&r1).await.unwrap();
         store.save(&r2).await.unwrap();

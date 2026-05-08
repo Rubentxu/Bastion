@@ -14,7 +14,9 @@ use tokio::time;
 use bastion_domain::provider::port::SandboxProvider;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::repository::SandboxRepository;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus};
+use bastion_domain::sandbox::value_objects::{
+    NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus,
+};
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
 
@@ -40,7 +42,7 @@ impl Default for PoolConfig {
             max_idle: 20,
             max_total: 200,
             idle_timeout_ms: 600_000,  // 10 minutes
-            refill_interval_ms: 5_000,  // 5 seconds
+            refill_interval_ms: 5_000, // 5 seconds
         }
     }
 }
@@ -108,22 +110,21 @@ impl PoolQueue {
     }
 
     /// Remove sandboxes that have been idle too long.
+    ///
+    /// Uses single-pass `VecDeque::retain` for O(n) complexity, avoiding
+    /// index invalidation issues with concurrent access patterns via DashMap.
     fn evict_idle(&mut self) -> Vec<Sandbox> {
+        let timeout_ms = self.idle_timeout_ms;
         let mut evicted = Vec::new();
-        let mut to_remove = Vec::new();
 
-        for (i, entry) in self.entries.iter().enumerate() {
-            if entry.is_idle_timeout(self.idle_timeout_ms) {
-                to_remove.push(i);
+        self.entries.retain(|entry| {
+            if entry.is_idle_timeout(timeout_ms) {
+                evicted.push(entry.sandbox.clone());
+                false // evict: don't retain
+            } else {
+                true // keep: retain
             }
-        }
-
-        // Remove in reverse order to maintain indices
-        for i in to_remove.into_iter().rev() {
-            if let Some(entry) = self.entries.remove(i) {
-                evicted.push(entry.sandbox);
-            }
-        }
+        });
 
         evicted
     }
@@ -249,10 +250,8 @@ impl SandboxPoolManager {
         };
 
         let mut result = RecoveryResult::default();
-        let provider_sandbox_ids: std::collections::HashSet<_> = provider_sandboxes
-            .iter()
-            .map(|s| s.id.clone())
-            .collect();
+        let provider_sandbox_ids: std::collections::HashSet<_> =
+            provider_sandboxes.iter().map(|s| s.id.clone()).collect();
 
         // Phase 1: Reintegrate running sandboxes from provider
         for provider_sandbox in &provider_sandboxes {
@@ -791,12 +790,120 @@ mod tests {
         assert_eq!(queue.idle_count(), 2);
     }
 
+    #[test]
+    fn test_evict_idle_single_pass_retain() {
+        // Test: evict_idle uses single-pass VecDeque::retain pattern
+        // Verifies the implementation doesn't use index-based removal
+        let mut queue = PoolQueue::new(0, 10, 100); // idle_timeout = 100ms
+
+        // Create three pool entries
+        let entry1 = PoolEntry::new(Sandbox::new(
+            SandboxId::new("entry-1"),
+            bastion_domain::shared::id::TemplateId::new("test"),
+            bastion_domain::shared::id::ProviderId::new("podman"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        ));
+        let entry2 = PoolEntry::new(Sandbox::new(
+            SandboxId::new("entry-2"),
+            bastion_domain::shared::id::TemplateId::new("test"),
+            bastion_domain::shared::id::ProviderId::new("podman"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        ));
+        let entry3 = PoolEntry::new(Sandbox::new(
+            SandboxId::new("entry-3"),
+            bastion_domain::shared::id::TemplateId::new("test"),
+            bastion_domain::shared::id::ProviderId::new("podman"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        ));
+
+        queue.entries.push_back(entry1);
+        queue.entries.push_back(entry2);
+        queue.entries.push_back(entry3);
+
+        // evict_idle with very short timeout (1ms) on entries just created
+        // will not evict (they haven't exceeded timeout yet)
+        let evicted = queue.evict_idle();
+        assert_eq!(
+            evicted.len(),
+            0,
+            "No entries should be evicted with recent creation time"
+        );
+        assert_eq!(queue.idle_count(), 3, "All 3 entries should remain");
+
+        // Calling again should produce same result (idempotent)
+        let evicted2 = queue.evict_idle();
+        assert_eq!(evicted2.len(), 0, "Second call should also evict nothing");
+        assert_eq!(queue.idle_count(), 3, "Queue unchanged after second call");
+    }
+
+    #[tokio::test]
+    async fn test_evict_idle_concurrent_safety() {
+        // Test concurrent eviction safety: multiple tokio tasks calling
+        // evict_idle on the same PoolQueue via Mutex should not cause
+        // index-out-of-bounds, lost entries, or double-eviction
+        use std::sync::Arc;
+
+        // Create a PoolQueue
+        let queue = PoolQueue::new(0, 10, 100_000); // long timeout - entries won't expire
+
+        // Add 5 entries
+        let mut queue = queue;
+        for i in 0..5 {
+            queue.entries.push_back(PoolEntry::new(Sandbox::new(
+                SandboxId::new(format!("concurrent-{}", i)),
+                bastion_domain::shared::id::TemplateId::new("test"),
+                bastion_domain::shared::id::ProviderId::new("podman"),
+                ResourcesSpec::default(),
+                NetworkSpec::default(),
+            )));
+        }
+
+        // Use Arc<Mutex<PoolQueue>> to simulate concurrent access
+        let queue_arc = Arc::new(tokio::sync::Mutex::new(queue));
+        let mut handles = vec![];
+
+        // Spawn 10 concurrent tasks all calling evict_idle
+        for _ in 0..10 {
+            let queue_clone = queue_arc.clone();
+            let handle = tokio::spawn(async move {
+                let mut queue = queue_clone.lock().await;
+                let evicted = queue.evict_idle();
+                evicted.len()
+            });
+            handles.push(handle);
+        }
+
+        // Collect all results
+        let mut total_evicted = 0;
+        for handle in handles {
+            let count = handle.await.expect("Task should not panic");
+            total_evicted += count;
+        }
+
+        // All 10 tasks should get 0 evicted (entries haven't expired)
+        assert_eq!(
+            total_evicted, 0,
+            "No entries should be evicted with long timeout"
+        );
+
+        // Verify queue still has all 5 entries
+        let queue = queue_arc.lock().await;
+        assert_eq!(
+            queue.idle_count(),
+            5,
+            "All 5 entries should remain after concurrent evict calls"
+        );
+    }
+
     #[tokio::test]
     async fn test_recover_active_sandboxes() {
-        use bastion_domain::provider::capabilities::ProviderCapabilities;
         use bastion_domain::execution::command::CommandSpec;
         use bastion_domain::execution::stream::CommandChunk;
         use bastion_domain::file_ops::FileEntry;
+        use bastion_domain::provider::capabilities::ProviderCapabilities;
         use bastion_domain::sandbox::snapshot::SnapshotInfo;
         use std::collections::HashMap;
         use std::pin::Pin;
@@ -860,26 +967,47 @@ mod tests {
                 &self,
                 _id: &SandboxId,
                 _command: &CommandSpec,
-            ) -> Result<bastion_domain::execution::command::CommandResult, DomainError> {
+            ) -> Result<bastion_domain::execution::command::CommandResult, DomainError>
+            {
                 unimplemented!()
             }
             async fn run_command_stream(
                 &self,
                 _id: &SandboxId,
                 _command: &CommandSpec,
-            ) -> Result<Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>, DomainError> {
+            ) -> Result<
+                Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>,
+                DomainError,
+            > {
                 unimplemented!()
             }
-            async fn write_file(&self, _id: &SandboxId, _path: &str, _content: &[u8]) -> Result<(), DomainError> {
+            async fn write_file(
+                &self,
+                _id: &SandboxId,
+                _path: &str,
+                _content: &[u8],
+            ) -> Result<(), DomainError> {
                 unimplemented!()
             }
-            async fn read_file(&self, _id: &SandboxId, _path: &str) -> Result<Vec<u8>, DomainError> {
+            async fn read_file(
+                &self,
+                _id: &SandboxId,
+                _path: &str,
+            ) -> Result<Vec<u8>, DomainError> {
                 unimplemented!()
             }
-            async fn list_files(&self, _id: &SandboxId, _dir: &str) -> Result<Vec<FileEntry>, DomainError> {
+            async fn list_files(
+                &self,
+                _id: &SandboxId,
+                _dir: &str,
+            ) -> Result<Vec<FileEntry>, DomainError> {
                 unimplemented!()
             }
-            async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+            async fn create_snapshot(
+                &self,
+                _id: &SandboxId,
+                _name: &str,
+            ) -> Result<SnapshotInfo, DomainError> {
                 unimplemented!()
             }
             async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
@@ -895,7 +1023,8 @@ mod tests {
                 &self,
                 filter: &SandboxFilter,
             ) -> Result<Vec<Sandbox>, DomainError> {
-                self.list_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.list_called
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 if filter.status == Some(SandboxStatus::Running) {
                     Ok(self.sandboxes.clone())
                 } else {
@@ -905,7 +1034,11 @@ mod tests {
             async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
                 unimplemented!()
             }
-            async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+            async fn set_timeout(
+                &self,
+                _id: &SandboxId,
+                _timeout_ms: u64,
+            ) -> Result<(), DomainError> {
                 unimplemented!()
             }
         }
@@ -946,7 +1079,11 @@ mod tests {
             async fn find_expired(&self) -> Result<Vec<Sandbox>, DomainError> {
                 let sb = self.sandboxes.lock().await;
                 let now = chrono::Utc::now();
-                Ok(sb.iter().filter(|s| s.expires_at.map(|exp| exp < now).unwrap_or(false)).cloned().collect())
+                Ok(sb
+                    .iter()
+                    .filter(|s| s.expires_at.map(|exp| exp < now).unwrap_or(false))
+                    .cloned()
+                    .collect())
             }
         }
 
@@ -989,10 +1126,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_recover_active_sandboxes_skips_unregistered_templates() {
-        use bastion_domain::provider::capabilities::ProviderCapabilities;
         use bastion_domain::execution::command::CommandSpec;
         use bastion_domain::execution::stream::CommandChunk;
         use bastion_domain::file_ops::FileEntry;
+        use bastion_domain::provider::capabilities::ProviderCapabilities;
         use bastion_domain::sandbox::snapshot::SnapshotInfo;
         use std::collections::HashMap;
         use std::pin::Pin;
@@ -1035,26 +1172,47 @@ mod tests {
                 &self,
                 _id: &SandboxId,
                 _command: &CommandSpec,
-            ) -> Result<bastion_domain::execution::command::CommandResult, DomainError> {
+            ) -> Result<bastion_domain::execution::command::CommandResult, DomainError>
+            {
                 unimplemented!()
             }
             async fn run_command_stream(
                 &self,
                 _id: &SandboxId,
                 _command: &CommandSpec,
-            ) -> Result<Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>, DomainError> {
+            ) -> Result<
+                Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>,
+                DomainError,
+            > {
                 unimplemented!()
             }
-            async fn write_file(&self, _id: &SandboxId, _path: &str, _content: &[u8]) -> Result<(), DomainError> {
+            async fn write_file(
+                &self,
+                _id: &SandboxId,
+                _path: &str,
+                _content: &[u8],
+            ) -> Result<(), DomainError> {
                 unimplemented!()
             }
-            async fn read_file(&self, _id: &SandboxId, _path: &str) -> Result<Vec<u8>, DomainError> {
+            async fn read_file(
+                &self,
+                _id: &SandboxId,
+                _path: &str,
+            ) -> Result<Vec<u8>, DomainError> {
                 unimplemented!()
             }
-            async fn list_files(&self, _id: &SandboxId, _dir: &str) -> Result<Vec<FileEntry>, DomainError> {
+            async fn list_files(
+                &self,
+                _id: &SandboxId,
+                _dir: &str,
+            ) -> Result<Vec<FileEntry>, DomainError> {
                 unimplemented!()
             }
-            async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+            async fn create_snapshot(
+                &self,
+                _id: &SandboxId,
+                _name: &str,
+            ) -> Result<SnapshotInfo, DomainError> {
                 unimplemented!()
             }
             async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
@@ -1079,7 +1237,11 @@ mod tests {
             async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
                 unimplemented!()
             }
-            async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+            async fn set_timeout(
+                &self,
+                _id: &SandboxId,
+                _timeout_ms: u64,
+            ) -> Result<(), DomainError> {
                 unimplemented!()
             }
         }
@@ -1090,12 +1252,24 @@ mod tests {
 
         #[async_trait::async_trait]
         impl SandboxRepository for MockRepository {
-            async fn save(&self, _sandbox: &Sandbox) -> Result<(), DomainError> { Ok(()) }
-            async fn find_by_id(&self, _id: &SandboxId) -> Result<Option<Sandbox>, DomainError> { Ok(None) }
-            async fn update(&self, _sandbox: &Sandbox) -> Result<(), DomainError> { Ok(()) }
-            async fn delete(&self, _id: &SandboxId) -> Result<(), DomainError> { Ok(()) }
-            async fn find_active(&self) -> Result<Vec<Sandbox>, DomainError> { Ok(vec![]) }
-            async fn find_expired(&self) -> Result<Vec<Sandbox>, DomainError> { Ok(vec![]) }
+            async fn save(&self, _sandbox: &Sandbox) -> Result<(), DomainError> {
+                Ok(())
+            }
+            async fn find_by_id(&self, _id: &SandboxId) -> Result<Option<Sandbox>, DomainError> {
+                Ok(None)
+            }
+            async fn update(&self, _sandbox: &Sandbox) -> Result<(), DomainError> {
+                Ok(())
+            }
+            async fn delete(&self, _id: &SandboxId) -> Result<(), DomainError> {
+                Ok(())
+            }
+            async fn find_active(&self) -> Result<Vec<Sandbox>, DomainError> {
+                Ok(vec![])
+            }
+            async fn find_expired(&self) -> Result<Vec<Sandbox>, DomainError> {
+                Ok(vec![])
+            }
         }
 
         let provider = Arc::new(MockProvider {

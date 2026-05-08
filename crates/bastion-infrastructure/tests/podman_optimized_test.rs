@@ -25,9 +25,7 @@ fn make_test_tar() -> Vec<u8> {
     header.set_size(content.len() as u64);
     header.set_mode(0o755);
     header.set_cksum();
-    builder
-        .append(&header, content.as_bytes())
-        .unwrap();
+    builder.append(&header, content.as_bytes()).unwrap();
     let _ = builder.into_inner();
     tar_data
 }

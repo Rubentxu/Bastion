@@ -10,28 +10,28 @@
 //! Without the feature, attempting to use this provider will return an error.
 
 #[cfg(feature = "wasm-sandbox")]
-use std::collections::HashMap;
+use async_trait::async_trait;
+use futures::Stream;
 #[cfg(feature = "wasm-sandbox")]
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::pin::Pin;
 #[cfg(feature = "wasm-sandbox")]
-use async_trait::async_trait;
+use std::sync::Arc;
 #[cfg(feature = "wasm-sandbox")]
 use tokio::sync::RwLock;
 #[cfg(feature = "wasm-sandbox")]
 use tokio::sync::mpsc;
-use futures::Stream;
 
+use bastion_domain::execution::command::{CommandResult, CommandSpec};
+use bastion_domain::execution::stream::CommandChunk;
+use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::sandbox::entity::Sandbox;
-use bastion_domain::sandbox::value_objects::{ResourcesSpec, NetworkSpec, SandboxFilter};
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
-use bastion_domain::execution::command::{CommandSpec, CommandResult};
-use bastion_domain::execution::stream::CommandChunk;
-use bastion_domain::file_ops::FileEntry;
-use bastion_domain::shared::id::SandboxId;
+use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 
 /// Stream type for WASM command output.
 #[cfg(feature = "wasm-sandbox")]
@@ -122,10 +122,7 @@ impl SandboxProvider for WasmSandboxProvider {
         _timeout_ms: u64,
     ) -> Result<Sandbox, DomainError> {
         // Create empty VFS for this sandbox
-        self.vfs
-            .write()
-            .await
-            .insert(id.clone(), HashMap::new());
+        self.vfs.write().await.insert(id.clone(), HashMap::new());
 
         // Create sandbox entity
         let sandbox = Sandbox::new(
@@ -136,7 +133,10 @@ impl SandboxProvider for WasmSandboxProvider {
             _network.clone(),
         );
 
-        self.sandboxes.write().await.insert(id.clone(), sandbox.clone());
+        self.sandboxes
+            .write()
+            .await
+            .insert(id.clone(), sandbox.clone());
 
         tracing::info!(sandbox_id = %id, "WasmSandboxProvider: created sandbox");
         Ok(sandbox)
@@ -172,12 +172,8 @@ impl SandboxProvider for WasmSandboxProvider {
         // 2. Set up WASI context with virtual filesystem
         // 3. Run the module and capture output
 
-        let stdout = format!(
-            "WASM: Executed '{}' in sandbox {}\n",
-            command.command,
-            id
-        )
-        .into_bytes();
+        let stdout =
+            format!("WASM: Executed '{}' in sandbox {}\n", command.command, id).into_bytes();
         let stderr = Vec::new();
         let duration_ms = t0.elapsed().as_millis() as u64;
 
@@ -201,10 +197,14 @@ impl SandboxProvider for WasmSandboxProvider {
 
         tokio::spawn(async move {
             if !result.stdout.is_empty() {
-                let _ = tx.send(Ok(CommandChunk::stdout(result.stdout.clone()))).await;
+                let _ = tx
+                    .send(Ok(CommandChunk::stdout(result.stdout.clone())))
+                    .await;
             }
             if !result.stderr.is_empty() {
-                let _ = tx.send(Ok(CommandChunk::stderr(result.stderr.clone()))).await;
+                let _ = tx
+                    .send(Ok(CommandChunk::stderr(result.stderr.clone())))
+                    .await;
             }
             let _ = tx.send(Ok(CommandChunk::exit_code(result.exit_code))).await;
         });
@@ -292,10 +292,7 @@ impl SandboxProvider for WasmSandboxProvider {
         ))
     }
 
-    async fn list_sandboxes(
-        &self,
-        _filter: &SandboxFilter,
-    ) -> Result<Vec<Sandbox>, DomainError> {
+    async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
         Ok(self.sandboxes.read().await.values().cloned().collect())
     }
 
@@ -397,7 +394,8 @@ impl SandboxProvider for WasmSandboxProviderStub {
         &self,
         _id: &SandboxId,
         _command: &CommandSpec,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>, DomainError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>, DomainError>
+    {
         Err(Self::feature_error())
     }
 
@@ -418,7 +416,11 @@ impl SandboxProvider for WasmSandboxProviderStub {
         Err(Self::feature_error())
     }
 
-    async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+    async fn create_snapshot(
+        &self,
+        _id: &SandboxId,
+        _name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
         Err(Self::feature_error())
     }
 
@@ -448,7 +450,7 @@ mod tests {
     #[cfg(feature = "wasm-sandbox")]
     mod feature_enabled {
         use super::super::*;
-        use bastion_domain::sandbox::value_objects::{ResourcesSpec, NetworkSpec};
+        use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
         use std::collections::HashMap;
 
         #[tokio::test]
@@ -539,7 +541,7 @@ mod tests {
     #[cfg(not(feature = "wasm-sandbox"))]
     mod feature_disabled {
         use super::super::*;
-        use bastion_domain::sandbox::value_objects::{ResourcesSpec, NetworkSpec};
+        use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
         use std::collections::HashMap;
 
         #[tokio::test]

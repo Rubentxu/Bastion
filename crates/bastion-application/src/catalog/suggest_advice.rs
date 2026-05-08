@@ -44,7 +44,15 @@ pub trait AdviceRegistryPort: Send + Sync {
 /// Port for experience store (read-only, for ExperiencePattern triggers).
 pub trait ExperienceQueryPort: Send + Sync {
     /// List experiences for a given trace ID.
-    fn find_by_trace_id(&self, trace_id: &str) -> impl std::future::Future<Output = Result<Vec<bastion_domain::catalog::experience::ExperienceRecord>, bastion_domain::shared::DomainError>> + Send;
+    fn find_by_trace_id(
+        &self,
+        trace_id: &str,
+    ) -> impl std::future::Future<
+        Output = Result<
+            Vec<bastion_domain::catalog::experience::ExperienceRecord>,
+            bastion_domain::shared::DomainError,
+        >,
+    > + Send;
 }
 
 /// SuggestAdvice use case — evaluates context against advice triggers.
@@ -117,10 +125,9 @@ impl<R: AdviceRegistryPort, E: ExperienceQueryPort> SuggestAdviceUseCase<R, E> {
                 threshold,
             } => {
                 // Check if any experience hint matches the pattern
-                context
-                    .experience_hints
-                    .iter()
-                    .any(|h| h.tool_name == *tool_name && h.status == *status && h.count >= *threshold)
+                context.experience_hints.iter().any(|h| {
+                    h.tool_name == *tool_name && h.status == *status && h.count >= *threshold
+                })
             }
         }
     }

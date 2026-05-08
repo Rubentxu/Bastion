@@ -4,7 +4,10 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use bastion_domain::shared::DomainError;
-use bastion_domain::template::{ManagerType, SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep, ToolVerifyStep};
+use bastion_domain::template::{
+    ManagerType, SupportLevel, ToolManagerAdapter, ToolVerifyStep, ToolchainPlan, ToolchainRequest,
+    ToolchainStep,
+};
 
 /// Adapter for SDKMAN! based JVM tool installation.
 pub struct SdkmanAdapter;
@@ -14,9 +17,15 @@ const SDKMAN_SOURCE: &str = "source ~/.sdkman/bin/sdkman-init.sh";
 
 #[async_trait]
 impl ToolManagerAdapter for SdkmanAdapter {
-    fn id(&self) -> &'static str { "sdkman" }
-    fn name(&self) -> &'static str { "SDKMAN! Java Version Manager" }
-    fn manager_type(&self) -> ManagerType { ManagerType::Sdkman }
+    fn id(&self) -> &'static str {
+        "sdkman"
+    }
+    fn name(&self) -> &'static str {
+        "SDKMAN! Java Version Manager"
+    }
+    fn manager_type(&self) -> ManagerType {
+        ManagerType::Sdkman
+    }
 
     fn supports(&self, req: &ToolchainRequest) -> SupportLevel {
         match req.capability.as_str() {
@@ -40,8 +49,16 @@ impl ToolManagerAdapter for SdkmanAdapter {
         });
 
         // Get version constraints (default if not specified)
-        let java_version = req.constraints.get("java").map(|s| s.as_str()).unwrap_or("17.0.8-tem");
-        let maven_version = req.constraints.get("maven").map(|s| s.as_str()).unwrap_or("3.9.5");
+        let java_version = req
+            .constraints
+            .get("java")
+            .map(|s| s.as_str())
+            .unwrap_or("17.0.8-tem");
+        let maven_version = req
+            .constraints
+            .get("maven")
+            .map(|s| s.as_str())
+            .unwrap_or("3.9.5");
         let gradle_version = req.constraints.get("gradle").map(|s| s.as_str());
 
         // Step 2: Install Java

@@ -134,7 +134,10 @@ impl OptimizerReport {
 #[async_trait::async_trait]
 pub trait OptimizerRepository: Send + Sync {
     /// Read all run records, optionally filtered to those after a given timestamp.
-    async fn read_records(&self, after: Option<&str>) -> Result<Vec<EnrichmentRunRecord>, EnrichmentError>;
+    async fn read_records(
+        &self,
+        after: Option<&str>,
+    ) -> Result<Vec<EnrichmentRunRecord>, EnrichmentError>;
 
     /// Read all records for a specific enricher.
     async fn read_records_by_enricher(
@@ -206,9 +209,7 @@ pub fn generate_recommendation(score: &EnricherScore) -> OptimizationRecommendat
 fn build_component_breakdown(score: &EnricherScore) -> String {
     format!(
         " (artifact_yield={}, latency={}ms, error_rate={})",
-        score.artifact_yield,
-        score.avg_latency_ms as u64,
-        score.false_positive_rate
+        score.artifact_yield, score.avg_latency_ms as u64, score.false_positive_rate
     )
 }
 
@@ -253,7 +254,10 @@ fn determine_action_and_reason(score: &EnricherScore, confidence: f64) -> (RecAc
     } else if utility > 0.7 {
         (
             RecAction::Keep,
-            format!("High utility score ({:.2}). Keep in catalog.{breakdown}", utility),
+            format!(
+                "High utility score ({:.2}). Keep in catalog.{breakdown}",
+                utility
+            ),
         )
     } else {
         (
@@ -267,7 +271,10 @@ fn determine_action_and_reason(score: &EnricherScore, confidence: f64) -> (RecAc
 }
 
 /// Compute aggregate statistics from a collection of run records for one enricher.
-pub fn compute_aggregate_stats(enricher_id: &str, records: &[EnrichmentRunRecord]) -> AggregateStats {
+pub fn compute_aggregate_stats(
+    enricher_id: &str,
+    records: &[EnrichmentRunRecord],
+) -> AggregateStats {
     if records.is_empty() {
         return AggregateStats {
             enricher_id: enricher_id.to_string(),
@@ -319,9 +326,7 @@ pub fn compute_aggregate_stats(enricher_id: &str, records: &[EnrichmentRunRecord
 }
 
 /// Group records by enricher_id and compute aggregate stats.
-pub fn compute_all_stats(
-    records: &[EnrichmentRunRecord],
-) -> Vec<AggregateStats> {
+pub fn compute_all_stats(records: &[EnrichmentRunRecord]) -> Vec<AggregateStats> {
     use std::collections::HashMap;
 
     let mut by_enricher: HashMap<String, Vec<EnrichmentRunRecord>> = HashMap::new();
@@ -647,7 +652,8 @@ mod tests {
         assert_eq!(rec.action, RecAction::Keep);
         // Reason must end with the breakdown suffix
         assert!(
-            rec.reason.ends_with("(artifact_yield=0.9, latency=500ms, error_rate=0.1)"),
+            rec.reason
+                .ends_with("(artifact_yield=0.9, latency=500ms, error_rate=0.1)"),
             "reason = {}",
             rec.reason
         );
@@ -668,7 +674,8 @@ mod tests {
         let rec = generate_recommendation(&score);
         assert_eq!(rec.action, RecAction::Remove);
         assert!(
-            rec.reason.ends_with("(artifact_yield=0.05, latency=5000ms, error_rate=0.95)"),
+            rec.reason
+                .ends_with("(artifact_yield=0.05, latency=5000ms, error_rate=0.95)"),
             "reason = {}",
             rec.reason
         );
@@ -690,7 +697,8 @@ mod tests {
         assert_eq!(rec.action, RecAction::Review);
         // Reason must contain the breakdown suffix
         assert!(
-            rec.reason.contains("(artifact_yield=0.5, latency=1000ms, error_rate=0.5)"),
+            rec.reason
+                .contains("(artifact_yield=0.5, latency=1000ms, error_rate=0.5)"),
             "reason = {}",
             rec.reason
         );

@@ -9,7 +9,9 @@ use std::path::PathBuf;
 
 use bastion_domain::execution::command::CommandSpec;
 use bastion_domain::provider::port::SandboxProvider;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus};
+use bastion_domain::sandbox::value_objects::{
+    NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus,
+};
 use bastion_domain::shared::id::SandboxId;
 
 // ============================================================================
@@ -53,18 +55,13 @@ fn try_create_provider() -> Option<bastion_infrastructure::provider::PodmanProvi
         return None;
     }
 
-    bastion_infrastructure::provider::PodmanProvider::new(
-        PODMAN_SOCKET,
-        TEST_IMAGE,
-        worker_bin,
-    )
-    .ok()
+    bastion_infrastructure::provider::PodmanProvider::new(PODMAN_SOCKET, TEST_IMAGE, worker_bin)
+        .ok()
 }
 
 /// Create a PodmanProvider, aborting the test if Podman is not available.
 fn create_provider() -> bastion_infrastructure::provider::PodmanProvider {
-    try_create_provider()
-        .expect("Podman provider should be available")
+    try_create_provider().expect("Podman provider should be available")
 }
 
 // ============================================================================
@@ -218,7 +215,8 @@ async fn test_podman_get_sandbox_info() {
         "Info should return the correct sandbox ID"
     );
     assert_eq!(
-        info.status, SandboxStatus::Running,
+        info.status,
+        SandboxStatus::Running,
         "Sandbox should be in Running state"
     );
 
@@ -252,9 +250,7 @@ async fn test_podman_set_timeout() {
         .expect("Failed to create sandbox");
 
     // Set a new timeout (should be no-op at provider level but shouldn't error)
-    let result = provider
-        .set_timeout(&sandbox_id, 7200_000)
-        .await;
+    let result = provider.set_timeout(&sandbox_id, 7200_000).await;
 
     // Note: Podman's set_timeout is a no-op, so it should succeed
     assert!(
@@ -377,10 +373,7 @@ async fn test_podman_run_command_with_args() {
         .await
         .expect("run_command failed");
 
-    assert_eq!(
-        result.exit_code, 0,
-        "echo should exit with code 0"
-    );
+    assert_eq!(result.exit_code, 0, "echo should exit with code 0");
     let stdout = String::from_utf8_lossy(&result.stdout);
     assert!(
         stdout.contains("foo bar"),
@@ -549,16 +542,10 @@ async fn test_podman_capabilities() {
         caps.avg_startup_ms, 1500,
         "Podman should report ~1500ms startup time"
     );
-    assert!(
-        caps.supports_streaming,
-        "Podman should support streaming"
-    );
+    assert!(caps.supports_streaming, "Podman should support streaming");
     assert!(
         !caps.supports_snapshots,
         "Podman should not support snapshots"
     );
-    assert!(
-        !caps.requires_kvm,
-        "Podman should not require KVM"
-    );
+    assert!(!caps.requires_kvm, "Podman should not require KVM");
 }

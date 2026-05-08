@@ -138,9 +138,20 @@ mod tests {
 
     #[test]
     fn test_severity_ordering() {
-        let mut severities = vec![AdviceSeverity::Hint, AdviceSeverity::Critical, AdviceSeverity::Warning];
+        let mut severities = vec![
+            AdviceSeverity::Hint,
+            AdviceSeverity::Critical,
+            AdviceSeverity::Warning,
+        ];
         severities.sort_by_key(|s| s.sort_key());
-        assert_eq!(severities, vec![AdviceSeverity::Critical, AdviceSeverity::Warning, AdviceSeverity::Hint]);
+        assert_eq!(
+            severities,
+            vec![
+                AdviceSeverity::Critical,
+                AdviceSeverity::Warning,
+                AdviceSeverity::Hint
+            ]
+        );
     }
 
     #[test]
@@ -197,11 +208,9 @@ mod tests {
             description: "Triggered when a Maven build assertion fails".to_string(),
             category: "maven".to_string(),
             severity: AdviceSeverity::Warning,
-            triggers: vec![
-                AdviceTrigger::AssertionFailed {
-                    assertion_id: "maven.build.success".to_string(),
-                },
-            ],
+            triggers: vec![AdviceTrigger::AssertionFailed {
+                assertion_id: "maven.build.success".to_string(),
+            }],
             message: "Build failed. Check the output for compilation errors.".to_string(),
             suggested_actions: vec![
                 "Review Maven output for compilation errors".to_string(),
@@ -265,21 +274,27 @@ mod tests {
         let results = vec![
             AdviceResult::new(
                 "hint.advice".to_string(),
-                AdviceTrigger::AssertionFailed { assertion_id: "x".to_string() },
+                AdviceTrigger::AssertionFailed {
+                    assertion_id: "x".to_string(),
+                },
                 "Hint".to_string(),
                 vec![],
                 AdviceSeverity::Hint,
             ),
             AdviceResult::new(
                 "critical.advice".to_string(),
-                AdviceTrigger::AssertionFailed { assertion_id: "x".to_string() },
+                AdviceTrigger::AssertionFailed {
+                    assertion_id: "x".to_string(),
+                },
                 "Critical".to_string(),
                 vec![],
                 AdviceSeverity::Critical,
             ),
             AdviceResult::new(
                 "warning.advice".to_string(),
-                AdviceTrigger::AssertionFailed { assertion_id: "x".to_string() },
+                AdviceTrigger::AssertionFailed {
+                    assertion_id: "x".to_string(),
+                },
                 "Warning".to_string(),
                 vec![],
                 AdviceSeverity::Warning,

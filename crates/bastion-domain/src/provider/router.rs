@@ -50,11 +50,7 @@ pub trait CommandRouter: Send + Sync + std::fmt::Debug {
     ) -> Result<(), DomainError>;
 
     /// Read a file from a sandbox via the worker registry.
-    async fn route_read_file(
-        &self,
-        sandbox_id: &str,
-        path: &str,
-    ) -> Result<Vec<u8>, DomainError>;
+    async fn route_read_file(&self, sandbox_id: &str, path: &str) -> Result<Vec<u8>, DomainError>;
 
     /// List files in a sandbox directory via the worker registry.
     async fn route_list_files(

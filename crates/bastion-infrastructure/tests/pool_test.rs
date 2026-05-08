@@ -20,7 +20,9 @@ use bastion_domain::provider::port::SandboxProvider;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
-use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus};
+use bastion_domain::sandbox::value_objects::{
+    NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus,
+};
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
 
@@ -69,7 +71,8 @@ impl SandboxProvider for MockProvider {
         _env_vars: &HashMap<String, String>,
         _timeout_ms: u64,
     ) -> Result<Sandbox, DomainError> {
-        self.create_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.create_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.create_should_fail {
             return Err(DomainError::Internal("Mock create failure".to_string()));
         }
@@ -85,7 +88,8 @@ impl SandboxProvider for MockProvider {
     }
 
     async fn terminate(&self, _id: &SandboxId) -> Result<(), DomainError> {
-        self.terminate_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.terminate_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -111,11 +115,17 @@ impl SandboxProvider for MockProvider {
         &self,
         _id: &SandboxId,
         _command: &CommandSpec,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>, DomainError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>, DomainError>
+    {
         Ok(Box::pin(futures::stream::empty()))
     }
 
-    async fn write_file(&self, _id: &SandboxId, _path: &str, _content: &[u8]) -> Result<(), DomainError> {
+    async fn write_file(
+        &self,
+        _id: &SandboxId,
+        _path: &str,
+        _content: &[u8],
+    ) -> Result<(), DomainError> {
         Ok(())
     }
 
@@ -127,7 +137,11 @@ impl SandboxProvider for MockProvider {
         Ok(vec![])
     }
 
-    async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+    async fn create_snapshot(
+        &self,
+        _id: &SandboxId,
+        _name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
         Err(DomainError::UnsupportedOperation("snapshots".to_string()))
     }
 
@@ -143,10 +157,7 @@ impl SandboxProvider for MockProvider {
         "mock"
     }
 
-    async fn list_sandboxes(
-        &self,
-        filter: &SandboxFilter,
-    ) -> Result<Vec<Sandbox>, DomainError> {
+    async fn list_sandboxes(&self, filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
         if filter.status == Some(SandboxStatus::Running) {
             Ok(self.running_sandboxes.clone())
         } else {
@@ -317,9 +328,18 @@ async fn test_pool_grow_on_demand() {
     );
 
     // Checkin sandboxes
-    manager.checkin(&sandbox1.id).await.expect("Should checkin sandbox");
-    manager.checkin(&sandbox2.id).await.expect("Should checkin sandbox");
-    manager.checkin(&sandbox3.id).await.expect("Should checkin sandbox");
+    manager
+        .checkin(&sandbox1.id)
+        .await
+        .expect("Should checkin sandbox");
+    manager
+        .checkin(&sandbox2.id)
+        .await
+        .expect("Should checkin sandbox");
+    manager
+        .checkin(&sandbox3.id)
+        .await
+        .expect("Should checkin sandbox");
 
     manager.stop().await.expect("Pool should stop cleanly");
 }
@@ -343,7 +363,10 @@ async fn test_pool_shrink_to_min() {
             .checkout("debian:bookworm-slim", 30_000)
             .await
             .expect("Should checkout sandbox");
-        manager.checkin(&sandbox.id).await.expect("Should checkin sandbox");
+        manager
+            .checkin(&sandbox.id)
+            .await
+            .expect("Should checkin sandbox");
     }
 
     // Wait for eviction cycle
@@ -431,11 +454,7 @@ async fn test_pool_max_total_limits_growth() {
         refill_interval_ms: 100_000, // Disable auto refill
     };
 
-    let manager = SandboxPoolManager::new(
-        provider.clone(),
-        repository.clone(),
-        config,
-    );
+    let manager = SandboxPoolManager::new(provider.clone(), repository.clone(), config);
     manager.register_template("debian:bookworm-slim");
 
     // Don't start the pool - manual checkout only
@@ -479,11 +498,7 @@ async fn test_pool_cleanup_on_shutdown() {
         refill_interval_ms: 100_000, // Disable auto refill
     };
 
-    let manager = SandboxPoolManager::new(
-        provider.clone(),
-        repository.clone(),
-        config,
-    );
+    let manager = SandboxPoolManager::new(provider.clone(), repository.clone(), config);
     manager.register_template("debian:bookworm-slim");
 
     // Manually add sandboxes to the pool (simulate recovered sandboxes)
@@ -559,7 +574,9 @@ async fn test_pool_handles_create_failure_gracefully() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Pool should have tried to create but failed
-    let create_attempts = provider.create_count.load(std::sync::atomic::Ordering::SeqCst);
+    let create_attempts = provider
+        .create_count
+        .load(std::sync::atomic::Ordering::SeqCst);
     assert!(
         create_attempts > 0,
         "Provider should have attempted to create sandboxes"

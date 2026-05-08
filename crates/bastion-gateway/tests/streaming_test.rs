@@ -20,7 +20,7 @@
 //! cargo test --test streaming_test -- --ignored
 //! ```
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -33,15 +33,19 @@ fn get_gateway_binary_path() -> std::path::PathBuf {
     // CARGO_MANIFEST_DIR for test = crates/bastion-gateway
     // Need to go up 3 levels to workspace root
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()  // crates
-        .parent().unwrap()  // workspace root
+        .parent()
+        .unwrap() // crates
+        .parent()
+        .unwrap() // workspace root
         .join("target/debug/bastion-gateway")
 }
 
 fn get_worker_binary_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
-        .parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join("target/debug/bastion-worker")
 }
 
@@ -82,19 +86,23 @@ fn spawn_gateway() -> Result<(std::process::Child, impl Write, impl BufRead), St
     let worker = get_worker_binary_path();
 
     let mut cmd = Command::new(&gateway);
-    cmd.arg("--image").arg("debian:bookworm-slim")
-       .arg("--worker-binary").arg(&worker)
-       .stdin(Stdio::piped())
-       .stdout(Stdio::piped())
-       .stderr(Stdio::null());
+    cmd.arg("--image")
+        .arg("debian:bookworm-slim")
+        .arg("--worker-binary")
+        .arg(&worker)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
 
-    let mut child = cmd.spawn()
-        .map_err(|e| format!("Failed to spawn bastion-gateway: {}. Is the binary executable?", e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        format!(
+            "Failed to spawn bastion-gateway: {}. Is the binary executable?",
+            e
+        )
+    })?;
 
-    let stdin = child.stdin.take()
-        .ok_or("Failed to capture stdin")?;
-    let stdout = child.stdout.take()
-        .ok_or("Failed to capture stdout")?;
+    let stdin = child.stdin.take().ok_or("Failed to capture stdin")?;
+    let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
 
     Ok((child, stdin, BufReader::new(stdout)))
 }
@@ -117,16 +125,19 @@ fn send_request(
         .map_err(|e| format!("Failed to serialize request: {}", e))?;
     line.push('\n');
 
-    stdin.write_all(line.as_bytes())
+    stdin
+        .write_all(line.as_bytes())
         .map_err(|e| format!("Failed to write request: {}", e))?;
-    stdin.flush()
+    stdin
+        .flush()
         .map_err(|e| format!("Failed to flush stdin: {}", e))?;
 
     // Read response
     let mut response_line = String::new();
     for _ in 0..100 {
         response_line.clear();
-        let bytes = reader.read_line(&mut response_line)
+        let bytes = reader
+            .read_line(&mut response_line)
             .map_err(|e| format!("Failed to read response: {}", e))?;
         if bytes == 0 {
             return Err("Unexpected EOF from gateway".to_string());
@@ -151,9 +162,11 @@ fn send_notification(stdin: &mut impl Write, method: &str, params: Value) -> Res
         .map_err(|e| format!("Failed to serialize notification: {}", e))?;
     line.push('\n');
 
-    stdin.write_all(line.as_bytes())
+    stdin
+        .write_all(line.as_bytes())
         .map_err(|e| format!("Failed to write notification: {}", e))?;
-    stdin.flush()
+    stdin
+        .flush()
         .map_err(|e| format!("Failed to flush: {}", e))?;
 
     std::thread::sleep(Duration::from_millis(100));
@@ -168,7 +181,8 @@ fn init_gateway(
     std::thread::sleep(Duration::from_millis(500));
 
     let init_response = send_request(
-        stdin, reader,
+        stdin,
+        reader,
         "initialize",
         json!({
             "protocolVersion": "2024-11-05",
@@ -186,13 +200,16 @@ fn init_gateway(
 }
 
 fn extract_sandbox_id(response: &Value) -> Result<String, String> {
-    let content = response["result"]["content"].as_array()
+    let content = response["result"]["content"]
+        .as_array()
         .ok_or("Missing result.content array")?;
-    let text = content[0]["text"].as_str()
+    let text = content[0]["text"]
+        .as_str()
         .ok_or("Missing text in content")?;
-    let result: Value = serde_json::from_str(text)
-        .map_err(|e| format!("Failed to parse result JSON: {}", e))?;
-    result["sandbox_id"].as_str()
+    let result: Value =
+        serde_json::from_str(text).map_err(|e| format!("Failed to parse result JSON: {}", e))?;
+    result["sandbox_id"]
+        .as_str()
         .map(String::from)
         .ok_or("Missing sandbox_id in result".to_string())
 }
@@ -204,12 +221,10 @@ fn extract_response_text(response: &Value) -> String {
         .to_string()
 }
 
-fn create_sandbox(
-    stdin: &mut impl Write,
-    reader: &mut impl BufRead,
-) -> Result<String, String> {
+fn create_sandbox(stdin: &mut impl Write, reader: &mut impl BufRead) -> Result<String, String> {
     let response = send_request(
-        stdin, reader,
+        stdin,
+        reader,
         "tools/call",
         json!({
             "name": "sandbox_create",
@@ -228,7 +243,8 @@ fn terminate_sandbox(
     reader: &mut impl BufRead,
 ) -> Result<String, String> {
     let response = send_request(
-        stdin, reader,
+        stdin,
+        reader,
         "tools/call",
         json!({
             "name": "sandbox_terminate",
@@ -245,7 +261,8 @@ fn run_command(
     reader: &mut impl BufRead,
 ) -> Result<Value, String> {
     let response = send_request(
-        stdin, reader,
+        stdin,
+        reader,
         "tools/call",
         json!({
             "name": "sandbox_run",
@@ -256,8 +273,7 @@ fn run_command(
         }),
     )?;
     let text = extract_response_text(&response);
-    serde_json::from_str(&text)
-        .map_err(|e| format!("Failed to parse run result: {}", e))
+    serde_json::from_str(&text).map_err(|e| format!("Failed to parse run result: {}", e))
 }
 
 fn run_stream_command(
@@ -267,7 +283,8 @@ fn run_stream_command(
     reader: &mut impl BufRead,
 ) -> Result<Value, String> {
     let response = send_request(
-        stdin, reader,
+        stdin,
+        reader,
         "tools/call",
         json!({
             "name": "sandbox_run_stream",
@@ -278,8 +295,7 @@ fn run_stream_command(
         }),
     )?;
     let text = extract_response_text(&response);
-    serde_json::from_str(&text)
-        .map_err(|e| format!("Failed to parse stream result: {}", e))
+    serde_json::from_str(&text).map_err(|e| format!("Failed to parse stream result: {}", e))
 }
 
 fn run_stream_command_with_progress(
@@ -290,7 +306,8 @@ fn run_stream_command_with_progress(
     reader: &mut impl BufRead,
 ) -> Result<Value, String> {
     let response = send_request(
-        stdin, reader,
+        stdin,
+        reader,
         "tools/call",
         json!({
             "name": "sandbox_run_stream",
@@ -302,8 +319,7 @@ fn run_stream_command_with_progress(
         }),
     )?;
     let text = extract_response_text(&response);
-    serde_json::from_str(&text)
-        .map_err(|e| format!("Failed to parse stream result: {}", e))
+    serde_json::from_str(&text).map_err(|e| format!("Failed to parse stream result: {}", e))
 }
 
 fn sandbox_read(
@@ -313,7 +329,8 @@ fn sandbox_read(
     reader: &mut impl BufRead,
 ) -> Result<Value, String> {
     let response = send_request(
-        stdin, reader,
+        stdin,
+        reader,
         "tools/call",
         json!({
             "name": "sandbox_read",
@@ -324,8 +341,7 @@ fn sandbox_read(
         }),
     )?;
     let text = extract_response_text(&response);
-    serde_json::from_str(&text)
-        .map_err(|e| format!("Failed to parse read result: {}", e))
+    serde_json::from_str(&text).map_err(|e| format!("Failed to parse read result: {}", e))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -340,15 +356,12 @@ fn test_sandbox_run_stream_basic() {
     // Fail fast if infrastructure is missing
     check_infrastructure().expect("Infrastructure check failed");
 
-    let (mut child, mut stdin, mut reader) = spawn_gateway()
-        .expect("Failed to spawn gateway");
+    let (mut child, mut stdin, mut reader) = spawn_gateway().expect("Failed to spawn gateway");
 
-    init_gateway(&mut child, &mut stdin, &mut reader)
-        .expect("Failed to initialize gateway");
+    init_gateway(&mut child, &mut stdin, &mut reader).expect("Failed to initialize gateway");
 
     // Create sandbox
-    let sandbox_id = create_sandbox(&mut stdin, &mut reader)
-        .expect("Failed to create sandbox");
+    let sandbox_id = create_sandbox(&mut stdin, &mut reader).expect("Failed to create sandbox");
     println!("Created sandbox: {}", sandbox_id);
 
     // Run streaming command
@@ -356,7 +369,10 @@ fn test_sandbox_run_stream_basic() {
         .expect("Failed to run stream command");
 
     // Verify structure
-    assert!(result.get("exit_code").is_some(), "Should have exit_code field");
+    assert!(
+        result.get("exit_code").is_some(),
+        "Should have exit_code field"
+    );
     assert!(result.get("stdout").is_some(), "Should have stdout field");
     assert!(result.get("stderr").is_some(), "Should have stderr field");
 
@@ -364,7 +380,11 @@ fn test_sandbox_run_stream_basic() {
     let stdout = result["stdout"].as_str().unwrap_or("");
 
     assert_eq!(exit_code, 0, "Command should succeed with exit_code 0");
-    assert!(stdout.contains("hello_world"), "stdout should contain 'hello_world', got: {}", stdout);
+    assert!(
+        stdout.contains("hello_world"),
+        "stdout should contain 'hello_world', got: {}",
+        stdout
+    );
 
     // Cleanup
     terminate_sandbox(&sandbox_id, &mut stdin, &mut reader).ok();
@@ -378,14 +398,11 @@ fn test_sandbox_run_stream_basic() {
 fn test_sandbox_run_stream_progress() {
     check_infrastructure().expect("Infrastructure check failed");
 
-    let (mut child, mut stdin, mut reader) = spawn_gateway()
-        .expect("Failed to spawn gateway");
+    let (mut child, mut stdin, mut reader) = spawn_gateway().expect("Failed to spawn gateway");
 
-    init_gateway(&mut child, &mut stdin, &mut reader)
-        .expect("Failed to initialize gateway");
+    init_gateway(&mut child, &mut stdin, &mut reader).expect("Failed to initialize gateway");
 
-    let sandbox_id = create_sandbox(&mut stdin, &mut reader)
-        .expect("Failed to create sandbox");
+    let sandbox_id = create_sandbox(&mut stdin, &mut reader).expect("Failed to create sandbox");
 
     // Run with progress token
     let result = run_stream_command_with_progress(
@@ -394,11 +411,19 @@ fn test_sandbox_run_stream_progress() {
         "test-token-123",
         &mut stdin,
         &mut reader,
-    ).expect("Failed to run stream command with progress");
+    )
+    .expect("Failed to run stream command with progress");
 
     // Verify no error
-    assert!(result.get("error").is_none(), "Should not return error, got: {:?}", result);
-    assert!(result.get("exit_code").is_some(), "Should have exit_code field");
+    assert!(
+        result.get("error").is_none(),
+        "Should not return error, got: {:?}",
+        result
+    );
+    assert!(
+        result.get("exit_code").is_some(),
+        "Should have exit_code field"
+    );
 
     let exit_code = result["exit_code"].as_i64().unwrap_or(-1);
     assert_eq!(exit_code, 0, "Command should succeed");
@@ -417,14 +442,11 @@ fn test_sandbox_run_stream_progress() {
 fn test_worker_path_traversal_blocked() {
     check_infrastructure().expect("Infrastructure check failed");
 
-    let (mut child, mut stdin, mut reader) = spawn_gateway()
-        .expect("Failed to spawn gateway");
+    let (mut child, mut stdin, mut reader) = spawn_gateway().expect("Failed to spawn gateway");
 
-    init_gateway(&mut child, &mut stdin, &mut reader)
-        .expect("Failed to initialize gateway");
+    init_gateway(&mut child, &mut stdin, &mut reader).expect("Failed to initialize gateway");
 
-    let sandbox_id = create_sandbox(&mut stdin, &mut reader)
-        .expect("Failed to create sandbox");
+    let sandbox_id = create_sandbox(&mut stdin, &mut reader).expect("Failed to create sandbox");
 
     // Attempt to read /etc/passwd (path traversal attack)
     let result = sandbox_read(&sandbox_id, "/etc/passwd", &mut stdin, &mut reader)
@@ -469,36 +491,47 @@ fn test_podman_registry_routing() {
 
     // Start gateway with registry enabled
     let mut cmd = Command::new(&gateway);
-    cmd.arg("--image").arg("debian:bookworm-slim")
-       .arg("--worker-binary").arg(&worker)
-       .arg("--registry-addr").arg("127.0.0.1:15001")
-       .stdin(Stdio::piped())
-       .stdout(Stdio::piped())
-       .stderr(Stdio::null());
+    cmd.arg("--image")
+        .arg("debian:bookworm-slim")
+        .arg("--worker-binary")
+        .arg(&worker)
+        .arg("--registry-addr")
+        .arg("127.0.0.1:15001")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
 
-    let mut child = cmd.spawn()
-        .expect("Failed to spawn gateway with registry");
+    let mut child = cmd.spawn().expect("Failed to spawn gateway with registry");
 
     let mut stdin = child.stdin.take().expect("stdin not captured");
     let stdout = child.stdout.take().expect("stdout not captured");
     let mut reader = BufReader::new(stdout);
 
-    init_gateway(&mut child, &mut stdin, &mut reader)
-        .expect("Failed to initialize gateway");
+    init_gateway(&mut child, &mut stdin, &mut reader).expect("Failed to initialize gateway");
 
-    let sandbox_id = create_sandbox(&mut stdin, &mut reader)
-        .expect("Failed to create sandbox");
+    let sandbox_id = create_sandbox(&mut stdin, &mut reader).expect("Failed to create sandbox");
 
     // Run command
-    let result = run_command(&sandbox_id, "echo registry_routing_test", &mut stdin, &mut reader)
-        .expect("Failed to run command");
+    let result = run_command(
+        &sandbox_id,
+        "echo registry_routing_test",
+        &mut stdin,
+        &mut reader,
+    )
+    .expect("Failed to run command");
 
-    assert!(result.get("exit_code").is_some(), "Should have exit_code field");
+    assert!(
+        result.get("exit_code").is_some(),
+        "Should have exit_code field"
+    );
     let exit_code = result["exit_code"].as_i64().unwrap_or(-1);
     assert_eq!(exit_code, 0, "Command should succeed via registry routing");
 
     let stdout = result["stdout"].as_str().unwrap_or("");
-    assert!(stdout.contains("registry_routing_test"), "stdout should contain test marker");
+    assert!(
+        stdout.contains("registry_routing_test"),
+        "stdout should contain test marker"
+    );
 
     terminate_sandbox(&sandbox_id, &mut stdin, &mut reader).ok();
     child.kill().ok();
@@ -509,24 +542,29 @@ fn test_podman_registry_routing() {
 fn test_sandbox_run_exit_codes() {
     check_infrastructure().expect("Infrastructure check failed");
 
-    let (mut child, mut stdin, mut reader) = spawn_gateway()
-        .expect("Failed to spawn gateway");
+    let (mut child, mut stdin, mut reader) = spawn_gateway().expect("Failed to spawn gateway");
 
-    init_gateway(&mut child, &mut stdin, &mut reader)
-        .expect("Failed to initialize gateway");
+    init_gateway(&mut child, &mut stdin, &mut reader).expect("Failed to initialize gateway");
 
-    let sandbox_id = create_sandbox(&mut stdin, &mut reader)
-        .expect("Failed to create sandbox");
+    let sandbox_id = create_sandbox(&mut stdin, &mut reader).expect("Failed to create sandbox");
 
     // Test successful command
     let result = run_command(&sandbox_id, "true", &mut stdin, &mut reader)
         .expect("Failed to run 'true' command");
-    assert_eq!(result["exit_code"].as_i64().unwrap_or(-1), 0, "'true' should exit with 0");
+    assert_eq!(
+        result["exit_code"].as_i64().unwrap_or(-1),
+        0,
+        "'true' should exit with 0"
+    );
 
     // Test failing command
     let result2 = run_command(&sandbox_id, "exit 42", &mut stdin, &mut reader)
         .expect("Failed to run 'exit 42' command");
-    assert_eq!(result2["exit_code"].as_i64().unwrap_or(-1), 42, "'exit 42' should return 42");
+    assert_eq!(
+        result2["exit_code"].as_i64().unwrap_or(-1),
+        42,
+        "'exit 42' should return 42"
+    );
 
     terminate_sandbox(&sandbox_id, &mut stdin, &mut reader).ok();
     child.kill().ok();
@@ -537,18 +575,20 @@ fn test_sandbox_run_exit_codes() {
 fn test_sandbox_read_nonexistent() {
     check_infrastructure().expect("Infrastructure check failed");
 
-    let (mut child, mut stdin, mut reader) = spawn_gateway()
-        .expect("Failed to spawn gateway");
+    let (mut child, mut stdin, mut reader) = spawn_gateway().expect("Failed to spawn gateway");
 
-    init_gateway(&mut child, &mut stdin, &mut reader)
-        .expect("Failed to initialize gateway");
+    init_gateway(&mut child, &mut stdin, &mut reader).expect("Failed to initialize gateway");
 
-    let sandbox_id = create_sandbox(&mut stdin, &mut reader)
-        .expect("Failed to create sandbox");
+    let sandbox_id = create_sandbox(&mut stdin, &mut reader).expect("Failed to create sandbox");
 
     // Read non-existent file
-    let result = sandbox_read(&sandbox_id, "/nonexistent/file.txt", &mut stdin, &mut reader)
-        .expect("Failed to attempt read");
+    let result = sandbox_read(
+        &sandbox_id,
+        "/nonexistent/file.txt",
+        &mut stdin,
+        &mut reader,
+    )
+    .expect("Failed to attempt read");
 
     // Should return error
     let text = result["text"].as_str().unwrap_or("");
@@ -556,8 +596,11 @@ fn test_sandbox_read_nonexistent() {
         || text.to_lowercase().contains("not found")
         || text.to_lowercase().contains("no such");
 
-    assert!(has_error || text.is_empty(),
-        "Should return error for non-existent file, got: {}", text);
+    assert!(
+        has_error || text.is_empty(),
+        "Should return error for non-existent file, got: {}",
+        text
+    );
 
     terminate_sandbox(&sandbox_id, &mut stdin, &mut reader).ok();
     child.kill().ok();

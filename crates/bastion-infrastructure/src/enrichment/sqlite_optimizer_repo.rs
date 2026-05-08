@@ -31,7 +31,10 @@ impl SqliteOptimizerRepository {
 #[async_trait::async_trait]
 impl OptimizerRepository for SqliteOptimizerRepository {
     /// Read all run records, optionally filtered to those after a given timestamp.
-    async fn read_records(&self, after: Option<&str>) -> Result<Vec<EnrichmentRunRecord>, EnrichmentError> {
+    async fn read_records(
+        &self,
+        after: Option<&str>,
+    ) -> Result<Vec<EnrichmentRunRecord>, EnrichmentError> {
         let after_opt = after.map(String::from);
 
         let (response_tx, response_rx) = oneshot::channel();
@@ -96,9 +99,9 @@ impl OptimizerRepository for SqliteOptimizerRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enrichment::config::RetentionConfig;
     use enrichment_engine::models::EnrichmentRunRecord;
     use enrichment_engine::traits::RunRecorder;
-    use crate::enrichment::config::RetentionConfig;
 
     fn make_record(id: &str, enricher_id: &str, timestamp: &str) -> EnrichmentRunRecord {
         EnrichmentRunRecord::new(
@@ -125,9 +128,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_records_empty() {
         let retention = RetentionConfig::default();
-        let recorder = Arc::new(
-            SqliteRunRecorder::with_retention_in_memory(retention).unwrap(),
-        );
+        let recorder = Arc::new(SqliteRunRecorder::with_retention_in_memory(retention).unwrap());
         let repo = SqliteOptimizerRepository::new(recorder);
 
         let records = repo.read_records(None).await.unwrap();
@@ -137,9 +138,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_records_all() {
         let retention = RetentionConfig::default();
-        let recorder = Arc::new(
-            SqliteRunRecorder::with_retention_in_memory(retention).unwrap(),
-        );
+        let recorder = Arc::new(SqliteRunRecorder::with_retention_in_memory(retention).unwrap());
         let repo = SqliteOptimizerRepository::new(recorder.clone());
 
         // Insert some records
@@ -154,9 +153,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_records_by_enricher() {
         let retention = RetentionConfig::default();
-        let recorder = Arc::new(
-            SqliteRunRecorder::with_retention_in_memory(retention).unwrap(),
-        );
+        let recorder = Arc::new(SqliteRunRecorder::with_retention_in_memory(retention).unwrap());
         let repo = SqliteOptimizerRepository::new(recorder.clone());
 
         // Insert records for different enrichers
@@ -183,14 +180,16 @@ mod tests {
     #[tokio::test]
     async fn test_compute_statistics() {
         let retention = RetentionConfig::default();
-        let recorder = Arc::new(
-            SqliteRunRecorder::with_retention_in_memory(retention).unwrap(),
-        );
+        let recorder = Arc::new(SqliteRunRecorder::with_retention_in_memory(retention).unwrap());
         let repo = SqliteOptimizerRepository::new(recorder.clone());
 
         // Insert multiple records for same enricher
         for i in 0..5 {
-            let record = make_record(format!("rec-{}", i).as_str(), "maven", "2024-01-01T00:00:00Z");
+            let record = make_record(
+                format!("rec-{}", i).as_str(),
+                "maven",
+                "2024-01-01T00:00:00Z",
+            );
             recorder.record(&record).await.unwrap();
         }
 

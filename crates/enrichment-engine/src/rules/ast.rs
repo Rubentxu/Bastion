@@ -87,7 +87,11 @@ pub struct EvalContext<'a> {
 
 impl<'a> EvalContext<'a> {
     /// Create a new evaluation context.
-    pub fn new(invocation: &'a OperationInvocation, result: &'a OperationResult, facts: &'a [Fact]) -> Self {
+    pub fn new(
+        invocation: &'a OperationInvocation,
+        result: &'a OperationResult,
+        facts: &'a [Fact],
+    ) -> Self {
         let mut ctx = Self {
             invocation,
             result,
@@ -230,7 +234,9 @@ impl<'a> EvalContext<'a> {
         if matching.is_empty() {
             return false;
         }
-        matching.iter().any(|f| self.fact_satisfies_op(f, op, value))
+        matching
+            .iter()
+            .any(|f| self.fact_satisfies_op(f, op, value))
     }
 
     /// Evaluate `all_fact(key, op, value)` — true if ALL facts with key satisfy op.
@@ -240,7 +246,9 @@ impl<'a> EvalContext<'a> {
         if matching.is_empty() {
             return false;
         }
-        matching.iter().all(|f| self.fact_satisfies_op(f, op, value))
+        matching
+            .iter()
+            .all(|f| self.fact_satisfies_op(f, op, value))
     }
 
     /// Evaluate `count_fact(key, op, N)` — true if count of facts with key satisfies op N.
@@ -328,7 +336,11 @@ impl<'a> Parser<'a> {
     pub fn parse(input: &'a str) -> Result<Expr, ParseError> {
         let mut parser = Self {
             lexer: Lexer::new(input),
-            current: Token { kind: TokenKind::Eof, position: 0, lexeme: String::new() },
+            current: Token {
+                kind: TokenKind::Eof,
+                position: 0,
+                lexeme: String::new(),
+            },
         };
         parser.advance();
         let expr = parser.parse_expression()?;
@@ -669,7 +681,10 @@ impl<'a> Parser<'a> {
                 "<" => Ok(CompOp::Lt),
                 ">=" => Ok(CompOp::Ge),
                 "<=" => Ok(CompOp::Le),
-                _ => Err(ParseError::Invalid(format!("Unknown comparison operator: {}", s))),
+                _ => Err(ParseError::Invalid(format!(
+                    "Unknown comparison operator: {}",
+                    s
+                ))),
             },
             _ => Err(ParseError::Invalid(
                 "Comparison operator must be a string literal".to_string(),
@@ -722,7 +737,13 @@ mod tests {
     #[test]
     fn eval_exit_code_eq_true_when_zero() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("exit_code == 0").unwrap();
@@ -732,7 +753,13 @@ mod tests {
     #[test]
     fn eval_exit_code_eq_false_when_nonzero() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 1, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("exit_code == 0").unwrap();
@@ -742,7 +769,13 @@ mod tests {
     #[test]
     fn eval_contains_fact_true_when_present() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![fact("build_status", "BUILD SUCCESS")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("contains_fact('build_status')").unwrap();
@@ -752,7 +785,13 @@ mod tests {
     #[test]
     fn eval_contains_fact_false_when_absent() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("contains_fact('build_status')").unwrap();
@@ -762,7 +801,13 @@ mod tests {
     #[test]
     fn eval_fact_missing_returns_false() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("fact('tests_failed') > '0'").unwrap();
@@ -772,7 +817,13 @@ mod tests {
     #[test]
     fn eval_stdout_contains() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: "BUILD SUCCESS".to_string(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: "BUILD SUCCESS".to_string(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("stdout_contains('BUILD SUCCESS')").unwrap();
@@ -782,7 +833,13 @@ mod tests {
     #[test]
     fn eval_timed_out_true() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: true };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: true,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("timed_out").unwrap();
@@ -792,7 +849,13 @@ mod tests {
     #[test]
     fn eval_timed_out_false() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("timed_out").unwrap();
@@ -803,7 +866,13 @@ mod tests {
     fn eval_and_short_circuit() {
         // If left is false, right is not evaluated (but our evaluator is pure, so both sides run)
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 1, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("exit_code == 0 and contains_fact('build_status')").unwrap();
@@ -814,7 +883,13 @@ mod tests {
     #[test]
     fn eval_or_short_circuit() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("exit_code == 0 or contains_fact('build_status')").unwrap();
@@ -825,7 +900,13 @@ mod tests {
     #[test]
     fn eval_not() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 1, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("not exit_code == 0").unwrap();
@@ -836,7 +917,13 @@ mod tests {
     fn eval_type_mismatch_returns_false() {
         // fact('tests_run') is "10", comparing with integer string "not_a_number"
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![fact("tests_run", "10")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("fact('tests_run') == 'not_a_number'").unwrap();
@@ -846,7 +933,13 @@ mod tests {
     #[test]
     fn eval_complex_expression() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![
             fact("build_status", "BUILD SUCCESS"),
             fact("tests_failed", "2"),
@@ -870,11 +963,14 @@ mod tests {
     #[test]
     fn eval_any_fact_true_when_match_found() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
-        let facts = vec![
-            fact("severity", "high"),
-            fact("severity", "critical"),
-        ];
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![fact("severity", "high"), fact("severity", "critical")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse(r#"any_fact('severity', '==', 'critical')"#).unwrap();
         assert!(ctx.evaluate(&expr));
@@ -883,11 +979,14 @@ mod tests {
     #[test]
     fn eval_any_fact_false_when_no_match() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
-        let facts = vec![
-            fact("severity", "high"),
-            fact("severity", "high"),
-        ];
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![fact("severity", "high"), fact("severity", "high")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse(r#"any_fact('severity', '==', 'critical')"#).unwrap();
         assert!(!ctx.evaluate(&expr));
@@ -896,7 +995,13 @@ mod tests {
     #[test]
     fn eval_any_fact_false_when_empty() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse(r#"any_fact('missing', '==', 'x')"#).unwrap();
@@ -906,7 +1011,13 @@ mod tests {
     #[test]
     fn eval_any_fact_unknown_key_returns_false() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![fact("other_key", "value")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse(r#"any_fact('missing', '==', 'x')"#).unwrap();
@@ -916,11 +1027,14 @@ mod tests {
     #[test]
     fn eval_any_fact_with_greater_than() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
-        let facts = vec![
-            fact("score", "5"),
-            fact("score", "10"),
-        ];
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![fact("score", "5"), fact("score", "10")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse(r#"any_fact('score', '>', '8')"#).unwrap();
         assert!(ctx.evaluate(&expr));
@@ -937,11 +1051,14 @@ mod tests {
     #[test]
     fn eval_all_fact_true_when_all_match() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
-        let facts = vec![
-            fact("score", "5"),
-            fact("score", "5"),
-        ];
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![fact("score", "5"), fact("score", "5")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse(r#"all_fact('score', '==', '5')"#).unwrap();
         assert!(ctx.evaluate(&expr));
@@ -950,11 +1067,14 @@ mod tests {
     #[test]
     fn eval_all_fact_false_when_one_fails() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
-        let facts = vec![
-            fact("score", "5"),
-            fact("score", "2"),
-        ];
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![fact("score", "5"), fact("score", "2")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse(r#"all_fact('score', '>', '3')"#).unwrap();
         assert!(!ctx.evaluate(&expr));
@@ -963,7 +1083,13 @@ mod tests {
     #[test]
     fn eval_all_fact_false_when_empty() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse(r#"all_fact('missing', '==', 'x')"#).unwrap();
@@ -981,7 +1107,13 @@ mod tests {
     #[test]
     fn eval_count_fact_threshold_met() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         // 5 facts with key "error"
         let facts = vec![
             fact("error", "err1"),
@@ -998,12 +1130,15 @@ mod tests {
     #[test]
     fn eval_count_fact_below_threshold() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         // 2 facts with key "error"
-        let facts = vec![
-            fact("error", "err1"),
-            fact("error", "err2"),
-        ];
+        let facts = vec![fact("error", "err1"), fact("error", "err2")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("count_fact('error', '>=', 5)").unwrap();
         assert!(!ctx.evaluate(&expr));
@@ -1012,7 +1147,13 @@ mod tests {
     #[test]
     fn eval_count_fact_unknown_key_returns_zero() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         // Unknown key → count = 0, 0 >= 5 → false
@@ -1023,7 +1164,13 @@ mod tests {
     #[test]
     fn eval_count_fact_exact_equality() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
         let facts = vec![
             fact("error", "err1"),
             fact("error", "err2"),
@@ -1037,11 +1184,14 @@ mod tests {
     #[test]
     fn eval_count_fact_less_than() {
         let invocation = OperationInvocation::from_command("mvn package");
-        let result = OperationResult { exit_code: 0, stdout: String::new(), stderr: String::new(), duration_ms: 0, timed_out: false };
-        let facts = vec![
-            fact("warning", "warn1"),
-            fact("warning", "warn2"),
-        ];
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![fact("warning", "warn1"), fact("warning", "warn2")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("count_fact('warning', '<', 5)").unwrap();
         assert!(ctx.evaluate(&expr));

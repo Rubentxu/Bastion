@@ -13,11 +13,11 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bastion_domain::execution::command::CommandSpec;
 use bastion_domain::provider::port::SandboxProvider;
-use bastion_domain::shared::id::SandboxId;
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 use bastion_domain::template::{
-    ArtifactStore, MaterializationMode, MaterializationResult, ProviderKind,
-    ProviderMaterializer, TemplateArtifact,
+    ArtifactStore, MaterializationMode, MaterializationResult, ProviderKind, ProviderMaterializer,
+    TemplateArtifact,
 };
 
 /// Universal materializer that works via SandboxProvider.
@@ -84,10 +84,7 @@ impl<S: ArtifactStore> UniversalMaterializer<S> {
         // 4. Cleanup tar
         let _ = self
             .provider
-            .run_command(
-                sandbox_id,
-                &CommandSpec::new(format!("rm -f {}", tar_path)),
-            )
+            .run_command(sandbox_id, &CommandSpec::new(format!("rm -f {}", tar_path)))
             .await;
 
         Ok(())
@@ -144,10 +141,7 @@ impl<S: ArtifactStore + Sync + Send> ProviderMaterializer for UniversalMateriali
         ProviderKind::Custom // Universal fallback
     }
 
-    async fn can_materialize(
-        &self,
-        artifact: &TemplateArtifact,
-    ) -> Result<bool, DomainError> {
+    async fn can_materialize(&self, artifact: &TemplateArtifact) -> Result<bool, DomainError> {
         // Universal can always materialize artifacts that are in the store
         self.store
             .is_cached(&artifact.id.to_string(), &artifact.digest)

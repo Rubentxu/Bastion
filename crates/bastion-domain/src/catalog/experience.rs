@@ -130,9 +130,8 @@ impl ExperienceRecord {
 
     /// Duration in milliseconds if finished, None otherwise.
     pub fn duration_ms(&self) -> Option<u64> {
-        self.finished_at.map(|finished| {
-            (finished - self.started_at).num_milliseconds() as u64
-        })
+        self.finished_at
+            .map(|finished| (finished - self.started_at).num_milliseconds() as u64)
     }
 }
 

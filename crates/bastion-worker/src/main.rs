@@ -9,7 +9,7 @@ use dashmap::DashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
@@ -45,8 +45,9 @@ static ACTIVE_COMMANDS: AtomicU32 = AtomicU32::new(0);
 static PENDING_WRITES: LazyLock<DashMap<String, Vec<u8>>> = LazyLock::new(DashMap::new);
 
 /// Running processes keyed by command_id for cancellation
-static RUNNING_PROCESSES: LazyLock<DashMap<String, Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>>> =
-    LazyLock::new(DashMap::new);
+static RUNNING_PROCESSES: LazyLock<
+    DashMap<String, Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>>,
+> = LazyLock::new(DashMap::new);
 
 /// Maximum concurrent commands per worker
 const MAX_CONCURRENT_COMMANDS: usize = 4;
@@ -108,13 +109,18 @@ async fn main() -> Result<()> {
     }
 }
 
-fn next_backoff(attempt: u32, base: std::time::Duration, max: std::time::Duration) -> std::time::Duration {
+fn next_backoff(
+    attempt: u32,
+    base: std::time::Duration,
+    max: std::time::Duration,
+) -> std::time::Duration {
     let exp_ms = base.as_millis() as u64 * 2u64.saturating_pow(attempt.min(6));
     // Add jitter: random 0-500ms based on current time nanos
     let jitter = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos() as u64 % 500;
+        .as_nanos() as u64
+        % 500;
     let total = std::time::Duration::from_millis(exp_ms + jitter);
     total.min(max)
 }
@@ -182,7 +188,7 @@ async fn run_worker_session(args: &Args) -> Result<ExitReason> {
                 "list_files".into(),
             ],
             max_concurrent_commands: 4,
-            max_output_bytes: 10 * 1024 * 1024, // 10MB
+            max_output_bytes: 10 * 1024 * 1024,     // 10MB
             max_file_size_bytes: 100 * 1024 * 1024, // 100MB
             supports_streaming: true,
             supports_compression: true,
@@ -202,15 +208,13 @@ async fn run_worker_session(args: &Args) -> Result<ExitReason> {
         }
         register_response::Status::Challenge => {
             tracing::info!("Challenge received, computing HMAC proof");
-            let proof = compute_hmac_proof(
-                &args.secret,
-                &worker_nonce,
-                &reg_response.gateway_nonce,
-            );
-            let challenge_resp = client.challenge_response(ChallengeProof {
-                sandbox_id: args.sandbox_id.clone(),
-                proof,
-            })
+            let proof =
+                compute_hmac_proof(&args.secret, &worker_nonce, &reg_response.gateway_nonce);
+            let challenge_resp = client
+                .challenge_response(ChallengeProof {
+                    sandbox_id: args.sandbox_id.clone(),
+                    proof,
+                })
                 .await?
                 .into_inner();
 
@@ -234,13 +238,15 @@ async fn run_worker_session(args: &Args) -> Result<ExitReason> {
     let (cmd_tx, cmd_rx) = mpsc::channel(256);
 
     // Send ReadySignal first
-    cmd_tx.send(WorkerMessage {
-        command_id: String::new(),
-        payload: Some(worker_message::Payload::Ready(ReadySignal {
-            session_token: session_token.clone(),
-            working_dir: args.workdir.clone(),
-        })),
-    }).await?;
+    cmd_tx
+        .send(WorkerMessage {
+            command_id: String::new(),
+            payload: Some(worker_message::Payload::Ready(ReadySignal {
+                session_token: session_token.clone(),
+                working_dir: args.workdir.clone(),
+            })),
+        })
+        .await?;
 
     let response_stream = client
         .command_stream(ReceiverStream::new(cmd_rx))
@@ -281,8 +287,8 @@ fn compute_hmac_proof(secret: &str, worker_nonce: &[u8], gateway_nonce: &[u8]) -
     use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
 
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC can take key of any size");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
     mac.update(worker_nonce);
     mac.update(gateway_nonce);
     mac.finalize().into_bytes().to_vec()
@@ -292,13 +298,7 @@ fn compute_hmac_proof(secret: &str, worker_nonce: &[u8], gateway_nonce: &[u8]) -
 /// Prevents path traversal attacks like "../../../etc/passwd"
 fn validate_path(path: &str) -> Result<String> {
     // Canonical allowed prefixes
-    const ALLOWED_PREFIXES: &[&str] = &[
-        "/workspace",
-        "/tmp",
-        "/home",
-        "/opt",
-        "/var/tmp",
-    ];
+    const ALLOWED_PREFIXES: &[&str] = &["/workspace", "/tmp", "/home", "/opt", "/var/tmp"];
 
     // Must be absolute
     if !path.starts_with('/') {
@@ -313,11 +313,16 @@ fn validate_path(path: &str) -> Result<String> {
     let canonical_str = canonical_path.to_string_lossy();
 
     // Check if the canonicalized path starts with an allowed prefix
-    let allowed = ALLOWED_PREFIXES.iter()
+    let allowed = ALLOWED_PREFIXES
+        .iter()
         .any(|prefix| canonical_str.starts_with(prefix));
 
     if !allowed {
-        anyhow::bail!("Path '{}' (canonical: '{}') is outside allowed directories", path, canonical_str);
+        anyhow::bail!(
+            "Path '{}' (canonical: '{}') is outside allowed directories",
+            path,
+            canonical_str
+        );
     }
 
     Ok(canonical_str.to_string())
@@ -328,8 +333,8 @@ async fn run_command_loop(
     tx: mpsc::Sender<WorkerMessage>,
     _workdir: &str,
 ) -> Result<ExitReason> {
-    use worker_message::Payload;
     use gateway_command::Payload as CmdPayload;
+    use worker_message::Payload;
 
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_COMMANDS));
 
@@ -354,12 +359,14 @@ async fn run_command_loop(
                     ACTIVE_COMMANDS.fetch_add(1, Ordering::Relaxed);
 
                     // Send ACK
-                    let _ = tx.send(WorkerMessage {
-                        command_id: command_id.clone(),
-                        payload: Some(Payload::Ack(CommandAck {
-                            state: command_ack::State::Executing as i32,
-                        })),
-                    }).await;
+                    let _ = tx
+                        .send(WorkerMessage {
+                            command_id: command_id.clone(),
+                            payload: Some(Payload::Ack(CommandAck {
+                                state: command_ack::State::Executing as i32,
+                            })),
+                        })
+                        .await;
 
                     let start = std::time::Instant::now();
                     let output = execute_command(&run_req, &command_id).await;
@@ -370,59 +377,69 @@ async fn run_command_loop(
                     match output {
                         Ok((stdout, stderr, exit_code)) => {
                             if !stdout.is_empty() {
-                                let _ = tx.send(WorkerMessage {
-                                    command_id: command_id.clone(),
-                                    payload: Some(Payload::Stdout(StdoutChunk {
-                                        data: stdout,
-                                        sequence: 0,
-                                    })),
-                                }).await;
+                                let _ = tx
+                                    .send(WorkerMessage {
+                                        command_id: command_id.clone(),
+                                        payload: Some(Payload::Stdout(StdoutChunk {
+                                            data: stdout,
+                                            sequence: 0,
+                                        })),
+                                    })
+                                    .await;
                             }
                             if !stderr.is_empty() {
-                                let _ = tx.send(WorkerMessage {
-                                    command_id: command_id.clone(),
-                                    payload: Some(Payload::Stderr(StderrChunk {
-                                        data: stderr,
-                                        sequence: 0,
-                                    })),
-                                }).await;
+                                let _ = tx
+                                    .send(WorkerMessage {
+                                        command_id: command_id.clone(),
+                                        payload: Some(Payload::Stderr(StderrChunk {
+                                            data: stderr,
+                                            sequence: 0,
+                                        })),
+                                    })
+                                    .await;
                             }
-                            let _ = tx.send(WorkerMessage {
-                                command_id: command_id.clone(),
-                                payload: Some(Payload::Exit(ExitResult {
-                                    exit_code,
-                                    duration_ms,
-                                    timed_out: false,
-                                    signal: String::new(),
-                                })),
-                            }).await;
+                            let _ = tx
+                                .send(WorkerMessage {
+                                    command_id: command_id.clone(),
+                                    payload: Some(Payload::Exit(ExitResult {
+                                        exit_code,
+                                        duration_ms,
+                                        timed_out: false,
+                                        signal: String::new(),
+                                    })),
+                                })
+                                .await;
                         }
                         Err(e) => {
-                            let _ = tx.send(WorkerMessage {
-                                command_id: command_id.clone(),
-                                payload: Some(Payload::Error(ErrorResult {
-                                    error: e.to_string(),
-                                    error_kind: "internal".into(),
-                                    errno: 0,
-                                })),
-                            }).await;
+                            let _ = tx
+                                .send(WorkerMessage {
+                                    command_id: command_id.clone(),
+                                    payload: Some(Payload::Error(ErrorResult {
+                                        error: e.to_string(),
+                                        error_kind: "internal".into(),
+                                        errno: 0,
+                                    })),
+                                })
+                                .await;
                         }
                     }
                 });
             }
             Some(CmdPayload::Ping(ping)) => {
                 let health = collect_health();
-                let _ = tx.send(WorkerMessage {
-                    command_id: command_id.clone(),
-                    payload: Some(Payload::Pong(PongResponse {
-                        ping_timestamp: ping.timestamp,
-                        worker_timestamp: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as i64,
-                        health: Some(health),
-                    })),
-                }).await;
+                let _ = tx
+                    .send(WorkerMessage {
+                        command_id: command_id.clone(),
+                        payload: Some(Payload::Pong(PongResponse {
+                            ping_timestamp: ping.timestamp,
+                            worker_timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as i64,
+                            health: Some(health),
+                        })),
+                    })
+                    .await;
             }
             Some(CmdPayload::Shutdown(shutdown)) => {
                 tracing::info!(
@@ -435,33 +452,39 @@ async fn run_command_loop(
 
                 match shutdown.grace_level() {
                     shutdown_request::GraceLevel::Graceful => {
-                        let _ = tx.send(WorkerMessage {
-                            command_id: command_id.clone(),
-                            payload: Some(Payload::ShutdownAck(ShutdownAck {
-                                pending_commands: active,
-                                will_drain: true,
-                            })),
-                        }).await;
+                        let _ = tx
+                            .send(WorkerMessage {
+                                command_id: command_id.clone(),
+                                payload: Some(Payload::ShutdownAck(ShutdownAck {
+                                    pending_commands: active,
+                                    will_drain: true,
+                                })),
+                            })
+                            .await;
                         return Ok(ExitReason::Shutdown);
                     }
                     shutdown_request::GraceLevel::Draining => {
-                        let _ = tx.send(WorkerMessage {
-                            command_id: command_id.clone(),
-                            payload: Some(Payload::ShutdownAck(ShutdownAck {
-                                pending_commands: active,
-                                will_drain: true,
-                            })),
-                        }).await;
+                        let _ = tx
+                            .send(WorkerMessage {
+                                command_id: command_id.clone(),
+                                payload: Some(Payload::ShutdownAck(ShutdownAck {
+                                    pending_commands: active,
+                                    will_drain: true,
+                                })),
+                            })
+                            .await;
                         return Ok(ExitReason::Shutdown);
                     }
                     shutdown_request::GraceLevel::Forceful => {
-                        let _ = tx.send(WorkerMessage {
-                            command_id: command_id.clone(),
-                            payload: Some(Payload::ShutdownAck(ShutdownAck {
-                                pending_commands: active,
-                                will_drain: false,
-                            })),
-                        }).await;
+                        let _ = tx
+                            .send(WorkerMessage {
+                                command_id: command_id.clone(),
+                                payload: Some(Payload::ShutdownAck(ShutdownAck {
+                                    pending_commands: active,
+                                    will_drain: false,
+                                })),
+                            })
+                            .await;
                         std::process::exit(0);
                     }
                 }
@@ -515,10 +538,12 @@ async fn run_command_loop(
                 tracing::info!(target = %cancel_req.target_command_id, "Cancel requested");
                 let target_id = cancel_req.target_command_id.clone();
                 let cancel_result = cancel_running_process(&target_id).await;
-                let _ = tx.send(WorkerMessage {
-                    command_id: command_id.clone(),
-                    payload: Some(Payload::CancelAck(cancel_result)),
-                }).await;
+                let _ = tx
+                    .send(WorkerMessage {
+                        command_id: command_id.clone(),
+                        payload: Some(Payload::CancelAck(cancel_result)),
+                    })
+                    .await;
             }
             None => {
                 tracing::warn!("Received command with no payload");
@@ -530,7 +555,11 @@ async fn run_command_loop(
     Ok(ExitReason::StreamEnded)
 }
 
-async fn handle_read(read_req: ReadFileRequest, command_id: &str, tx: &mpsc::Sender<WorkerMessage>) {
+async fn handle_read(
+    read_req: ReadFileRequest,
+    command_id: &str,
+    tx: &mpsc::Sender<WorkerMessage>,
+) {
     use worker_message::Payload;
 
     match validate_path(&read_req.path) {
@@ -553,84 +582,100 @@ async fn handle_read(read_req: ReadFileRequest, command_id: &str, tx: &mpsc::Sen
                                     Ok(0) => break, // EOF
                                     Ok(n) => {
                                         let is_last = (offset + n as i64) >= file_size;
-                                        let _ = tx.send(WorkerMessage {
-                                            command_id: command_id.to_string(),
-                                            payload: Some(Payload::FileChunk(FileChunk {
-                                                content: buf[..n].to_vec(),
-                                                offset,
-                                                is_last,
-                                                chunk_index,
-                                                total_chunks: total_chunks as i32,
-                                            })),
-                                        }).await;
+                                        let _ = tx
+                                            .send(WorkerMessage {
+                                                command_id: command_id.to_string(),
+                                                payload: Some(Payload::FileChunk(FileChunk {
+                                                    content: buf[..n].to_vec(),
+                                                    offset,
+                                                    is_last,
+                                                    chunk_index,
+                                                    total_chunks: total_chunks as i32,
+                                                })),
+                                            })
+                                            .await;
                                         offset += n as i64;
                                         chunk_index += 1;
                                     }
                                     Err(e) => {
-                                        let _ = tx.send(WorkerMessage {
-                                            command_id: command_id.to_string(),
-                                            payload: Some(Payload::Error(ErrorResult {
-                                                error: e.to_string(),
-                                                error_kind: "internal".into(),
-                                                errno: e.raw_os_error().unwrap_or(0),
-                                            })),
-                                        }).await;
+                                        let _ = tx
+                                            .send(WorkerMessage {
+                                                command_id: command_id.to_string(),
+                                                payload: Some(Payload::Error(ErrorResult {
+                                                    error: e.to_string(),
+                                                    error_kind: "internal".into(),
+                                                    errno: e.raw_os_error().unwrap_or(0),
+                                                })),
+                                            })
+                                            .await;
                                         break;
                                     }
                                 }
                             }
                         }
                         Err(e) => {
-                            let _ = tx.send(WorkerMessage {
-                                command_id: command_id.to_string(),
-                                payload: Some(Payload::Error(ErrorResult {
-                                    error: e.to_string(),
-                                    error_kind: "not_found".into(),
-                                    errno: e.raw_os_error().unwrap_or(0),
-                                })),
-                            }).await;
+                            let _ = tx
+                                .send(WorkerMessage {
+                                    command_id: command_id.to_string(),
+                                    payload: Some(Payload::Error(ErrorResult {
+                                        error: e.to_string(),
+                                        error_kind: "not_found".into(),
+                                        errno: e.raw_os_error().unwrap_or(0),
+                                    })),
+                                })
+                                .await;
                         }
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(WorkerMessage {
-                        command_id: command_id.to_string(),
-                        payload: Some(Payload::Error(ErrorResult {
-                            error: e.to_string(),
-                            error_kind: "not_found".into(),
-                            errno: e.raw_os_error().unwrap_or(0),
-                        })),
-                    }).await;
+                    let _ = tx
+                        .send(WorkerMessage {
+                            command_id: command_id.to_string(),
+                            payload: Some(Payload::Error(ErrorResult {
+                                error: e.to_string(),
+                                error_kind: "not_found".into(),
+                                errno: e.raw_os_error().unwrap_or(0),
+                            })),
+                        })
+                        .await;
                 }
             }
         }
         Err(e) => {
-            let _ = tx.send(WorkerMessage {
-                command_id: command_id.to_string(),
-                payload: Some(Payload::Error(ErrorResult {
-                    error: e.to_string(),
-                    error_kind: "permission".into(),
-                    errno: 0,
-                })),
-            }).await;
+            let _ = tx
+                .send(WorkerMessage {
+                    command_id: command_id.to_string(),
+                    payload: Some(Payload::Error(ErrorResult {
+                        error: e.to_string(),
+                        error_kind: "permission".into(),
+                        errno: 0,
+                    })),
+                })
+                .await;
         }
     }
 }
 
-async fn handle_write(write_req: WriteFileRequest, command_id: &str, tx: &mpsc::Sender<WorkerMessage>) {
+async fn handle_write(
+    write_req: WriteFileRequest,
+    command_id: &str,
+    tx: &mpsc::Sender<WorkerMessage>,
+) {
     use worker_message::Payload;
 
     let safe_path = match validate_path(&write_req.path) {
         Ok(p) => p,
         Err(e) => {
-            let _ = tx.send(WorkerMessage {
-                command_id: command_id.to_string(),
-                payload: Some(Payload::Error(ErrorResult {
-                    error: e.to_string(),
-                    error_kind: "permission".into(),
-                    errno: 0,
-                })),
-            }).await;
+            let _ = tx
+                .send(WorkerMessage {
+                    command_id: command_id.to_string(),
+                    payload: Some(Payload::Error(ErrorResult {
+                        error: e.to_string(),
+                        error_kind: "permission".into(),
+                        errno: 0,
+                    })),
+                })
+                .await;
             return;
         }
     };
@@ -640,22 +685,26 @@ async fn handle_write(write_req: WriteFileRequest, command_id: &str, tx: &mpsc::
         match tokio::fs::write(&safe_path, &write_req.content).await {
             Ok(()) => {
                 apply_file_mode(&safe_path, write_req.mode);
-                let _ = tx.send(WorkerMessage {
-                    command_id: command_id.to_string(),
-                    payload: Some(Payload::Ack(CommandAck {
-                        state: command_ack::State::Received as i32,
-                    })),
-                }).await;
+                let _ = tx
+                    .send(WorkerMessage {
+                        command_id: command_id.to_string(),
+                        payload: Some(Payload::Ack(CommandAck {
+                            state: command_ack::State::Received as i32,
+                        })),
+                    })
+                    .await;
             }
             Err(e) => {
-                let _ = tx.send(WorkerMessage {
-                    command_id: command_id.to_string(),
-                    payload: Some(Payload::Error(ErrorResult {
-                        error: e.to_string(),
-                        error_kind: "permission".into(),
-                        errno: e.raw_os_error().unwrap_or(0),
-                    })),
-                }).await;
+                let _ = tx
+                    .send(WorkerMessage {
+                        command_id: command_id.to_string(),
+                        payload: Some(Payload::Error(ErrorResult {
+                            error: e.to_string(),
+                            error_kind: "permission".into(),
+                            errno: e.raw_os_error().unwrap_or(0),
+                        })),
+                    })
+                    .await;
             }
         }
     } else if write_req.total_chunks > 1 {
@@ -675,47 +724,58 @@ async fn handle_write(write_req: WriteFileRequest, command_id: &str, tx: &mpsc::
             match tokio::fs::write(&safe_path, &all_data).await {
                 Ok(()) => {
                     apply_file_mode(&safe_path, write_req.mode);
-                    let _ = tx.send(WorkerMessage {
-                        command_id: cid,
-                        payload: Some(Payload::Ack(CommandAck {
-                            state: command_ack::State::Received as i32,
-                        })),
-                    }).await;
+                    let _ = tx
+                        .send(WorkerMessage {
+                            command_id: cid,
+                            payload: Some(Payload::Ack(CommandAck {
+                                state: command_ack::State::Received as i32,
+                            })),
+                        })
+                        .await;
                 }
                 Err(e) => {
-                    let _ = tx.send(WorkerMessage {
-                        command_id: cid,
-                        payload: Some(Payload::Error(ErrorResult {
-                            error: e.to_string(),
-                            error_kind: "permission".into(),
-                            errno: e.raw_os_error().unwrap_or(0),
-                        })),
-                    }).await;
+                    let _ = tx
+                        .send(WorkerMessage {
+                            command_id: cid,
+                            payload: Some(Payload::Error(ErrorResult {
+                                error: e.to_string(),
+                                error_kind: "permission".into(),
+                                errno: e.raw_os_error().unwrap_or(0),
+                            })),
+                        })
+                        .await;
                 }
             }
         } else {
             // Intermediate chunk — accumulate
-            PENDING_WRITES.entry(cid.clone()).or_default().extend_from_slice(&write_req.content);
-            let _ = tx.send(WorkerMessage {
-                command_id: cid,
-                payload: Some(Payload::Ack(CommandAck {
-                    state: command_ack::State::Received as i32,
-                })),
-            }).await;
+            PENDING_WRITES
+                .entry(cid.clone())
+                .or_default()
+                .extend_from_slice(&write_req.content);
+            let _ = tx
+                .send(WorkerMessage {
+                    command_id: cid,
+                    payload: Some(Payload::Ack(CommandAck {
+                        state: command_ack::State::Received as i32,
+                    })),
+                })
+                .await;
         }
     } else {
         // Streaming mode (total_chunks == -1): append immediately
         if let Some(parent) = std::path::Path::new(&safe_path).parent()
             && tokio::fs::create_dir_all(parent).await.is_err()
         {
-            let _ = tx.send(WorkerMessage {
-                command_id: command_id.to_string(),
-                payload: Some(Payload::Error(ErrorResult {
-                    error: "Failed to create parent directory".into(),
-                    error_kind: "permission".into(),
-                    errno: 0,
-                })),
-            }).await;
+            let _ = tx
+                .send(WorkerMessage {
+                    command_id: command_id.to_string(),
+                    payload: Some(Payload::Error(ErrorResult {
+                        error: "Failed to create parent directory".into(),
+                        error_kind: "permission".into(),
+                        errno: 0,
+                    })),
+                })
+                .await;
             return;
         }
 
@@ -727,79 +787,96 @@ async fn handle_write(write_req: WriteFileRequest, command_id: &str, tx: &mpsc::
         {
             Ok(f) => f,
             Err(e) => {
-                let _ = tx.send(WorkerMessage {
-                    command_id: command_id.to_string(),
-                    payload: Some(Payload::Error(ErrorResult {
-                        error: e.to_string(),
-                        error_kind: "permission".into(),
-                        errno: e.raw_os_error().unwrap_or(0),
-                    })),
-                }).await;
+                let _ = tx
+                    .send(WorkerMessage {
+                        command_id: command_id.to_string(),
+                        payload: Some(Payload::Error(ErrorResult {
+                            error: e.to_string(),
+                            error_kind: "permission".into(),
+                            errno: e.raw_os_error().unwrap_or(0),
+                        })),
+                    })
+                    .await;
                 return;
             }
         };
 
         use tokio::io::AsyncWriteExt;
         if let Err(e) = file.write_all(&write_req.content).await {
-            let _ = tx.send(WorkerMessage {
-                command_id: command_id.to_string(),
-                payload: Some(Payload::Error(ErrorResult {
-                    error: e.to_string(),
-                    error_kind: "internal".into(),
-                    errno: e.raw_os_error().unwrap_or(0),
-                })),
-            }).await;
+            let _ = tx
+                .send(WorkerMessage {
+                    command_id: command_id.to_string(),
+                    payload: Some(Payload::Error(ErrorResult {
+                        error: e.to_string(),
+                        error_kind: "internal".into(),
+                        errno: e.raw_os_error().unwrap_or(0),
+                    })),
+                })
+                .await;
             return;
         }
 
         apply_file_mode(&safe_path, write_req.mode);
 
-        let _ = tx.send(WorkerMessage {
-            command_id: command_id.to_string(),
-            payload: Some(Payload::Ack(CommandAck {
-                state: command_ack::State::Received as i32,
-            })),
-        }).await;
+        let _ = tx
+            .send(WorkerMessage {
+                command_id: command_id.to_string(),
+                payload: Some(Payload::Ack(CommandAck {
+                    state: command_ack::State::Received as i32,
+                })),
+            })
+            .await;
     }
 }
-async fn handle_list(list_req: ListFilesRequest, command_id: &str, tx: &mpsc::Sender<WorkerMessage>) {
+async fn handle_list(
+    list_req: ListFilesRequest,
+    command_id: &str,
+    tx: &mpsc::Sender<WorkerMessage>,
+) {
     use worker_message::Payload;
 
     match validate_path(&list_req.directory) {
-        Ok(safe_dir) => {
-            match list_directory(&safe_dir).await {
-                Ok(entries) => {
-                    let _ = tx.send(WorkerMessage {
+        Ok(safe_dir) => match list_directory(&safe_dir).await {
+            Ok(entries) => {
+                let _ = tx
+                    .send(WorkerMessage {
                         command_id: command_id.to_string(),
                         payload: Some(Payload::FileList(FileList { entries })),
-                    }).await;
-                }
-                Err(e) => {
-                    let _ = tx.send(WorkerMessage {
+                    })
+                    .await;
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(WorkerMessage {
                         command_id: command_id.to_string(),
                         payload: Some(Payload::Error(ErrorResult {
                             error: e.to_string(),
                             error_kind: "not_found".into(),
                             errno: 0,
                         })),
-                    }).await;
-                }
+                    })
+                    .await;
             }
-        }
+        },
         Err(e) => {
-            let _ = tx.send(WorkerMessage {
-                command_id: command_id.to_string(),
-                payload: Some(Payload::Error(ErrorResult {
-                    error: e.to_string(),
-                    error_kind: "permission".into(),
-                    errno: 0,
-                })),
-            }).await;
+            let _ = tx
+                .send(WorkerMessage {
+                    command_id: command_id.to_string(),
+                    payload: Some(Payload::Error(ErrorResult {
+                        error: e.to_string(),
+                        error_kind: "permission".into(),
+                        errno: 0,
+                    })),
+                })
+                .await;
         }
     }
 }
 
-async fn execute_command(req: &RunCommandRequest, command_id: &str) -> Result<(Vec<u8>, Vec<u8>, i32)> {
+async fn execute_command(
+    req: &RunCommandRequest,
+    command_id: &str,
+) -> Result<(Vec<u8>, Vec<u8>, i32)> {
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c").arg(&req.command);
     cmd.stdout(std::process::Stdio::piped());
@@ -814,20 +891,30 @@ async fn execute_command(req: &RunCommandRequest, command_id: &str) -> Result<(V
         cmd.env(k, v);
     }
 
-    let child = cmd.spawn()
+    let child = cmd
+        .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn: {e}"))?;
 
     let child_entry = Arc::new(tokio::sync::Mutex::new(Some(child)));
     RUNNING_PROCESSES.insert(command_id.to_string(), child_entry.clone());
 
-    let child = child_entry.lock().await.take()
+    let child = child_entry
+        .lock()
+        .await
+        .take()
         .ok_or_else(|| anyhow::anyhow!("Process state corrupted"))?;
     RUNNING_PROCESSES.remove(command_id);
 
-    let output = child.wait_with_output().await
+    let output = child
+        .wait_with_output()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to execute: {e}"))?;
 
-    Ok((output.stdout, output.stderr, output.status.code().unwrap_or(-1)))
+    Ok((
+        output.stdout,
+        output.stderr,
+        output.status.code().unwrap_or(-1),
+    ))
 }
 
 async fn cancel_running_process(target_id: &str) -> CancelAck {
@@ -840,16 +927,25 @@ async fn cancel_running_process(target_id: &str) -> CancelAck {
                 Ok(()) => {
                     let _ = child.wait().await;
                     tracing::info!(command_id = %target_id, "Process killed");
-                    return CancelAck { cancelled: true, error: String::new() };
+                    return CancelAck {
+                        cancelled: true,
+                        error: String::new(),
+                    };
                 }
                 Err(e) => {
-                    return CancelAck { cancelled: false, error: format!("kill failed: {e}") };
+                    return CancelAck {
+                        cancelled: false,
+                        error: format!("kill failed: {e}"),
+                    };
                 }
             }
         }
     }
 
-    CancelAck { cancelled: false, error: "Process not found".into() }
+    CancelAck {
+        cancelled: false,
+        error: "Process not found".into(),
+    }
 }
 
 fn apply_file_mode(path: &str, mode: i32) {
@@ -861,7 +957,8 @@ fn apply_file_mode(path: &str, mode: i32) {
 
 async fn list_directory(dir: &str) -> Result<Vec<FileEntry>> {
     let mut entries = Vec::new();
-    let mut read_dir = tokio::fs::read_dir(dir).await
+    let mut read_dir = tokio::fs::read_dir(dir)
+        .await
         .map_err(|e| anyhow::anyhow!("Cannot read dir: {e}"))?;
 
     while let Some(entry) = read_dir.next_entry().await? {
@@ -871,12 +968,17 @@ async fn list_directory(dir: &str) -> Result<Vec<FileEntry>> {
             is_directory: metadata.is_dir(),
             size_bytes: metadata.len() as i64,
             permissions: format!("{:o}", metadata.permissions().mode() & 0o777),
-            modified_epoch_ms: metadata.modified()
+            modified_epoch_ms: metadata
+                .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0),
-            file_type: if metadata.is_dir() { "dir".into() } else { "file".into() },
+            file_type: if metadata.is_dir() {
+                "dir".into()
+            } else {
+                "file".into()
+            },
         });
     }
 

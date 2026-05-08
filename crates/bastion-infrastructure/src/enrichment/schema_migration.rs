@@ -45,11 +45,18 @@ impl SchemaMigration {
         let current = Self::get_version(conn)?;
 
         if current >= CURRENT_VERSION {
-            tracing::debug!(current_version = current, "Schema up to date, no migrations needed");
+            tracing::debug!(
+                current_version = current,
+                "Schema up to date, no migrations needed"
+            );
             return Ok(());
         }
 
-        tracing::info!(current_version = current, target_version = CURRENT_VERSION, "Running schema migrations");
+        tracing::info!(
+            current_version = current,
+            target_version = CURRENT_VERSION,
+            "Running schema migrations"
+        );
 
         // Apply migrations in order
         if current < 2 {
@@ -74,10 +81,14 @@ impl SchemaMigration {
             )
             "#,
         )
-        .map_err(|e| DomainError::Internal(format!("Failed to ensure schema_version table: {}", e)))?;
+        .map_err(|e| {
+            DomainError::Internal(format!("Failed to ensure schema_version table: {}", e))
+        })?;
 
         let version: Option<i32> = conn
-            .query_row("SELECT MAX(version) FROM schema_version", [], |row| row.get(0))
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
             .map_err(|e| DomainError::Internal(format!("Failed to query schema version: {}", e)))?;
 
         Ok(version.unwrap_or(0))
@@ -93,13 +104,16 @@ impl SchemaMigration {
         tracing::info!("Applying migration v1 -> v2: adding sandbox_id column");
 
         // Use BEGIN IMMEDIATE to acquire a write lock immediately
-        conn.execute("BEGIN IMMEDIATE", [])
-            .map_err(|e| DomainError::Internal(format!("Failed to begin migration transaction: {}", e)))?;
+        conn.execute("BEGIN IMMEDIATE", []).map_err(|e| {
+            DomainError::Internal(format!("Failed to begin migration transaction: {}", e))
+        })?;
 
         let result = (|| {
             // Double-check version inside transaction (another process may have migrated)
             let current: Option<i32> = conn
-                .query_row("SELECT MAX(version) FROM schema_version", [], |row| row.get(0))
+                .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                    row.get(0)
+                })
                 .map_err(|e| DomainError::Internal(format!("Failed to re-check version: {}", e)))?;
 
             if current.unwrap_or(0) >= 2 {
@@ -109,11 +123,10 @@ impl SchemaMigration {
 
             // Add sandbox_id column using ALTER TABLE ADD COLUMN
             // This is safe: existing rows get NULL, no data loss
-            conn.execute(
-                "ALTER TABLE enrichment_runs ADD COLUMN sandbox_id TEXT",
-                [],
-            )
-            .map_err(|e| DomainError::Internal(format!("Failed to add sandbox_id column: {}", e)))?;
+            conn.execute("ALTER TABLE enrichment_runs ADD COLUMN sandbox_id TEXT", [])
+                .map_err(|e| {
+                    DomainError::Internal(format!("Failed to add sandbox_id column: {}", e))
+                })?;
 
             // Record the migration in schema_version
             let applied_at = chrono::Utc::now().to_rfc3339();
@@ -129,8 +142,9 @@ impl SchemaMigration {
 
         match result {
             Ok(()) => {
-                conn.execute("COMMIT", [])
-                    .map_err(|e| DomainError::Internal(format!("Failed to commit migration: {}", e)))?;
+                conn.execute("COMMIT", []).map_err(|e| {
+                    DomainError::Internal(format!("Failed to commit migration: {}", e))
+                })?;
                 Ok(())
             }
             Err(e) => {

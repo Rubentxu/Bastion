@@ -4,16 +4,25 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use bastion_domain::shared::DomainError;
-use bastion_domain::template::{ManagerType, SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep, ToolVerifyStep};
+use bastion_domain::template::{
+    ManagerType, SupportLevel, ToolManagerAdapter, ToolVerifyStep, ToolchainPlan, ToolchainRequest,
+    ToolchainStep,
+};
 
 /// Adapter for apt-get based tool installation.
 pub struct AptAdapter;
 
 #[async_trait]
 impl ToolManagerAdapter for AptAdapter {
-    fn id(&self) -> &'static str { "apt" }
-    fn name(&self) -> &'static str { "APT Package Manager" }
-    fn manager_type(&self) -> ManagerType { ManagerType::Apt }
+    fn id(&self) -> &'static str {
+        "apt"
+    }
+    fn name(&self) -> &'static str {
+        "APT Package Manager"
+    }
+    fn manager_type(&self) -> ManagerType {
+        ManagerType::Apt
+    }
 
     fn supports(&self, req: &ToolchainRequest) -> SupportLevel {
         match req.capability.as_str() {
@@ -44,29 +53,26 @@ impl ToolManagerAdapter for AptAdapter {
                     ],
                 )
             }
-            "node-build" => {
-                (
-                    format!("nodejs npm {}", base_packages),
-                    None,
-                    vec![
-                        ("Node version", "node --version", None),
-                        ("NPM version", "npm --version", None),
-                    ],
-                )
-            }
-            "python-build" => {
-                (
-                    format!("python3 python3-pip python3-venv {}", base_packages),
-                    None,
-                    vec![
-                        ("Python version", "python3 --version", None),
-                        ("Pip version", "pip3 --version", None),
-                    ],
-                )
-            }
+            "node-build" => (
+                format!("nodejs npm {}", base_packages),
+                None,
+                vec![
+                    ("Node version", "node --version", None),
+                    ("NPM version", "npm --version", None),
+                ],
+            ),
+            "python-build" => (
+                format!("python3 python3-pip python3-venv {}", base_packages),
+                None,
+                vec![
+                    ("Python version", "python3 --version", None),
+                    ("Pip version", "pip3 --version", None),
+                ],
+            ),
             _ => {
                 return Err(DomainError::UnsupportedOperation(format!(
-                    "apt doesn't know how to install {}", req.capability
+                    "apt doesn't know how to install {}",
+                    req.capability
                 )));
             }
         };
@@ -74,7 +80,10 @@ impl ToolManagerAdapter for AptAdapter {
         // Step 1: apt-get update + install
         steps.push(ToolchainStep {
             description: "Update package lists and install tools".into(),
-            command: format!("apt-get update && apt-get install -y --no-install-recommends {}", packages),
+            command: format!(
+                "apt-get update && apt-get install -y --no-install-recommends {}",
+                packages
+            ),
             env: HashMap::new(),
             timeout_ms: 300_000,
             expected_exit_code: 0,

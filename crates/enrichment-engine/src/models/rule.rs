@@ -102,8 +102,10 @@ mod tests {
         };
         let json = serde_json::to_string(&action).unwrap();
         let parsed: RuleAction = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, RuleAction::DeriveFact { key, value, confidence }
-            if key == "build_ok" && value == "true" && (confidence - 0.9).abs() < f32::EPSILON));
+        assert!(
+            matches!(parsed, RuleAction::DeriveFact { key, value, confidence }
+            if key == "build_ok" && value == "true" && (confidence - 0.9).abs() < f32::EPSILON)
+        );
     }
 
     #[test]
@@ -173,15 +175,13 @@ mod tests {
     #[test]
     fn rule_output_full_roundtrip() {
         let output = RuleOutput {
-            derived_facts: vec![
-                Fact {
-                    key: "build_ok".to_string(),
-                    value: "true".to_string(),
-                    tags: vec![],
-                    source_extractor: "rule".to_string(),
-                    confidence: 0.9,
-                },
-            ],
+            derived_facts: vec![Fact {
+                key: "build_ok".to_string(),
+                value: "true".to_string(),
+                tags: vec![],
+                source_extractor: "rule".to_string(),
+                confidence: 0.9,
+            }],
             verdict: Some("PASSED".to_string()),
             recommendations: vec!["Review tests".to_string()],
             hit_count: 3,

@@ -3,9 +3,9 @@
 //! Loads `DoctorDescriptor` from TOML files in `.bastion/catalog/doctors/`.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-use std::fs;
 
 use bastion_domain::catalog::doctor::{DoctorCheck, DoctorDescriptor, Severity};
 use serde::Deserialize;
@@ -65,9 +65,13 @@ impl TomlDoctorCheck {
     fn into_doctor_check(self) -> DoctorCheck {
         match self {
             TomlDoctorCheck::Aliveness { sandbox_id } => DoctorCheck::Aliveness { sandbox_id },
-            TomlDoctorCheck::Resources { max_total, max_idle_per_template } => {
-                DoctorCheck::Resources { max_total, max_idle_per_template }
-            }
+            TomlDoctorCheck::Resources {
+                max_total,
+                max_idle_per_template,
+            } => DoctorCheck::Resources {
+                max_total,
+                max_idle_per_template,
+            },
             TomlDoctorCheck::AssertionDriven { assertion_id } => {
                 DoctorCheck::AssertionDriven { assertion_id }
             }
@@ -79,7 +83,11 @@ impl TomlDoctorCheck {
 impl From<TomlDoctorConfig> for DoctorDescriptor {
     fn from(config: TomlDoctorConfig) -> Self {
         let TomlDoctorConfig { doctor } = config;
-        let checks = doctor.checks.into_iter().map(|c| c.into_doctor_check()).collect();
+        let checks = doctor
+            .checks
+            .into_iter()
+            .map(|c| c.into_doctor_check())
+            .collect();
         DoctorDescriptor {
             id: doctor.id,
             name: doctor.name,
@@ -210,14 +218,16 @@ impl Default for DoctorRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use bastion_domain::catalog::doctor::Severity;
+    use tempfile::tempdir;
 
     #[test]
     fn test_load_from_dir() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("sandbox.alive.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 [doctor]
 id = "sandbox.alive"
 name = "Sandbox Alive"
@@ -227,7 +237,9 @@ severity = "critical"
 
 [[doctor.checks]]
 type = "aliveness"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let registry = DoctorRegistry::new();
         let count = registry.load_from_dir(dir.path()).unwrap();
@@ -247,7 +259,9 @@ type = "aliveness"
     fn test_load_resources_check() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("sandbox.resources.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 [doctor]
 id = "sandbox.resources"
 name = "Sandbox Resources"
@@ -259,7 +273,9 @@ severity = "warning"
 type = "resources"
 max_total = 200
 max_idle_per_template = 20
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let registry = DoctorRegistry::new();
         let count = registry.load_from_dir(dir.path()).unwrap();
@@ -279,7 +295,9 @@ max_idle_per_template = 20
     fn test_load_assertion_driven_check() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("docker.daemon.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 [doctor]
 id = "docker.daemon"
 name = "Docker Daemon"
@@ -290,7 +308,9 @@ severity = "critical"
 [[doctor.checks]]
 type = "assertion_driven"
 assertion_id = "command.exit_code.zero"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let registry = DoctorRegistry::new();
         let count = registry.load_from_dir(dir.path()).unwrap();
@@ -309,7 +329,9 @@ assertion_id = "command.exit_code.zero"
     fn test_load_multiple_checks() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("multi.check.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 [doctor]
 id = "multi.check"
 name = "Multi Check"
@@ -323,7 +345,9 @@ type = "aliveness"
 [[doctor.checks]]
 type = "resources"
 max_total = 100
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let registry = DoctorRegistry::new();
         let count = registry.load_from_dir(dir.path()).unwrap();
@@ -395,7 +419,9 @@ sandbox_id = "sb-123"
         let dir = tempdir().unwrap();
         let path1 = dir.path().join("doctor1.toml");
         let path2 = dir.path().join("doctor2.toml");
-        std::fs::write(&path1, r#"
+        std::fs::write(
+            &path1,
+            r#"
 [doctor]
 id = "doctor1"
 name = "Doctor 1"
@@ -404,8 +430,12 @@ category = "test"
 severity = "warning"
 [[doctor.checks]]
 type = "aliveness"
-"#).unwrap();
-        std::fs::write(&path2, r#"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &path2,
+            r#"
 [doctor]
 id = "doctor2"
 name = "Doctor 2"
@@ -415,7 +445,9 @@ severity = "info"
 [[doctor.checks]]
 type = "resources"
 max_total = 50
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let registry = DoctorRegistry::new();
         registry.load_from_dir(dir.path()).unwrap();

@@ -159,7 +159,10 @@ mod tests {
         assert_eq!(parsed.verdict.as_deref(), Some("PASSED"));
         assert_eq!(parsed.recommendation_count, 1);
         assert!(parsed.error.is_none());
-        assert_eq!(parsed.output_summary_stdout.as_deref(), Some("BUILD SUCCESS"));
+        assert_eq!(
+            parsed.output_summary_stdout.as_deref(),
+            Some("BUILD SUCCESS")
+        );
         assert!(parsed.output_summary_stderr.is_none());
     }
 
@@ -190,8 +193,14 @@ mod tests {
 
         assert_eq!(parsed.exit_code, 1);
         assert!(parsed.error.is_some());
-        assert_eq!(parsed.error.as_deref(), Some("extraction failed: pattern not found"));
-        assert_eq!(parsed.output_summary_stderr.as_deref(), Some("COMPILATION ERROR"));
+        assert_eq!(
+            parsed.error.as_deref(),
+            Some("extraction failed: pattern not found")
+        );
+        assert_eq!(
+            parsed.output_summary_stderr.as_deref(),
+            Some("COMPILATION ERROR")
+        );
         assert!(parsed.verdict.is_none());
     }
 

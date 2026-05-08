@@ -6,7 +6,10 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 
-use crate::models::{EnricherDescriptor, OperationInvocation, OperationResult, Fact, RuleConfig, EnrichmentRunRecord, RunRecorderStats};
+use crate::models::{
+    EnricherDescriptor, EnrichmentRunRecord, Fact, OperationInvocation, OperationResult,
+    RuleConfig, RunRecorderStats,
+};
 
 /// Errors that can occur in enrichment operations.
 #[derive(Debug, thiserror::Error)]
@@ -39,7 +42,11 @@ pub trait CatalogRepository: Send + Sync {
 #[async_trait]
 pub trait FactStore: Send + Sync {
     /// Store facts for a command invocation.
-    async fn store(&self, invocation: &OperationInvocation, facts: &[Fact]) -> Result<(), EnrichmentError>;
+    async fn store(
+        &self,
+        invocation: &OperationInvocation,
+        facts: &[Fact],
+    ) -> Result<(), EnrichmentError>;
 
     /// Query stored facts for a command invocation.
     async fn query(&self, invocation: &OperationInvocation) -> Result<Vec<Fact>, EnrichmentError>;

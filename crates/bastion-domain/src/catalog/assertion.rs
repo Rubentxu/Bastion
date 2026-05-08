@@ -45,25 +45,35 @@ impl AssertionCheck {
     /// Returns (passed, failure_reason).
     pub fn evaluate(&self, record: &ExperienceRecord) -> (bool, Option<String>) {
         match self {
-            AssertionCheck::ExitCode { expected } => {
-                match record.exit_code {
-                    Some(code) if code == *expected => (true, None),
-                    Some(code) => (false, Some(format!("expected exit code {}, got {}", expected, code))),
-                    None => (false, Some(format!("expected exit code {}, got none", expected))),
-                }
-            }
+            AssertionCheck::ExitCode { expected } => match record.exit_code {
+                Some(code) if code == *expected => (true, None),
+                Some(code) => (
+                    false,
+                    Some(format!("expected exit code {}, got {}", expected, code)),
+                ),
+                None => (
+                    false,
+                    Some(format!("expected exit code {}, got none", expected)),
+                ),
+            },
             AssertionCheck::StdoutContains { substring } => {
                 if record.stdout_summary.contains(substring) {
                     (true, None)
                 } else {
-                    (false, Some(format!("stdout does not contain {:?}", substring)))
+                    (
+                        false,
+                        Some(format!("stdout does not contain {:?}", substring)),
+                    )
                 }
             }
             AssertionCheck::StderrContains { substring } => {
                 if record.stderr_summary.contains(substring) {
                     (true, None)
                 } else {
-                    (false, Some(format!("stderr does not contain {:?}", substring)))
+                    (
+                        false,
+                        Some(format!("stderr does not contain {:?}", substring)),
+                    )
                 }
             }
             AssertionCheck::StdoutMatches { regex } => {
@@ -80,13 +90,17 @@ impl AssertionCheck {
                 // since liveness is checked separately.
                 (true, None)
             }
-            AssertionCheck::CommandDuration { max_ms } => {
-                match record.duration_ms() {
-                    Some(dur) if dur <= *max_ms => (true, None),
-                    Some(dur) => (false, Some(format!("command took {}ms, expected <= {}ms", dur, max_ms))),
-                    None => (false, Some("command still running, duration unknown".to_string())),
-                }
-            }
+            AssertionCheck::CommandDuration { max_ms } => match record.duration_ms() {
+                Some(dur) if dur <= *max_ms => (true, None),
+                Some(dur) => (
+                    false,
+                    Some(format!("command took {}ms, expected <= {}ms", dur, max_ms)),
+                ),
+                None => (
+                    false,
+                    Some("command still running, duration unknown".to_string()),
+                ),
+            },
         }
     }
 }
@@ -146,7 +160,9 @@ mod tests {
     #[test]
     fn test_stdout_contains_passes() {
         let record = make_record(Some(0), "BUILD SUCCESS", "");
-        let check = AssertionCheck::StdoutContains { substring: "BUILD SUCCESS".to_string() };
+        let check = AssertionCheck::StdoutContains {
+            substring: "BUILD SUCCESS".to_string(),
+        };
         let (passed, _) = check.evaluate(&record);
         assert!(passed);
     }
@@ -154,7 +170,9 @@ mod tests {
     #[test]
     fn test_stdout_contains_fails() {
         let record = make_record(Some(0), "BUILD FAILURE", "");
-        let check = AssertionCheck::StdoutContains { substring: "BUILD SUCCESS".to_string() };
+        let check = AssertionCheck::StdoutContains {
+            substring: "BUILD SUCCESS".to_string(),
+        };
         let (passed, reason) = check.evaluate(&record);
         assert!(!passed);
         assert!(reason.is_some());

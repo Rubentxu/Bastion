@@ -62,11 +62,7 @@ impl SandboxRepository for InMemorySandboxRepository {
         let now = chrono::Utc::now();
         Ok(sandboxes
             .values()
-            .filter(|s| {
-                s.expires_at
-                    .map(|exp| exp < now)
-                    .unwrap_or(false)
-            })
+            .filter(|s| s.expires_at.map(|exp| exp < now).unwrap_or(false))
             .cloned()
             .collect())
     }

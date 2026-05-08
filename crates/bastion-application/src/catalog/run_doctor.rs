@@ -11,7 +11,6 @@ use bastion_domain::catalog::experience::ExperienceStore;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::shared::id::SandboxId;
 
-
 /// Port for pool statistics (implemented by infrastructure).
 pub trait PoolStatsPort: Send + Sync {
     /// Get current pool statistics synchronously.
@@ -114,9 +113,15 @@ impl<P: PoolStatsPort, R: AssertionRegistryPort> RunDoctorUseCase<P, R> {
     }
 
     /// Run a single check.
-    async fn run_check(&self, check: &DoctorCheck, sandbox_id: Option<&str>) -> AssertionCheckResult {
+    async fn run_check(
+        &self,
+        check: &DoctorCheck,
+        sandbox_id: Option<&str>,
+    ) -> AssertionCheckResult {
         match check {
-            DoctorCheck::Aliveness { sandbox_id: check_sandbox_id } => {
+            DoctorCheck::Aliveness {
+                sandbox_id: check_sandbox_id,
+            } => {
                 let target_id = check_sandbox_id
                     .as_deref()
                     .or(sandbox_id)
@@ -148,7 +153,9 @@ impl<P: PoolStatsPort, R: AssertionRegistryPort> RunDoctorUseCase<P, R> {
                     let stats = pool.stats();
 
                     // Check max_total
-                    if let Some(max) = max_total && stats.total > *max {
+                    if let Some(max) = max_total
+                        && stats.total > *max
+                    {
                         return AssertionCheckResult {
                             check: "Resources".to_string(),
                             passed: false,
@@ -245,12 +252,14 @@ impl<P: PoolStatsPort, R: AssertionRegistryPort> RunDoctorUseCase<P, R> {
                         reason: if all_passed {
                             None
                         } else {
-                            Some(check_results
-                                .iter()
-                                .filter(|r| !r.passed)
-                                .map(|r| r.reason.as_deref().unwrap_or("failed"))
-                                .collect::<Vec<_>>()
-                                .join("; "))
+                            Some(
+                                check_results
+                                    .iter()
+                                    .filter(|r| !r.passed)
+                                    .map(|r| r.reason.as_deref().unwrap_or("failed"))
+                                    .collect::<Vec<_>>()
+                                    .join("; "),
+                            )
                         },
                     }
                 } else {

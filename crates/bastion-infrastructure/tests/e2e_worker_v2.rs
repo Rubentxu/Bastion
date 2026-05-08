@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use tokio::time::timeout;
 
-use bastion_infrastructure::provider::PodmanProvider;
+use bastion_domain::execution::command::CommandSpec;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::shared::id::SandboxId;
-use bastion_domain::execution::command::CommandSpec;
+use bastion_infrastructure::provider::PodmanProvider;
 
 /// Helper to skip tests if Podman is not available
 async fn ensure_podman() -> PodmanProvider {
@@ -61,7 +61,10 @@ async fn test_e2e_podman_create_and_run_command() {
     .expect("Timeout creating sandbox")
     .expect("Failed to create sandbox");
 
-    println!("Sandbox created: {} (status: {})", sandbox.id, sandbox.status);
+    println!(
+        "Sandbox created: {} (status: {})",
+        sandbox.id, sandbox.status
+    );
 
     // Wait for worker to start (it needs time to connect to the gateway)
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -94,11 +97,19 @@ async fn test_e2e_podman_create_and_run_command() {
     let write_result = provider
         .write_file(&sandbox_id, "/tmp/test-file.txt", b"Hello from test!")
         .await;
-    assert!(write_result.is_ok(), "Write file should succeed: {:?}", write_result);
+    assert!(
+        write_result.is_ok(),
+        "Write file should succeed: {:?}",
+        write_result
+    );
 
     // Test read file
     let read_result = provider.read_file(&sandbox_id, "/tmp/test-file.txt").await;
-    assert!(read_result.is_ok(), "Read file should succeed: {:?}", read_result);
+    assert!(
+        read_result.is_ok(),
+        "Read file should succeed: {:?}",
+        read_result
+    );
     assert_eq!(
         read_result.unwrap(),
         b"Hello from test!",
@@ -107,7 +118,11 @@ async fn test_e2e_podman_create_and_run_command() {
 
     // Test list files
     let list_result = provider.list_files(&sandbox_id, "/tmp").await;
-    assert!(list_result.is_ok(), "List files should succeed: {:?}", list_result);
+    assert!(
+        list_result.is_ok(),
+        "List files should succeed: {:?}",
+        list_result
+    );
     let entries = list_result.unwrap();
     assert!(!entries.is_empty(), "/tmp should have files");
 
@@ -117,14 +132,15 @@ async fn test_e2e_podman_create_and_run_command() {
 
     // Terminate sandbox
     println!("Terminating sandbox: {}", sandbox_id);
-    let terminate_result = timeout(
-        Duration::from_secs(15),
-        provider.terminate(&sandbox_id),
-    )
-    .await
-    .expect("Timeout terminating sandbox");
+    let terminate_result = timeout(Duration::from_secs(15), provider.terminate(&sandbox_id))
+        .await
+        .expect("Timeout terminating sandbox");
 
-    assert!(terminate_result.is_ok(), "Terminate should succeed: {:?}", terminate_result);
+    assert!(
+        terminate_result.is_ok(),
+        "Terminate should succeed: {:?}",
+        terminate_result
+    );
     println!("Sandbox terminated successfully");
 
     // Verify not alive after termination
@@ -164,10 +180,7 @@ async fn test_e2e_podman_environment_variables() {
     // Verify env var is accessible
     let result = timeout(
         Duration::from_secs(10),
-        provider.run_command(
-            &sandbox_id,
-            &CommandSpec::new("echo $MY_VAR"),
-        ),
+        provider.run_command(&sandbox_id, &CommandSpec::new("echo $MY_VAR")),
     )
     .await
     .expect("Timeout")
@@ -185,7 +198,10 @@ async fn test_e2e_podman_environment_variables() {
 async fn test_e2e_podman_complex_command() {
     let provider = ensure_podman().await;
 
-    let sandbox_id = SandboxId::new(&format!("test-complex-{}", uuid::Uuid::new_v4().as_simple()));
+    let sandbox_id = SandboxId::new(&format!(
+        "test-complex-{}",
+        uuid::Uuid::new_v4().as_simple()
+    ));
 
     let _ = timeout(
         Duration::from_secs(30),

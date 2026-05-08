@@ -12,9 +12,9 @@
 //! - `run_timestamps` — Ring buffer of run completion timestamps for 5-min window
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Ring buffer capacity for run timestamps (5-minute window at ~1 run/ms = 300k, we use 10k)

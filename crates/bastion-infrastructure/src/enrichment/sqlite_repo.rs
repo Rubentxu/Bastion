@@ -23,8 +23,9 @@ impl SqliteCatalogRepository {
     /// Create a new repository, creating the DB schema if it doesn't exist.
     pub fn new(db_path: &Path) -> Result<Self, DomainError> {
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| DomainError::Internal(format!("Failed to create DB directory: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                DomainError::Internal(format!("Failed to create DB directory: {}", e))
+            })?;
         }
 
         let conn = rusqlite::Connection::open(db_path)
@@ -105,8 +106,11 @@ impl SqliteCatalogRepository {
         .map_err(|e| DomainError::Internal(format!("Insert enricher failed: {}", e)))?;
 
         // Delete existing extractors for this enricher
-        tx.execute("DELETE FROM extractors WHERE enricher_id = ?1", params![enricher.id])
-            .map_err(|e| DomainError::Internal(format!("Delete extractors failed: {}", e)))?;
+        tx.execute(
+            "DELETE FROM extractors WHERE enricher_id = ?1",
+            params![enricher.id],
+        )
+        .map_err(|e| DomainError::Internal(format!("Delete extractors failed: {}", e)))?;
 
         for ext in &enricher.extractors {
             tx.execute(
@@ -125,23 +129,29 @@ impl SqliteCatalogRepository {
             .map_err(|e| DomainError::Internal(format!("Insert extractor failed: {}", e)))?;
         }
 
-        tx
-            .commit()
+        tx.commit()
             .map_err(|e| DomainError::Internal(format!("Commit failed: {}", e)))?;
 
         Ok(())
     }
 
     /// Insert or replace rules for an enricher.
-    pub async fn upsert_rules(&self, enricher_id: &str, rules: &[RuleConfig]) -> Result<(), DomainError> {
+    pub async fn upsert_rules(
+        &self,
+        enricher_id: &str,
+        rules: &[RuleConfig],
+    ) -> Result<(), DomainError> {
         let conn = self.conn.lock().await;
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| DomainError::Internal(format!("Transaction error: {}", e)))?;
 
         // Delete existing rules for this enricher
-        tx.execute("DELETE FROM rules WHERE enricher_id = ?1", params![enricher_id])
-            .map_err(|e| DomainError::Internal(format!("Delete rules failed: {}", e)))?;
+        tx.execute(
+            "DELETE FROM rules WHERE enricher_id = ?1",
+            params![enricher_id],
+        )
+        .map_err(|e| DomainError::Internal(format!("Delete rules failed: {}", e)))?;
 
         for rule in rules {
             let actions_json =
@@ -216,10 +226,22 @@ impl CatalogRepository for SqliteCatalogRepository {
             std::collections::HashMap::new();
 
         for row in rows.flatten() {
-            let (id, name, version, patterns_json, template, enabled, ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority, ext_merge_mode) = row;
+            let (
+                id,
+                name,
+                version,
+                patterns_json,
+                template,
+                enabled,
+                ext_id,
+                ext_type,
+                ext_pattern,
+                ext_fact_key,
+                ext_priority,
+                ext_merge_mode,
+            ) = row;
 
-            let patterns: Vec<String> =
-                serde_json::from_str(&patterns_json).unwrap_or_default();
+            let patterns: Vec<String> = serde_json::from_str(&patterns_json).unwrap_or_default();
 
             enricher_map.insert(
                 id.clone(),
@@ -228,18 +250,15 @@ impl CatalogRepository for SqliteCatalogRepository {
             if let (Some(eid), Some(etype), Some(epattern), Some(efact_key), Some(epriority)) =
                 (ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority)
             {
-                extractor_map
-                    .entry(id)
-                    .or_default()
-                    .push(ExtractorConfig {
-                        id: eid,
-                        extractor_type: etype,
-                        pattern: epattern,
-                        fact_key: efact_key,
-                        priority: epriority,
-                        merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
-                        command_extractor_policy: None,
-                    });
+                extractor_map.entry(id).or_default().push(ExtractorConfig {
+                    id: eid,
+                    extractor_type: etype,
+                    pattern: epattern,
+                    fact_key: efact_key,
+                    priority: epriority,
+                    merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
+                    command_extractor_policy: None,
+                });
             }
         }
 
@@ -252,18 +271,20 @@ impl CatalogRepository for SqliteCatalogRepository {
                         .unwrap_or(false)
                 })
             })
-            .map(|(id, (name, version, template, match_patterns, _, enabled))| {
-                let extractors = extractor_map.remove(&id).unwrap_or_default();
-                EnricherDescriptor {
-                    id,
-                    name,
-                    version,
-                    match_patterns,
-                    template,
-                    enabled,
-                    extractors,
-                }
-            })
+            .map(
+                |(id, (name, version, template, match_patterns, _, enabled))| {
+                    let extractors = extractor_map.remove(&id).unwrap_or_default();
+                    EnricherDescriptor {
+                        id,
+                        name,
+                        version,
+                        match_patterns,
+                        template,
+                        enabled,
+                        extractors,
+                    }
+                },
+            )
             .collect()
     }
 
@@ -311,10 +332,22 @@ impl CatalogRepository for SqliteCatalogRepository {
             std::collections::HashMap::new();
 
         for row in rows.flatten() {
-            let (id, name, version, patterns_json, template, enabled, ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority, ext_merge_mode) = row;
+            let (
+                id,
+                name,
+                version,
+                patterns_json,
+                template,
+                enabled,
+                ext_id,
+                ext_type,
+                ext_pattern,
+                ext_fact_key,
+                ext_priority,
+                ext_merge_mode,
+            ) = row;
 
-            let patterns: Vec<String> =
-                serde_json::from_str(&patterns_json).unwrap_or_default();
+            let patterns: Vec<String> = serde_json::from_str(&patterns_json).unwrap_or_default();
 
             enricher_map.insert(
                 id.clone(),
@@ -323,35 +356,34 @@ impl CatalogRepository for SqliteCatalogRepository {
             if let (Some(eid), Some(etype), Some(epattern), Some(efact_key), Some(epriority)) =
                 (ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority)
             {
-                extractor_map
-                    .entry(id)
-                    .or_default()
-                    .push(ExtractorConfig {
-                        id: eid,
-                        extractor_type: etype,
-                        pattern: epattern,
-                        fact_key: efact_key,
-                        priority: epriority,
-                        merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
-                        command_extractor_policy: None,
-                    });
+                extractor_map.entry(id).or_default().push(ExtractorConfig {
+                    id: eid,
+                    extractor_type: etype,
+                    pattern: epattern,
+                    fact_key: efact_key,
+                    priority: epriority,
+                    merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
+                    command_extractor_policy: None,
+                });
             }
         }
 
         enricher_map
             .into_iter()
-            .map(|(id, (name, version, template, match_patterns, _, enabled))| {
-                let extractors = extractor_map.remove(&id).unwrap_or_default();
-                EnricherDescriptor {
-                    id,
-                    name,
-                    version,
-                    match_patterns,
-                    template,
-                    enabled,
-                    extractors,
-                }
-            })
+            .map(
+                |(id, (name, version, template, match_patterns, _, enabled))| {
+                    let extractors = extractor_map.remove(&id).unwrap_or_default();
+                    EnricherDescriptor {
+                        id,
+                        name,
+                        version,
+                        match_patterns,
+                        template,
+                        enabled,
+                        extractors,
+                    }
+                },
+            )
             .collect()
     }
 }
@@ -388,8 +420,7 @@ impl enrichment_engine::traits::RuleRepository for SqliteCatalogRepository {
         rows.filter_map(|row| {
             let row = row.ok()?;
             let actions_json = &row.5;
-            let actions: Vec<RuleAction> =
-                serde_json::from_str(actions_json).unwrap_or_default();
+            let actions: Vec<RuleAction> = serde_json::from_str(actions_json).unwrap_or_default();
             Some(RuleConfig {
                 id: row.0,
                 enricher_id: row.1,
@@ -431,8 +462,7 @@ impl enrichment_engine::traits::RuleRepository for SqliteCatalogRepository {
         rows.filter_map(|row| {
             let row = row.ok()?;
             let actions_json = &row.5;
-            let actions: Vec<RuleAction> =
-                serde_json::from_str(actions_json).unwrap_or_default();
+            let actions: Vec<RuleAction> = serde_json::from_str(actions_json).unwrap_or_default();
             Some(RuleConfig {
                 id: row.0,
                 enricher_id: row.1,
@@ -474,12 +504,17 @@ impl<'a> YamlCatalogImporter<'a> {
         let mut dir_stream = match fs::read_dir(&dir_path).await {
             Ok(s) => s,
             Err(e) => {
-                return Err(DomainError::Internal(format!("Failed to read catalog dir: {}", e)));
+                return Err(DomainError::Internal(format!(
+                    "Failed to read catalog dir: {}",
+                    e
+                )));
             }
         };
 
-        while let Some(entry) = dir_stream.next_entry().await
-            .map_err(|e| DomainError::Internal(format!("Failed to read dir entry: {}", e)))? 
+        while let Some(entry) = dir_stream
+            .next_entry()
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to read dir entry: {}", e)))?
         {
             entries.push(entry);
         }
@@ -487,7 +522,11 @@ impl<'a> YamlCatalogImporter<'a> {
         let mut count = 0;
         for entry in entries {
             let path = entry.path();
-            if !tokio::fs::metadata(&path).await.map(|m| m.is_file()).unwrap_or(false) {
+            if !tokio::fs::metadata(&path)
+                .await
+                .map(|m| m.is_file())
+                .unwrap_or(false)
+            {
                 continue;
             }
 
@@ -516,13 +555,10 @@ impl<'a> YamlCatalogImporter<'a> {
         let path_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let (enricher, rules) = if path_ext == "yaml" || path_ext == "yml" {
             self.parse_yaml(&content)
-                .map_err(|e| {
-                    DomainError::Internal(format!("YAML parse error: {}", e))
-                })?
+                .map_err(|e| DomainError::Internal(format!("YAML parse error: {}", e)))?
         } else {
-            self.parse_toml(&content).map_err(|e| {
-                DomainError::Internal(format!("TOML parse error: {}", e))
-            })?
+            self.parse_toml(&content)
+                .map_err(|e| DomainError::Internal(format!("TOML parse error: {}", e)))?
         };
 
         // Validate regex patterns before inserting
@@ -614,7 +650,12 @@ impl<'a> YamlCatalogImporter<'a> {
         #[derive(serde::Deserialize)]
         #[serde(tag = "type", content = "params")]
         enum YamlRuleAction {
-            DeriveFact { key: String, value: String, #[serde(default)] confidence: f32 },
+            DeriveFact {
+                key: String,
+                value: String,
+                #[serde(default)]
+                confidence: f32,
+            },
             SetVerdict(String),
             Recommend(String),
         }
@@ -665,9 +706,15 @@ impl<'a> YamlCatalogImporter<'a> {
                     .actions
                     .into_iter()
                     .map(|a| match a {
-                        YamlRuleAction::DeriveFact { key, value, confidence } => {
-                            RuleAction::DeriveFact { key, value, confidence }
-                        }
+                        YamlRuleAction::DeriveFact {
+                            key,
+                            value,
+                            confidence,
+                        } => RuleAction::DeriveFact {
+                            key,
+                            value,
+                            confidence,
+                        },
                         YamlRuleAction::SetVerdict(v) => RuleAction::SetVerdict(v),
                         YamlRuleAction::Recommend(v) => RuleAction::Recommend(v),
                     })
@@ -722,7 +769,12 @@ impl<'a> YamlCatalogImporter<'a> {
         #[derive(serde::Deserialize)]
         #[serde(tag = "type", content = "params")]
         enum TomlRuleAction {
-            DeriveFact { key: String, value: String, #[serde(default)] confidence: f32 },
+            DeriveFact {
+                key: String,
+                value: String,
+                #[serde(default)]
+                confidence: f32,
+            },
             SetVerdict(String),
             Recommend(String),
         }
@@ -773,9 +825,15 @@ impl<'a> YamlCatalogImporter<'a> {
                     .actions
                     .into_iter()
                     .map(|a| match a {
-                        TomlRuleAction::DeriveFact { key, value, confidence } => {
-                            RuleAction::DeriveFact { key, value, confidence }
-                        }
+                        TomlRuleAction::DeriveFact {
+                            key,
+                            value,
+                            confidence,
+                        } => RuleAction::DeriveFact {
+                            key,
+                            value,
+                            confidence,
+                        },
                         TomlRuleAction::SetVerdict(v) => RuleAction::SetVerdict(v),
                         TomlRuleAction::Recommend(v) => RuleAction::Recommend(v),
                     })
@@ -867,7 +925,11 @@ enricher:
         std::fs::write(tmp.path().join("maven.yaml"), yaml_content).unwrap();
 
         // Invalid file
-        std::fs::write(tmp.path().join("invalid.yaml"), "not: valid: yaml: content: !!!").unwrap();
+        std::fs::write(
+            tmp.path().join("invalid.yaml"),
+            "not: valid: yaml: content: !!!",
+        )
+        .unwrap();
 
         // Empty dir
         let empty_dir = tmp.path().join("empty");
@@ -995,16 +1057,24 @@ enricher:
         // Import should complete (import_dir is resilient) but count is 0
         let result = importer.import_dir(tmp.path()).await;
         assert!(result.is_ok(), "import_dir should complete even on error");
-        assert_eq!(result.unwrap(), 0, "No files should be imported successfully");
+        assert_eq!(
+            result.unwrap(),
+            0,
+            "No files should be imported successfully"
+        );
 
         // Verify the enricher was NOT persisted
         let all_enrichers = repo.list_all().await;
-        assert!(all_enrichers.iter().find(|e| e.id == "bad_maven").is_none(),
-            "Enricher with invalid regex should not be persisted");
+        assert!(
+            all_enrichers.iter().find(|e| e.id == "bad_maven").is_none(),
+            "Enricher with invalid regex should not be persisted"
+        );
 
         let found = repo.find_enrichers("mvn test").await;
-        assert!(found.iter().find(|e| e.id == "bad_maven").is_none(),
-            "Enricher with invalid regex should not appear in find_enrichers");
+        assert!(
+            found.iter().find(|e| e.id == "bad_maven").is_none(),
+            "Enricher with invalid regex should not appear in find_enrichers"
+        );
     }
 
     #[tokio::test]
@@ -1281,20 +1351,27 @@ enricher:
     #[tokio::test]
     async fn test_maven_build_success_verdict() {
         // Test that Maven rules produce expected verdict via RuleEvaluator
+        use async_trait::async_trait;
         use enrichment_engine::models::{OperationInvocation, OperationResult};
         use enrichment_engine::pipeline::FactPipeline;
         use enrichment_engine::rules::{DefaultRuleEvaluator, RuleEvaluator};
         use enrichment_engine::traits::FileSystem;
         use std::sync::Arc;
-        use async_trait::async_trait;
 
         struct FakeFs;
         #[async_trait]
         impl FileSystem for FakeFs {
-            async fn read_to_string(&self, _path: &str) -> Result<String, enrichment_engine::traits::EnrichmentError> {
+            async fn read_to_string(
+                &self,
+                _path: &str,
+            ) -> Result<String, enrichment_engine::traits::EnrichmentError> {
                 Ok(String::new())
             }
-            async fn glob(&self, _pattern: &str) -> Result<Vec<std::path::PathBuf>, enrichment_engine::traits::EnrichmentError> {
+            async fn glob(
+                &self,
+                _pattern: &str,
+            ) -> Result<Vec<std::path::PathBuf>, enrichment_engine::traits::EnrichmentError>
+            {
                 Ok(vec![])
             }
         }
@@ -1333,7 +1410,9 @@ enricher:
 
         // Create pipeline with rule evaluator using same Arc repo
         let catalog: Arc<dyn enrichment_engine::traits::CatalogRepository> = repo.clone();
-        let rule_evaluator: Arc<dyn RuleEvaluator> = Arc::new(DefaultRuleEvaluator::new(Arc::clone(&repo) as Arc<dyn RuleRepository>));
+        let rule_evaluator: Arc<dyn RuleEvaluator> = Arc::new(DefaultRuleEvaluator::new(
+            Arc::clone(&repo) as Arc<dyn RuleRepository>,
+        ));
         let pipeline = FactPipeline::with_rule_evaluator(catalog, Some(rule_evaluator));
 
         let invocation = OperationInvocation::from_command("mvn package");
@@ -1351,21 +1430,28 @@ enricher:
 
     #[tokio::test]
     async fn test_maven_test_failures_verdict_and_recommend() {
+        use async_trait::async_trait;
         use enrichment_engine::models::OperationInvocation;
         use enrichment_engine::models::OperationResult;
         use enrichment_engine::pipeline::FactPipeline;
         use enrichment_engine::rules::{DefaultRuleEvaluator, RuleEvaluator};
         use enrichment_engine::traits::FileSystem;
         use std::sync::Arc;
-        use async_trait::async_trait;
 
         struct FakeFs;
         #[async_trait]
         impl FileSystem for FakeFs {
-            async fn read_to_string(&self, _path: &str) -> Result<String, enrichment_engine::traits::EnrichmentError> {
+            async fn read_to_string(
+                &self,
+                _path: &str,
+            ) -> Result<String, enrichment_engine::traits::EnrichmentError> {
                 Ok(String::new())
             }
-            async fn glob(&self, _pattern: &str) -> Result<Vec<std::path::PathBuf>, enrichment_engine::traits::EnrichmentError> {
+            async fn glob(
+                &self,
+                _pattern: &str,
+            ) -> Result<Vec<std::path::PathBuf>, enrichment_engine::traits::EnrichmentError>
+            {
                 Ok(vec![])
             }
         }
@@ -1406,7 +1492,9 @@ enricher:
 
         // Create pipeline with rule evaluator using same Arc repo
         let catalog: Arc<dyn enrichment_engine::traits::CatalogRepository> = repo.clone();
-        let rule_evaluator: Arc<dyn RuleEvaluator> = Arc::new(DefaultRuleEvaluator::new(Arc::clone(&repo) as Arc<dyn RuleRepository>));
+        let rule_evaluator: Arc<dyn RuleEvaluator> = Arc::new(DefaultRuleEvaluator::new(
+            Arc::clone(&repo) as Arc<dyn RuleRepository>,
+        ));
         let pipeline = FactPipeline::with_rule_evaluator(catalog, Some(rule_evaluator));
 
         let invocation = OperationInvocation::from_command("mvn package");
@@ -1421,26 +1509,39 @@ enricher:
         let ctx = pipeline.run(invocation, result, &FakeFs).await.unwrap();
         assert_eq!(ctx.verdict.as_deref(), Some("TEST_FAILURES"));
         assert!(ctx.recommendations.is_some());
-        assert!(ctx.recommendations.as_ref().unwrap().iter().any(|r| r.contains("Review failing tests")));
+        assert!(
+            ctx.recommendations
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|r| r.contains("Review failing tests"))
+        );
     }
 
     #[tokio::test]
     async fn test_maven_artifact_presence_derive_fact() {
+        use async_trait::async_trait;
         use enrichment_engine::models::OperationInvocation;
         use enrichment_engine::models::OperationResult;
         use enrichment_engine::pipeline::FactPipeline;
         use enrichment_engine::rules::{DefaultRuleEvaluator, RuleEvaluator};
         use enrichment_engine::traits::FileSystem;
         use std::sync::Arc;
-        use async_trait::async_trait;
 
         struct FakeFs;
         #[async_trait]
         impl FileSystem for FakeFs {
-            async fn read_to_string(&self, _path: &str) -> Result<String, enrichment_engine::traits::EnrichmentError> {
+            async fn read_to_string(
+                &self,
+                _path: &str,
+            ) -> Result<String, enrichment_engine::traits::EnrichmentError> {
                 Ok(String::new())
             }
-            async fn glob(&self, _pattern: &str) -> Result<Vec<std::path::PathBuf>, enrichment_engine::traits::EnrichmentError> {
+            async fn glob(
+                &self,
+                _pattern: &str,
+            ) -> Result<Vec<std::path::PathBuf>, enrichment_engine::traits::EnrichmentError>
+            {
                 // Simulate finding JAR files
                 Ok(vec![std::path::PathBuf::from("target/app.jar")])
             }
@@ -1483,7 +1584,9 @@ enricher:
 
         // Create pipeline with rule evaluator using same Arc repo
         let catalog: Arc<dyn enrichment_engine::traits::CatalogRepository> = repo.clone();
-        let rule_evaluator: Arc<dyn RuleEvaluator> = Arc::new(DefaultRuleEvaluator::new(Arc::clone(&repo) as Arc<dyn RuleRepository>));
+        let rule_evaluator: Arc<dyn RuleEvaluator> = Arc::new(DefaultRuleEvaluator::new(
+            Arc::clone(&repo) as Arc<dyn RuleRepository>,
+        ));
         let pipeline = FactPipeline::with_rule_evaluator(catalog, Some(rule_evaluator));
 
         let invocation = OperationInvocation::from_command("mvn package");

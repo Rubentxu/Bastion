@@ -282,9 +282,24 @@ mod tests {
             .add_capability(CapabilityDescriptor {
                 name: "jvm-build".into(),
                 tools: vec![
-                    ToolDescriptor { name: "java".into(), version: "17".into(), category: Category::Generic, manager_preference: vec![] },
-                    ToolDescriptor { name: "maven".into(), version: "3.9".into(), category: Category::Generic, manager_preference: vec![] },
-                    ToolDescriptor { name: "git".into(), version: "any".into(), category: Category::Generic, manager_preference: vec![] },
+                    ToolDescriptor {
+                        name: "java".into(),
+                        version: "17".into(),
+                        category: Category::Generic,
+                        manager_preference: vec![],
+                    },
+                    ToolDescriptor {
+                        name: "maven".into(),
+                        version: "3.9".into(),
+                        category: Category::Generic,
+                        manager_preference: vec![],
+                    },
+                    ToolDescriptor {
+                        name: "git".into(),
+                        version: "any".into(),
+                        category: Category::Generic,
+                        manager_preference: vec![],
+                    },
                 ],
                 verification: vec![
                     VerificationStep {
@@ -362,7 +377,12 @@ mod tests {
 
         for (cat, expected_str) in categories {
             let json = serde_json::to_string(&cat).unwrap();
-            assert_eq!(json, format!("\"{}\"", expected_str), "Category {:?} serialization failed", cat);
+            assert_eq!(
+                json,
+                format!("\"{}\"", expected_str),
+                "Category {:?} serialization failed",
+                cat
+            );
             let deserialized: Category = serde_json::from_str(&json).unwrap();
             assert_eq!(deserialized, cat);
         }
@@ -382,7 +402,12 @@ mod tests {
 
         for (mt, expected_str) in types {
             let json = serde_json::to_string(&mt).unwrap();
-            assert_eq!(json, format!("\"{}\"", expected_str), "ManagerType {:?} serialization failed", mt);
+            assert_eq!(
+                json,
+                format!("\"{}\"", expected_str),
+                "ManagerType {:?} serialization failed",
+                mt
+            );
             let deserialized: ManagerType = serde_json::from_str(&json).unwrap();
             assert_eq!(deserialized, mt);
         }

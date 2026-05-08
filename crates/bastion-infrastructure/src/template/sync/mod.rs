@@ -3,15 +3,15 @@
 //! Provides DeltaSyncBackend trait and implementations for bidirectional
 //! file synchronization between host and sandbox.
 
-pub mod tar_stream;
 pub mod rsync;
+pub mod tar_stream;
 
 pub use rsync::RsyncBackend;
 pub use tar_stream::TarStreamBackend;
 
-use std::path::Path;
 use async_trait::async_trait;
 use bastion_domain::shared::DomainError;
+use std::path::Path;
 
 /// Progress event for sync operations.
 #[derive(Debug, Clone)]

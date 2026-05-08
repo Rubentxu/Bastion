@@ -18,16 +18,15 @@ use std::process::Command;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let worker_url = env::var("BASTION_WORKER_URL")
-        .expect("BASTION_WORKER_URL is required");
+    let worker_url = env::var("BASTION_WORKER_URL").expect("BASTION_WORKER_URL is required");
     let expected_sha256 = env::var("BASTION_WORKER_SHA256").ok();
-    
+
     let worker_path = "/tmp/bastion-worker";
-    
+
     // Download worker binary
     println!("Downloading worker from {}", worker_url);
     download_file(&worker_url, worker_path).await?;
-    
+
     // Verify sha256 if provided
     if let Some(expected) = &expected_sha256 {
         let actual = sha256_file(worker_path)?;
@@ -37,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("SHA256 verified");
     }
-    
+
     // Make executable
     #[cfg(unix)]
     {
@@ -46,11 +45,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         perms.set_mode(0o755);
         fs::set_permissions(worker_path, perms)?;
     }
-    
+
     // Execute worker with remaining env vars
     let mut cmd = Command::new(worker_path);
     for (key, value) in env::vars() {
-        if key.starts_with("BASTION_") && key != "BASTION_WORKER_URL" && key != "BASTION_WORKER_SHA256" {
+        if key.starts_with("BASTION_")
+            && key != "BASTION_WORKER_URL"
+            && key != "BASTION_WORKER_SHA256"
+        {
             cmd.env(&key, &value);
         }
     }
@@ -64,10 +66,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(secret) = env::var_os("BASTION_AUTH_TOKEN") {
         cmd.arg("--secret").arg(secret);
     }
-    
+
     println!("Executing worker: {:?}", cmd);
     let status = cmd.status()?;
-    
+
     std::process::exit(status.code().unwrap_or(1));
 }
 
@@ -87,7 +89,9 @@ fn sha256_file(path: &str) -> Result<String, Box<dyn std::error::Error>> {
     let mut buffer = [0u8; 8192];
     loop {
         let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 { break; }
+        if bytes_read == 0 {
+            break;
+        }
         hasher.update(&buffer[..bytes_read]);
     }
     Ok(format!("{:x}", hasher.finalize()))

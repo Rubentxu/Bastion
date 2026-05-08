@@ -5,8 +5,8 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 use rusqlite::params;
+use tokio::sync::Mutex;
 
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::repository::SandboxRepository;
@@ -27,8 +27,9 @@ impl SqliteSandboxRepository {
     pub fn new(db_path: &Path) -> Result<Self, DomainError> {
         // Ensure parent directory exists
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| DomainError::Internal(format!("Failed to create DB directory: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                DomainError::Internal(format!("Failed to create DB directory: {}", e))
+            })?;
         }
 
         let conn = rusqlite::Connection::open(db_path)
@@ -87,7 +88,9 @@ impl SqliteSandboxRepository {
         let stopped_ids: Vec<String> = {
             let mut stmt = conn
                 .prepare("SELECT id, status FROM sandboxes")
-                .map_err(|e| DomainError::Internal(format!("Failed to prepare statement: {}", e)))?;
+                .map_err(|e| {
+                    DomainError::Internal(format!("Failed to prepare statement: {}", e))
+                })?;
 
             let rows = stmt
                 .query_map([], |row| {
@@ -97,9 +100,8 @@ impl SqliteSandboxRepository {
 
             let mut ids = Vec::new();
             for row in rows {
-                let (id, status): (String, String) = row.map_err(|e| {
-                    DomainError::Internal(format!("Failed to read row: {}", e))
-                })?;
+                let (id, status): (String, String) =
+                    row.map_err(|e| DomainError::Internal(format!("Failed to read row: {}", e)))?;
                 if !provider_ids.contains(&id) && status == "running" {
                     ids.push(id);
                 }
@@ -109,9 +111,11 @@ impl SqliteSandboxRepository {
 
         // Mark stopped sandboxes
         for id in stopped_ids {
-            let mut update_stmt = conn.prepare("UPDATE sandboxes SET status = 'stopped' WHERE id = ?1")
+            let mut update_stmt = conn
+                .prepare("UPDATE sandboxes SET status = 'stopped' WHERE id = ?1")
                 .map_err(|e| DomainError::Internal(format!("Failed to prepare update: {}", e)))?;
-            update_stmt.execute(params![id])
+            update_stmt
+                .execute(params![id])
                 .map_err(|e| DomainError::Internal(format!("Failed to update sandbox: {}", e)))?;
         }
 
@@ -133,7 +137,10 @@ impl SqliteSandboxRepository {
         Ok(())
     }
 
-    fn insert_sandbox(conn: &mut rusqlite::Connection, sandbox: &Sandbox) -> Result<(), DomainError> {
+    fn insert_sandbox(
+        conn: &mut rusqlite::Connection,
+        sandbox: &Sandbox,
+    ) -> Result<(), DomainError> {
         let resources_json = serde_json::to_string(&sandbox.resources)
             .map_err(|e| DomainError::Internal(format!("Failed to serialize resources: {}", e)))?;
         let network_json = serde_json::to_string(&sandbox.network)
@@ -303,7 +310,8 @@ impl SandboxRepository for SqliteSandboxRepository {
 
         let mut sandboxes = Vec::new();
         for row in rows {
-            let row = row.map_err(|e| DomainError::Internal(format!("Failed to read row: {}", e)))?;
+            let row =
+                row.map_err(|e| DomainError::Internal(format!("Failed to read row: {}", e)))?;
             sandboxes.push(row_to_sandbox(row)?);
         }
 
@@ -336,11 +344,14 @@ impl SandboxRepository for SqliteSandboxRepository {
                     metadata: row.get(8)?,
                 })
             })
-            .map_err(|e| DomainError::Internal(format!("Failed to query expired sandboxes: {}", e)))?;
+            .map_err(|e| {
+                DomainError::Internal(format!("Failed to query expired sandboxes: {}", e))
+            })?;
 
         let mut sandboxes = Vec::new();
         for row in rows {
-            let row = row.map_err(|e| DomainError::Internal(format!("Failed to read row: {}", e)))?;
+            let row =
+                row.map_err(|e| DomainError::Internal(format!("Failed to read row: {}", e)))?;
             sandboxes.push(row_to_sandbox(row)?);
         }
 
@@ -363,14 +374,17 @@ struct SandboxRow {
 }
 
 fn row_to_sandbox(row: SandboxRow) -> Result<Sandbox, DomainError> {
-    let status = serde_json::from_str::<SandboxStatus>(&format!("\"{}\"", row.status))
-        .map_err(|e| DomainError::Internal(format!("Failed to parse status '{}': {}", row.status, e)))?;
+    let status =
+        serde_json::from_str::<SandboxStatus>(&format!("\"{}\"", row.status)).map_err(|e| {
+            DomainError::Internal(format!("Failed to parse status '{}': {}", row.status, e))
+        })?;
     let resources: ResourcesSpec = serde_json::from_str(&row.resources)
         .map_err(|e| DomainError::Internal(format!("Failed to deserialize resources: {}", e)))?;
     let network: NetworkSpec = serde_json::from_str(&row.network)
         .map_err(|e| DomainError::Internal(format!("Failed to deserialize network: {}", e)))?;
-    let metadata: std::collections::HashMap<String, String> = serde_json::from_str(&row.metadata)
-        .map_err(|e| DomainError::Internal(format!("Failed to deserialize metadata: {}", e)))?;
+    let metadata: std::collections::HashMap<String, String> =
+        serde_json::from_str(&row.metadata)
+            .map_err(|e| DomainError::Internal(format!("Failed to deserialize metadata: {}", e)))?;
 
     let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
         .map_err(|e| DomainError::Internal(format!("Failed to parse created_at: {}", e)))?

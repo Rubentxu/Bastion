@@ -3,9 +3,7 @@
 //! Extracts strategy resolution logic from gateway server.rs,
 //! providing a dedicated resolver for materialization strategies.
 
-use bastion_domain::template::{
-    ArtifactCatalog, MaterializationMode, ProviderKind,
-};
+use bastion_domain::template::{ArtifactCatalog, MaterializationMode, ProviderKind};
 
 /// Resolution result containing the selected materializer and mode.
 pub struct StrategyResolution {
@@ -40,7 +38,9 @@ impl MaterializationStrategyResolver {
             // Artifact found in catalog
             let mode = match provider_kind {
                 ProviderKind::Podman | ProviderKind::Docker => MaterializationMode::MountReadonly,
-                ProviderKind::Kubernetes | ProviderKind::Firecracker => MaterializationMode::Extract,
+                ProviderKind::Kubernetes | ProviderKind::Firecracker => {
+                    MaterializationMode::Extract
+                }
                 _ => MaterializationMode::Auto,
             };
 
@@ -86,8 +86,8 @@ impl MaterializationStrategyResolver {
 mod tests {
     use super::*;
     use bastion_domain::template::{
-        ArtifactCatalog, TemplateArtifact, ArtifactMediaType, CapabilityDescriptor,
-        Category, ToolDescriptor,
+        ArtifactCatalog, ArtifactMediaType, CapabilityDescriptor, Category, TemplateArtifact,
+        ToolDescriptor,
     };
 
     fn make_jvm_artifact() -> TemplateArtifact {
@@ -96,14 +96,12 @@ mod tests {
             .digest("sha256:abc123")
             .add_capability(CapabilityDescriptor {
                 name: "jvm-build".into(),
-                tools: vec![
-                    ToolDescriptor {
-                        name: "java".into(),
-                        version: "17".into(),
-                        category: Category::Generic,
-                        manager_preference: vec![],
-                    },
-                ],
+                tools: vec![ToolDescriptor {
+                    name: "java".into(),
+                    version: "17".into(),
+                    category: Category::Generic,
+                    manager_preference: vec![],
+                }],
                 verification: vec![],
             })
             .build()
@@ -114,11 +112,8 @@ mod tests {
         let mut catalog = ArtifactCatalog::new();
         catalog.register(make_jvm_artifact());
 
-        let resolution = MaterializationStrategyResolver::resolve(
-            "jvm-build",
-            ProviderKind::Podman,
-            &catalog,
-        );
+        let resolution =
+            MaterializationStrategyResolver::resolve("jvm-build", ProviderKind::Podman, &catalog);
 
         assert_eq!(resolution.materializer_name, "PodmanOptimizedMaterializer");
         assert_eq!(resolution.mode, MaterializationMode::MountReadonly);
@@ -170,12 +165,24 @@ mod tests {
 
     #[test]
     fn test_is_local_provider() {
-        assert!(MaterializationStrategyResolver::is_local_provider(ProviderKind::Podman));
-        assert!(MaterializationStrategyResolver::is_local_provider(ProviderKind::Docker));
-        assert!(MaterializationStrategyResolver::is_local_provider(ProviderKind::Local));
-        assert!(!MaterializationStrategyResolver::is_local_provider(ProviderKind::Kubernetes));
-        assert!(!MaterializationStrategyResolver::is_local_provider(ProviderKind::Firecracker));
-        assert!(!MaterializationStrategyResolver::is_local_provider(ProviderKind::Wasm));
+        assert!(MaterializationStrategyResolver::is_local_provider(
+            ProviderKind::Podman
+        ));
+        assert!(MaterializationStrategyResolver::is_local_provider(
+            ProviderKind::Docker
+        ));
+        assert!(MaterializationStrategyResolver::is_local_provider(
+            ProviderKind::Local
+        ));
+        assert!(!MaterializationStrategyResolver::is_local_provider(
+            ProviderKind::Kubernetes
+        ));
+        assert!(!MaterializationStrategyResolver::is_local_provider(
+            ProviderKind::Firecracker
+        ));
+        assert!(!MaterializationStrategyResolver::is_local_provider(
+            ProviderKind::Wasm
+        ));
     }
 
     #[test]

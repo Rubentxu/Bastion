@@ -45,7 +45,11 @@ impl LayerArtifact {
         let name = template.name.clone();
         let id = format!("layer:{}", template.name.replace('/', "-"));
         let version = 1;
-        let arn = format!("arn:bastion:layer:{}:{}", template.name.replace('/', "-"), version);
+        let arn = format!(
+            "arn:bastion:layer:{}:{}",
+            template.name.replace('/', "-"),
+            version
+        );
 
         Self {
             id,
@@ -155,7 +159,9 @@ pub enum LayerStackError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::template::artifact::{ArtifactMediaType, CapabilityDescriptor, Category, TemplateArtifact, ToolDescriptor};
+    use crate::template::artifact::{
+        ArtifactMediaType, CapabilityDescriptor, Category, TemplateArtifact, ToolDescriptor,
+    };
 
     fn make_jvm_layer() -> LayerArtifact {
         let template = TemplateArtifact::builder("bastion/jvm-build", "v1")
@@ -165,9 +171,12 @@ mod tests {
             .path_prefix("/opt/bastion/layers/sha256:jvm-layer-001/bin")
             .add_capability(CapabilityDescriptor {
                 name: "jvm-build".into(),
-                tools: vec![
-                    ToolDescriptor { name: "java".into(), version: "17".into(), category: Category::Generic, manager_preference: vec![] },
-                ],
+                tools: vec![ToolDescriptor {
+                    name: "java".into(),
+                    version: "17".into(),
+                    category: Category::Generic,
+                    manager_preference: vec![],
+                }],
                 verification: vec![],
             })
             .build();

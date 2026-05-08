@@ -3,11 +3,11 @@
 //! Uses the rsync binary for efficient delta transfer when available.
 //! Preferred for local providers like Podman.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use super::DeltaSyncBackend;
 use async_trait::async_trait;
 use bastion_domain::shared::DomainError;
-use super::DeltaSyncBackend;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Rsync backend — uses rsync binary for efficient sync.
 pub struct RsyncBackend {
@@ -60,10 +60,7 @@ impl DeltaSyncBackend for RsyncBackend {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DomainError::Internal(format!(
-                "rsync failed: {}",
-                stderr
-            )));
+            return Err(DomainError::Internal(format!("rsync failed: {}", stderr)));
         }
 
         // Parse bytes transferred from rsync output

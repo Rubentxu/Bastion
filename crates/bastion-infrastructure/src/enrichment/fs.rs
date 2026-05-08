@@ -26,7 +26,10 @@ pub struct SandboxFileSystem {
 impl SandboxFileSystem {
     /// Create a new SandboxFileSystem.
     pub fn new(provider: Arc<dyn SandboxProvider>, sandbox_id: SandboxId) -> Self {
-        Self { provider, sandbox_id }
+        Self {
+            provider,
+            sandbox_id,
+        }
     }
 
     /// Check if a path contains dangerous shell characters.
@@ -41,7 +44,9 @@ impl SandboxFileSystem {
             return false;
         }
         // Check for dangerous shell metacharacters that are not * (glob wildcard)
-        let dangerous_meta: &[char] = &[';', '|', '$', '`', '\'', '"', '<', '>', '&', '\n', '\r', '\x00'];
+        let dangerous_meta: &[char] = &[
+            ';', '|', '$', '`', '\'', '"', '<', '>', '&', '\n', '\r', '\x00',
+        ];
         !dangerous_meta.iter().any(|c| pattern.contains(*c))
     }
 
@@ -82,7 +87,11 @@ impl SandboxFileSystem {
         // If dir contains **, we need to strip it
         // For "src/main/java/**" + "*.kt" -> dir should be "src/main/java"
         let clean_dir = dir.replace("**", "").trim_end_matches('/').to_string();
-        let clean_dir = if clean_dir.is_empty() { "." } else { &clean_dir };
+        let clean_dir = if clean_dir.is_empty() {
+            "."
+        } else {
+            &clean_dir
+        };
 
         // Reject path traversal attempts
         if clean_dir.contains("..") || clean_dir.starts_with('/') {
@@ -133,7 +142,9 @@ impl FileSystem for SandboxFileSystem {
     async fn glob(&self, pattern: &str) -> Result<Vec<PathBuf>, EnrichmentError> {
         // Validate glob pattern at execution time
         if !Self::is_valid_glob_pattern(pattern) {
-            return Err(EnrichmentError::FileSystem("invalid glob pattern".to_string()));
+            return Err(EnrichmentError::FileSystem(
+                "invalid glob pattern".to_string(),
+            ));
         }
 
         // Convert glob pattern to safe find command
@@ -168,14 +179,20 @@ mod tests {
     #[test]
     fn test_dangerous_path_rejected() {
         // These paths should be rejected
-        assert!(SandboxFileSystem::is_dangerous_path("/etc/passwd; rm -rf /"));
+        assert!(SandboxFileSystem::is_dangerous_path(
+            "/etc/passwd; rm -rf /"
+        ));
         assert!(SandboxFileSystem::is_dangerous_path("file.txt | cat"));
         assert!(SandboxFileSystem::is_dangerous_path("$HOME/.ssh/id_rsa"));
         assert!(SandboxFileSystem::is_dangerous_path("`whoami`"));
         assert!(SandboxFileSystem::is_dangerous_path("multi\nline"));
         // Safe paths should pass
-        assert!(!SandboxFileSystem::is_dangerous_path("target/classes/app.jar"));
-        assert!(!SandboxFileSystem::is_dangerous_path("simple/path/file.txt"));
+        assert!(!SandboxFileSystem::is_dangerous_path(
+            "target/classes/app.jar"
+        ));
+        assert!(!SandboxFileSystem::is_dangerous_path(
+            "simple/path/file.txt"
+        ));
     }
 
     #[test]
@@ -195,21 +212,33 @@ mod tests {
     fn test_glob_to_find_command_simple() {
         // target/*.jar -> find target -name '*.jar'
         let cmd = SandboxFileSystem::glob_to_find_command("target/*.jar").unwrap();
-        assert!(cmd.command.contains("find target -name '*.jar'"), "got: {}", cmd.command);
+        assert!(
+            cmd.command.contains("find target -name '*.jar'"),
+            "got: {}",
+            cmd.command
+        );
     }
 
     #[test]
     fn test_glob_to_find_command_recursive() {
         // **/*.java -> find . -name '*.java'
         let cmd = SandboxFileSystem::glob_to_find_command("**/*.java").unwrap();
-        assert!(cmd.command.contains("find . -name '*.java'"), "got: {}", cmd.command);
+        assert!(
+            cmd.command.contains("find . -name '*.java'"),
+            "got: {}",
+            cmd.command
+        );
     }
 
     #[test]
     fn test_glob_to_find_command_nested() {
         // src/main/java/**/*.kt -> find src/main/java -name '*.kt'
         let cmd = SandboxFileSystem::glob_to_find_command("src/main/java/**/*.kt").unwrap();
-        assert!(cmd.command.contains("find src/main/java -name '*.kt'"), "got: {}", cmd.command);
+        assert!(
+            cmd.command.contains("find src/main/java -name '*.kt'"),
+            "got: {}",
+            cmd.command
+        );
     }
 
     #[test]
@@ -233,6 +262,10 @@ mod tests {
     fn test_glob_to_find_command_single_level() {
         // *.jar -> find . -name '*.jar'
         let cmd = SandboxFileSystem::glob_to_find_command("*.jar").unwrap();
-        assert!(cmd.command.contains("find . -name '*.jar'"), "got: {}", cmd.command);
+        assert!(
+            cmd.command.contains("find . -name '*.jar'"),
+            "got: {}",
+            cmd.command
+        );
     }
 }

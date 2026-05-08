@@ -3,7 +3,7 @@
 //! Tests the full MCP protocol flow: initialize → tools/list → sandbox lifecycle.
 //! Requires Podman daemon running.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -150,20 +150,13 @@ fn test_gateway_e2e_lifecycle() {
     send_notification(&mut stdin, "notifications/initialized", json!({}));
 
     // 3. List tools
-    let tools_response = send_request(
-        &mut stdin,
-        &mut reader,
-        "tools/list",
-        json!({}),
-    );
+    let tools_response = send_request(&mut stdin, &mut reader, "tools/list", json!({}));
     let tools = tools_response["result"]["tools"]
         .as_array()
         .expect("tools/list should return tools array");
 
     println!("✓ Found {} tools", tools.len());
-    let tool_names: Vec<&str> = tools.iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
+    let tool_names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     println!("  Tools: {:?}", tool_names);
 
     assert!(
@@ -216,7 +209,9 @@ fn test_gateway_e2e_lifecycle() {
     let content = &create_response["result"]["content"];
     let text = content[0]["text"].as_str().unwrap_or("");
     let result: Value = serde_json::from_str(text).unwrap_or(json!({}));
-    let sandbox_id = result["sandbox_id"].as_str().expect("No sandbox_id in response");
+    let sandbox_id = result["sandbox_id"]
+        .as_str()
+        .expect("No sandbox_id in response");
     println!("✓ Created sandbox: {}", sandbox_id);
 
     assert!(!sandbox_id.is_empty(), "Sandbox ID should not be empty");
@@ -240,11 +235,17 @@ fn test_gateway_e2e_lifecycle() {
         run_response
     );
 
-    let text = run_response["result"]["content"][0]["text"].as_str().unwrap_or("");
+    let text = run_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
     let result: Value = serde_json::from_str(text).unwrap_or(json!({}));
     let exit_code = result["exit_code"].as_i64().unwrap_or(-1);
     let stdout = result["stdout"].as_str().unwrap_or("");
-    println!("✓ Run command: exit_code={}, stdout={}", exit_code, stdout.trim());
+    println!(
+        "✓ Run command: exit_code={}, stdout={}",
+        exit_code,
+        stdout.trim()
+    );
 
     assert_eq!(exit_code, 0, "Command should succeed");
     assert!(
@@ -263,7 +264,9 @@ fn test_gateway_e2e_lifecycle() {
             "arguments": {}
         }),
     );
-    let text = health_response["result"]["content"][0]["text"].as_str().unwrap_or("");
+    let text = health_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
     let health: Value = serde_json::from_str(text).unwrap_or(json!({}));
     assert_eq!(health["status"], "healthy");
     println!("✓ Health check: healthy");
@@ -324,7 +327,9 @@ fn test_gateway_health_only() {
         }),
     );
 
-    let text = health_response["result"]["content"][0]["text"].as_str().unwrap_or("{}");
+    let text = health_response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("{}");
     let health: Value = serde_json::from_str(text).unwrap_or(json!({"status": "unknown"}));
     println!("Health: {:?}", health);
     assert_eq!(health["status"], "healthy", "Gateway should be healthy");
@@ -355,7 +360,11 @@ fn init_gateway(
             "clientInfo": {"name": "e2e-test", "version": "0.1.0"}
         }),
     );
-    assert!(init_response.get("result").is_some(), "Initialize failed: {:?}", init_response);
+    assert!(
+        init_response.get("result").is_some(),
+        "Initialize failed: {:?}",
+        init_response
+    );
 
     send_notification(stdin, "notifications/initialized", json!({}));
 }
@@ -410,10 +419,7 @@ fn terminate_sandbox(
 }
 
 /// Helper: Create a sandbox and return the sandbox_id.
-fn create_sandbox(
-    stdin: &mut impl Write,
-    reader: &mut impl BufRead,
-) -> String {
+fn create_sandbox(stdin: &mut impl Write, reader: &mut impl BufRead) -> String {
     let response = send_request(
         stdin,
         reader,
@@ -445,11 +451,7 @@ fn get_sandbox_list(stdin: &mut impl Write, reader: &mut impl BufRead) -> Value 
 }
 
 /// Helper: Get sandbox info.
-fn get_sandbox_info(
-    sandbox_id: &str,
-    stdin: &mut impl Write,
-    reader: &mut impl BufRead,
-) -> Value {
+fn get_sandbox_info(sandbox_id: &str, stdin: &mut impl Write, reader: &mut impl BufRead) -> Value {
     let response = send_request(
         stdin,
         reader,
@@ -517,7 +519,10 @@ fn test_gateway_pool_lifecycle() {
     let from_pool_first = create_result["from_pool"].as_bool().unwrap_or(true);
     let sandbox_id = create_result["sandbox_id"].as_str().unwrap_or("");
 
-    println!("✓ Created sandbox: {} (from_pool: {})", sandbox_id, from_pool_first);
+    println!(
+        "✓ Created sandbox: {} (from_pool: {})",
+        sandbox_id, from_pool_first
+    );
     assert!(!sandbox_id.is_empty(), "Sandbox ID should not be empty");
     // Pool starts empty, so this should be from_pool: false
     // Note: This may be true if pool had containers pre-warmed from previous runs
@@ -525,13 +530,25 @@ fn test_gateway_pool_lifecycle() {
     // 2. Verify pool stats
     let stats = get_pool_stats(&mut stdin, &mut reader);
     println!("✓ Pool stats after create: {:?}", stats);
-    assert!(stats["enabled"].as_bool().unwrap_or(false), "Pool should be enabled");
+    assert!(
+        stats["enabled"].as_bool().unwrap_or(false),
+        "Pool should be enabled"
+    );
 
     // 3. Run a command
-    let run_result = run_command(sandbox_id, "echo pool_lifecycle_test", &mut stdin, &mut reader);
+    let run_result = run_command(
+        sandbox_id,
+        "echo pool_lifecycle_test",
+        &mut stdin,
+        &mut reader,
+    );
     let exit_code = run_result["exit_code"].as_i64().unwrap_or(-1);
     let stdout = run_result["stdout"].as_str().unwrap_or("");
-    println!("✓ Run command: exit_code={}, stdout={}", exit_code, stdout.trim());
+    println!(
+        "✓ Run command: exit_code={}, stdout={}",
+        exit_code,
+        stdout.trim()
+    );
     assert_eq!(exit_code, 0, "Command should succeed");
 
     // 4. Terminate sandbox (should return to pool)
@@ -539,13 +556,19 @@ fn test_gateway_pool_lifecycle() {
     let term_result: Value = serde_json::from_str(&term_text).unwrap_or(json!({}));
     let term_status = term_result["status"].as_str().unwrap_or("");
     println!("✓ Terminate result: status={}", term_status);
-    assert_eq!(term_status, "pooled", "Terminated sandbox should be returned to pool");
+    assert_eq!(
+        term_status, "pooled",
+        "Terminated sandbox should be returned to pool"
+    );
 
     // 5. Verify pool stats show 1 idle
     let stats_after = get_pool_stats(&mut stdin, &mut reader);
     let idle_count = stats_after["idle"].as_u64().unwrap_or(0);
     println!("✓ Pool stats after terminate: idle={}", idle_count);
-    assert_eq!(idle_count, 1, "Pool should have 1 idle sandbox after terminate");
+    assert_eq!(
+        idle_count, 1,
+        "Pool should have 1 idle sandbox after terminate"
+    );
 
     // 6. Create another sandbox (should come from pool - from_pool: true)
     let create2_response = send_request(
@@ -566,9 +589,15 @@ fn test_gateway_pool_lifecycle() {
     let from_pool_second = create2_result["from_pool"].as_bool().unwrap_or(false);
     let sandbox_id2 = create2_result["sandbox_id"].as_str().unwrap_or("");
 
-    println!("✓ Created second sandbox: {} (from_pool: {})", sandbox_id2, from_pool_second);
+    println!(
+        "✓ Created second sandbox: {} (from_pool: {})",
+        sandbox_id2, from_pool_second
+    );
     assert!(!sandbox_id2.is_empty(), "Sandbox ID should not be empty");
-    assert!(from_pool_second, "Second sandbox should come from pool (hot)");
+    assert!(
+        from_pool_second,
+        "Second sandbox should come from pool (hot)"
+    );
 
     // Cleanup - terminate the second sandbox
     let _ = terminate_sandbox(sandbox_id2, &mut stdin, &mut reader);
@@ -604,7 +633,10 @@ fn test_gateway_list_and_info() {
     let empty_vec: Vec<Value> = vec![];
     let sandboxes = list["sandboxes"].as_array().unwrap_or(&empty_vec);
 
-    println!("✓ Sandbox list: count={}, sandboxes={:?}", count, list["sandboxes"]);
+    println!(
+        "✓ Sandbox list: count={}, sandboxes={:?}",
+        count, list["sandboxes"]
+    );
     assert!(count >= 2, "Expected at least 2 sandboxes, got {}", count);
 
     let list_ids: Vec<&str> = sandboxes
@@ -612,20 +644,45 @@ fn test_gateway_list_and_info() {
         .filter_map(|s| s["sandbox_id"].as_str())
         .collect();
 
-    assert!(list_ids.contains(&sandbox1_id.as_str()), "Sandbox 1 ID not in list: {:?}", list_ids);
-    assert!(list_ids.contains(&sandbox2_id.as_str()), "Sandbox 2 ID not in list: {:?}", list_ids);
+    assert!(
+        list_ids.contains(&sandbox1_id.as_str()),
+        "Sandbox 1 ID not in list: {:?}",
+        list_ids
+    );
+    assert!(
+        list_ids.contains(&sandbox2_id.as_str()),
+        "Sandbox 2 ID not in list: {:?}",
+        list_ids
+    );
 
     // 3. Call sandbox_info for each sandbox and verify fields
     let info1 = get_sandbox_info(&sandbox1_id, &mut stdin, &mut reader);
     println!("✓ Sandbox 1 info: {:?}", info1);
-    assert_eq!(info1["sandbox_id"].as_str().unwrap_or(""), sandbox1_id, "Info sandbox_id should match");
-    assert!(info1.get("status").is_some(), "Info should have status field");
-    assert!(info1.get("template").is_some(), "Info should have template field");
-    assert!(info1.get("created_at").is_some(), "Info should have created_at field");
+    assert_eq!(
+        info1["sandbox_id"].as_str().unwrap_or(""),
+        sandbox1_id,
+        "Info sandbox_id should match"
+    );
+    assert!(
+        info1.get("status").is_some(),
+        "Info should have status field"
+    );
+    assert!(
+        info1.get("template").is_some(),
+        "Info should have template field"
+    );
+    assert!(
+        info1.get("created_at").is_some(),
+        "Info should have created_at field"
+    );
 
     let info2 = get_sandbox_info(&sandbox2_id, &mut stdin, &mut reader);
     println!("✓ Sandbox 2 info: {:?}", info2);
-    assert_eq!(info2["sandbox_id"].as_str().unwrap_or(""), sandbox2_id, "Info sandbox_id should match");
+    assert_eq!(
+        info2["sandbox_id"].as_str().unwrap_or(""),
+        sandbox2_id,
+        "Info sandbox_id should match"
+    );
 
     // 4. Terminate both sandboxes
     let _ = terminate_sandbox(&sandbox1_id, &mut stdin, &mut reader);
@@ -672,16 +729,25 @@ fn test_gateway_pool_recovery() {
 
     let create_text = extract_response_text(&create_response);
     let create_result: Value = serde_json::from_str(&create_text).unwrap_or(json!({}));
-    let sandbox_id = create_result["sandbox_id"].as_str().unwrap_or("").to_string();
+    let sandbox_id = create_result["sandbox_id"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let from_pool = create_result["from_pool"].as_bool().unwrap_or(false);
 
-    println!("✓ Created sandbox: {} (from_pool: {})", sandbox_id, from_pool);
+    println!(
+        "✓ Created sandbox: {} (from_pool: {})",
+        sandbox_id, from_pool
+    );
     assert!(!sandbox_id.is_empty(), "Sandbox ID should not be empty");
 
     // 3. Verify pool stats
     let stats = get_pool_stats(&mut stdin, &mut reader);
     println!("✓ Pool stats: {:?}", stats);
-    assert!(stats["enabled"].as_bool().unwrap_or(false), "Pool should be enabled");
+    assert!(
+        stats["enabled"].as_bool().unwrap_or(false),
+        "Pool should be enabled"
+    );
 
     // 4. Kill the gateway process
     println!("✓ Killing gateway process...");
@@ -706,7 +772,10 @@ fn test_gateway_pool_recovery() {
     let health_text = extract_response_text(&health_response);
     let health: Value = serde_json::from_str(&health_text).unwrap_or(json!({"status": "unknown"}));
     println!("✓ Health after restart: {:?}", health);
-    assert_eq!(health["status"], "healthy", "Gateway should be healthy after restart");
+    assert_eq!(
+        health["status"], "healthy",
+        "Gateway should be healthy after restart"
+    );
 
     // 7. Create another sandbox and verify pool still works
     let list_before = get_sandbox_list(&mut stdin2, &mut reader2);
@@ -728,14 +797,23 @@ fn test_gateway_pool_recovery() {
 
     let create2_text = extract_response_text(&create2_response);
     let create2_result: Value = serde_json::from_str(&create2_text).unwrap_or(json!({}));
-    let sandbox2_id = create2_result["sandbox_id"].as_str().unwrap_or("").to_string();
+    let sandbox2_id = create2_result["sandbox_id"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     println!("✓ Created sandbox after restart: {}", sandbox2_id);
-    assert!(!sandbox2_id.is_empty(), "Sandbox ID should not be empty after restart");
+    assert!(
+        !sandbox2_id.is_empty(),
+        "Sandbox ID should not be empty after restart"
+    );
 
     // Verify pool stats still work
     let stats2 = get_pool_stats(&mut stdin2, &mut reader2);
     println!("✓ Pool stats after restart: {:?}", stats2);
-    assert!(stats2["enabled"].as_bool().unwrap_or(false), "Pool should still be enabled after restart");
+    assert!(
+        stats2["enabled"].as_bool().unwrap_or(false),
+        "Pool should still be enabled after restart"
+    );
 
     // Cleanup
     let _ = terminate_sandbox(&sandbox2_id, &mut stdin2, &mut reader2);
@@ -806,9 +884,13 @@ fn test_gateway_error_handling() {
 
     let info_text = extract_response_text(&info_response);
     let info_result: Value = serde_json::from_str(&info_text).unwrap_or(json!({}));
-    let info_has_error = info_result.get("error").is_some() || info_text.to_lowercase().contains("error");
+    let info_has_error =
+        info_result.get("error").is_some() || info_text.to_lowercase().contains("error");
     println!("✓ sandbox_info on non-existent: error={}", info_has_error);
-    assert!(info_has_error, "sandbox_info should return error for non-existent sandbox");
+    assert!(
+        info_has_error,
+        "sandbox_info should return error for non-existent sandbox"
+    );
 
     // 4. sandbox_write without sandbox -> should return error
     let write_response = send_request(
@@ -827,9 +909,13 @@ fn test_gateway_error_handling() {
 
     let write_text = extract_response_text(&write_response);
     let write_result: Value = serde_json::from_str(&write_text).unwrap_or(json!({}));
-    let write_has_error = write_result.get("error").is_some() || write_text.to_lowercase().contains("error");
+    let write_has_error =
+        write_result.get("error").is_some() || write_text.to_lowercase().contains("error");
     println!("✓ sandbox_write on non-existent: error={}", write_has_error);
-    assert!(write_has_error, "sandbox_write should return error for non-existent sandbox");
+    assert!(
+        write_has_error,
+        "sandbox_write should return error for non-existent sandbox"
+    );
 
     let _ = child.kill();
     println!("✓ Error handling test passed!");

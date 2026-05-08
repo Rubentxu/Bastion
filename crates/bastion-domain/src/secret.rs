@@ -19,7 +19,10 @@ pub struct SecretValue {
 impl SecretValue {
     /// Create a new resolved secret.
     pub fn new(value: impl Into<String>, source: impl Into<String>) -> Self {
-        Self { value: value.into(), source: source.into() }
+        Self {
+            value: value.into(),
+            source: source.into(),
+        }
     }
 }
 
@@ -75,7 +78,10 @@ mod tests {
 
     #[test]
     fn test_parse_secret_ref_valid() {
-        assert_eq!(parse_secret_ref("${{secret:GITHUB_TOKEN}}"), Some("GITHUB_TOKEN"));
+        assert_eq!(
+            parse_secret_ref("${{secret:GITHUB_TOKEN}}"),
+            Some("GITHUB_TOKEN")
+        );
         assert_eq!(parse_secret_ref("${{secret:FOO}}"), Some("FOO"));
     }
 
@@ -95,7 +101,10 @@ mod tests {
 
     #[test]
     fn test_secret_source_as_ref_key() {
-        assert_eq!(SecretSource::Ref("KEY".to_string()).as_ref_key(), Some("KEY"));
+        assert_eq!(
+            SecretSource::Ref("KEY".to_string()).as_ref_key(),
+            Some("KEY")
+        );
         assert_eq!(SecretSource::Inline("val".to_string()).as_ref_key(), None);
     }
 }

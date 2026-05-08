@@ -9,11 +9,11 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bastion_domain::provider::port::SandboxProvider;
-use bastion_domain::shared::id::SandboxId;
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 use bastion_domain::template::{
-    ArtifactStore, MaterializationMode, MaterializationResult, ProviderKind,
-    ProviderMaterializer, TemplateArtifact,
+    ArtifactStore, MaterializationMode, MaterializationResult, ProviderKind, ProviderMaterializer,
+    TemplateArtifact,
 };
 
 /// Podman-optimized materializer.
@@ -160,8 +160,7 @@ impl<S: ArtifactStore> PodmanOptimizedMaterializer<S> {
     ) -> Result<(), DomainError> {
         for cap in &artifact.capabilities {
             for step in &cap.verification {
-                let mut cmd =
-                    bastion_domain::execution::command::CommandSpec::new(&step.command);
+                let mut cmd = bastion_domain::execution::command::CommandSpec::new(&step.command);
 
                 // Add env vars
                 for (k, v) in &artifact.env.env {
@@ -182,8 +181,7 @@ impl<S: ArtifactStore> PodmanOptimizedMaterializer<S> {
 
                 if let Some(expected) = &step.expected_output_contains {
                     let output = String::from_utf8_lossy(&result.stdout);
-                    let combined =
-                        format!("{}{}", output, String::from_utf8_lossy(&result.stderr));
+                    let combined = format!("{}{}", output, String::from_utf8_lossy(&result.stderr));
                     if !combined.to_lowercase().contains(&expected.to_lowercase()) {
                         return Err(DomainError::Validation(format!(
                             "Verification '{}' failed: expected '{}' in output",
@@ -203,10 +201,7 @@ impl<S: ArtifactStore + Sync + Send> ProviderMaterializer for PodmanOptimizedMat
         ProviderKind::Podman
     }
 
-    async fn can_materialize(
-        &self,
-        artifact: &TemplateArtifact,
-    ) -> Result<bool, DomainError> {
+    async fn can_materialize(&self, artifact: &TemplateArtifact) -> Result<bool, DomainError> {
         self.store
             .is_cached(&artifact.id.to_string(), &artifact.digest)
             .await
@@ -231,8 +226,7 @@ impl<S: ArtifactStore + Sync + Send> ProviderMaterializer for PodmanOptimizedMat
         match mode {
             MaterializationMode::MountReadonly | MaterializationMode::Auto => {
                 // Step 1: Extract to host cache (once)
-                let (host_dir, _cache_hit) =
-                    self.ensure_host_cache(artifact).await?;
+                let (host_dir, _cache_hit) = self.ensure_host_cache(artifact).await?;
 
                 // Step 2: Copy to sandbox via podman cp
                 self.copy_to_sandbox(sandbox_id, &host_dir, &mount_path)
@@ -241,8 +235,7 @@ impl<S: ArtifactStore + Sync + Send> ProviderMaterializer for PodmanOptimizedMat
             MaterializationMode::Extract => {
                 // Fallback: use extraction inside sandbox (already implemented in UniversalMaterializer)
                 // For now, we do the same copy approach
-                let (host_dir, _cache_hit) =
-                    self.ensure_host_cache(artifact).await?;
+                let (host_dir, _cache_hit) = self.ensure_host_cache(artifact).await?;
                 self.copy_to_sandbox(sandbox_id, &host_dir, &mount_path)
                     .await?;
             }

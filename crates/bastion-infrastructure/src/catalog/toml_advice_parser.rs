@@ -4,9 +4,9 @@
 //! Manages advice configuration in `.bastion/advice.toml`.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::fs;
 
 use bastion_domain::catalog::advice::{AdviceDescriptor, AdviceSeverity, AdviceTrigger};
 use serde::{Deserialize, Serialize};
@@ -104,9 +104,7 @@ impl TomlTrigger {
             TomlTrigger::AssertionFailed { assertion_id } => {
                 AdviceTrigger::AssertionFailed { assertion_id }
             }
-            TomlTrigger::DoctorFailed { doctor_id } => {
-                AdviceTrigger::DoctorFailed { doctor_id }
-            }
+            TomlTrigger::DoctorFailed { doctor_id } => AdviceTrigger::DoctorFailed { doctor_id },
             TomlTrigger::ExperiencePattern {
                 tool_name,
                 status,
@@ -124,7 +122,11 @@ impl TomlTrigger {
 impl From<TomlAdviceConfig> for AdviceDescriptor {
     fn from(config: TomlAdviceConfig) -> Self {
         let TomlAdviceConfig { advice } = config;
-        let triggers = advice.triggers.into_iter().map(|t| t.into_trigger()).collect();
+        let triggers = advice
+            .triggers
+            .into_iter()
+            .map(|t| t.into_trigger())
+            .collect();
         AdviceDescriptor {
             id: advice.id,
             name: advice.name,
@@ -265,10 +267,7 @@ impl AdviceRegistry {
     }
 
     /// Load a single advice TOML file.
-    fn load_file(
-        &self,
-        path: &Path,
-    ) -> Result<(AdviceDescriptor, String), AdviceParserError> {
+    fn load_file(&self, path: &Path) -> Result<(AdviceDescriptor, String), AdviceParserError> {
         let content = fs::read_to_string(path)?;
         let config: TomlAdviceConfig = toml::from_str(&content)?;
         let descriptor: AdviceDescriptor = config.into();

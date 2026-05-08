@@ -50,11 +50,17 @@ fn provider() -> bastion_infrastructure::provider::FirecrackerProvider {
 
     let worker_bin = std::env::var("WORKER_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("target/x86_64-unknown-linux-musl/release/bastion-worker"));
+        .unwrap_or_else(|_| {
+            PathBuf::from("target/x86_64-unknown-linux-musl/release/bastion-worker")
+        });
 
     // Unique directory per test to prevent interference
     let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let data_dir = PathBuf::from(format!("/tmp/bastion-fc-test-{}-{}", std::process::id(), count));
+    let data_dir = PathBuf::from(format!(
+        "/tmp/bastion-fc-test-{}-{}",
+        std::process::id(),
+        count
+    ));
     std::fs::create_dir_all(&data_dir).ok();
 
     bastion_infrastructure::provider::FirecrackerProvider::new(
@@ -101,13 +107,22 @@ async fn test_firecracker_create_and_terminate() {
     assert!(sandbox.is_active());
     assert_eq!(sandbox.id, sandbox_id);
 
-    let alive = provider.is_alive(&sandbox_id).await.expect("is_alive should work");
+    let alive = provider
+        .is_alive(&sandbox_id)
+        .await
+        .expect("is_alive should work");
     assert!(alive, "Sandbox should be alive after creation");
 
     // Terminate
-    provider.terminate(&sandbox_id).await.expect("terminate should work");
+    provider
+        .terminate(&sandbox_id)
+        .await
+        .expect("terminate should work");
 
-    let alive = provider.is_alive(&sandbox_id).await.expect("is_alive after terminate");
+    let alive = provider
+        .is_alive(&sandbox_id)
+        .await
+        .expect("is_alive after terminate");
     assert!(!alive, "Sandbox should not be alive after termination");
 }
 
@@ -132,13 +147,22 @@ async fn test_firecracker_run_command() {
 
     // Run echo command
     let cmd = CommandSpec::new("echo hello");
-    let output = provider.run_command(&sandbox_id, &cmd)
+    let output = provider
+        .run_command(&sandbox_id, &cmd)
         .await
         .expect("run_command should work");
 
-    assert!(output.is_success(), "Command should succeed, got exit code: {}", output.exit_code);
+    assert!(
+        output.is_success(),
+        "Command should succeed, got exit code: {}",
+        output.exit_code
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("hello"), "Expected 'hello' in output, got: {}", stdout);
+    assert!(
+        stdout.contains("hello"),
+        "Expected 'hello' in output, got: {}",
+        stdout
+    );
 
     provider.terminate(&sandbox_id).await.unwrap();
 }
@@ -170,12 +194,14 @@ async fn test_firecracker_networking() {
 
     // Try to run a command that uses network
     let cmd = CommandSpec::new("curl -s ifconfig.me || echo 'no curl'");
-    let output = provider.run_command(&sandbox_id, &cmd)
+    let output = provider
+        .run_command(&sandbox_id, &cmd)
         .await
         .expect("run_command should work");
 
     // If curl succeeded, we have internet
-    let _has_internet = output.is_success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty();
+    let _has_internet =
+        output.is_success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty();
 
     provider.terminate(&sandbox_id).await.unwrap();
 
@@ -223,11 +249,15 @@ async fn test_firecracker_command_failure() {
 
     // Run a command that should fail
     let cmd = CommandSpec::new("nonexistent_command_xyz");
-    let output = provider.run_command(&sandbox_id, &cmd)
+    let output = provider
+        .run_command(&sandbox_id, &cmd)
         .await
         .expect("run_command should work");
 
-    assert!(!output.is_success(), "Expected non-zero exit code for nonexistent command");
+    assert!(
+        !output.is_success(),
+        "Expected non-zero exit code for nonexistent command"
+    );
 
     provider.terminate(&sandbox_id).await.unwrap();
 }

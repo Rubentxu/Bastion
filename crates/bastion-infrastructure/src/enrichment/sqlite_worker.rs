@@ -87,7 +87,12 @@ impl SqliteWorker {
             .spawn(move || {
                 Self::run_loop(conn, command_rx);
             })
-            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("Failed to spawn worker thread: {}", e)))?;
+            .map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to spawn worker thread: {}",
+                    e
+                ))
+            })?;
 
         Ok(Self {
             command_tx,
@@ -114,11 +119,18 @@ impl SqliteWorker {
     /// Handle a single command, returning `true` to continue the loop or `false` to shut down.
     fn handle_command(conn: &rusqlite::Connection, command: WorkerCommand) -> bool {
         match command {
-            WorkerCommand::Record { run, sanitize, response_tx } => {
+            WorkerCommand::Record {
+                run,
+                sanitize,
+                response_tx,
+            } => {
                 let result = Self::do_record(conn, &run, sanitize);
                 let _ = response_tx.send(result);
             }
-            WorkerCommand::Cleanup { retention, response_tx } => {
+            WorkerCommand::Cleanup {
+                retention,
+                response_tx,
+            } => {
                 let result = Self::do_cleanup(conn, &retention);
                 let _ = response_tx.send(result);
             }
@@ -130,7 +142,10 @@ impl SqliteWorker {
                 let result = Self::do_read_records(conn, after.as_deref());
                 let _ = response_tx.send(result);
             }
-            WorkerCommand::ReadRecordsByEnricher { enricher_id, response_tx } => {
+            WorkerCommand::ReadRecordsByEnricher {
+                enricher_id,
+                response_tx,
+            } => {
                 let result = Self::do_read_records_by_enricher(conn, &enricher_id);
                 let _ = response_tx.send(result);
             }
@@ -163,7 +178,11 @@ impl SqliteWorker {
     }
 
     /// Execute a record operation.
-    fn do_record(conn: &rusqlite::Connection, run: &EnrichmentRunRecord, sanitize: bool) -> WorkerResult {
+    fn do_record(
+        conn: &rusqlite::Connection,
+        run: &EnrichmentRunRecord,
+        sanitize: bool,
+    ) -> WorkerResult {
         use enrichment_engine::sanitize_command;
         use rusqlite::params;
 
@@ -211,7 +230,10 @@ impl SqliteWorker {
     }
 
     /// Execute a cleanup operation.
-    fn do_cleanup(conn: &rusqlite::Connection, retention: &RetentionConfig) -> Result<u64, EnrichmentError> {
+    fn do_cleanup(
+        conn: &rusqlite::Connection,
+        retention: &RetentionConfig,
+    ) -> Result<u64, EnrichmentError> {
         use chrono::Utc;
         use rusqlite::params;
 
@@ -230,7 +252,9 @@ impl SqliteWorker {
                 "DELETE FROM enrichment_runs WHERE timestamp < ?1",
                 params![cutoff_str],
             )
-            .map_err(|e| EnrichmentError::Recorder(format!("cleanup age-based delete failed: {}", e)))?;
+            .map_err(|e| {
+                EnrichmentError::Recorder(format!("cleanup age-based delete failed: {}", e))
+            })?;
 
         total_deleted += deleted as u64;
 
@@ -268,26 +292,25 @@ impl SqliteWorker {
         }
 
         let oldest: Option<String> = conn
-            .query_row(
-                "SELECT MIN(timestamp) FROM enrichment_runs",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT MIN(timestamp) FROM enrichment_runs", [], |row| {
+                row.get(0)
+            })
             .map_err(|e| EnrichmentError::Recorder(format!("stats oldest query failed: {}", e)))?;
 
         let newest: Option<String> = conn
-            .query_row(
-                "SELECT MAX(timestamp) FROM enrichment_runs",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT MAX(timestamp) FROM enrichment_runs", [], |row| {
+                row.get(0)
+            })
             .map_err(|e| EnrichmentError::Recorder(format!("stats newest query failed: {}", e)))?;
 
         Ok(RunRecorderStats::new(row_count, oldest, newest))
     }
 
     /// Read all records, optionally filtered by timestamp.
-    fn do_read_records(conn: &rusqlite::Connection, after: Option<&str>) -> Result<Vec<EnrichmentRunRecord>, EnrichmentError> {
+    fn do_read_records(
+        conn: &rusqlite::Connection,
+        after: Option<&str>,
+    ) -> Result<Vec<EnrichmentRunRecord>, EnrichmentError> {
         let query = "SELECT id, timestamp, command, enricher_id, exit_code, duration_ms,
                 output_summary_stdout, output_summary_stderr,
                 facts_count, derived_facts_count, rule_hits_count,
@@ -326,7 +349,10 @@ impl SqliteWorker {
     }
 
     /// Read all records for a specific enricher.
-    fn do_read_records_by_enricher(conn: &rusqlite::Connection, enricher_id: &str) -> Result<Vec<EnrichmentRunRecord>, EnrichmentError> {
+    fn do_read_records_by_enricher(
+        conn: &rusqlite::Connection,
+        enricher_id: &str,
+    ) -> Result<Vec<EnrichmentRunRecord>, EnrichmentError> {
         let mut stmt = conn
             .prepare(
                 "SELECT id, timestamp, command, enricher_id, exit_code, duration_ms,

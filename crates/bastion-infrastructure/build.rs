@@ -4,7 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let path_str = proto_path.to_string_lossy();
         tonic_prost_build::configure()
             .build_server(true)
-            .build_client(true)   // Infrastructure needs client too for now (legacy compat)
+            .build_client(true) // Infrastructure needs client too for now (legacy compat)
             .compile_protos(&[&*path_str], &["../../proto"])?;
     }
     Ok(())

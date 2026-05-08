@@ -4,15 +4,15 @@
 //! resolves them to ToolchainPlan instances.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::fs;
 
-use bastion_domain::template::{ToolchainPlan, ToolchainStrategy};
 use crate::template::capability_config::CapabilityConfig;
+use bastion_domain::template::{ToolchainPlan, ToolchainStrategy};
 
 #[cfg(feature = "file-watcher")]
-use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, Config as NotifyConfig};
+use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 #[cfg(feature = "file-watcher")]
 use tokio::sync::mpsc;
 
@@ -99,7 +99,9 @@ impl CapabilityRegistry {
             // Filter toolchains by strategy, then sort by priority
             use crate::template::capability_config::manager_to_type;
 
-            let mut filtered: Vec<_> = config.toolchains.iter()
+            let mut filtered: Vec<_> = config
+                .toolchains
+                .iter()
                 .filter(|t| strategy.accepts(&manager_to_type(&t.manager)))
                 .collect();
 
@@ -162,9 +164,11 @@ impl CapabilityRegistry {
                 }
             },
             NotifyConfig::default(),
-        ).map_err(|e| CapabilityRegistryError::NotFound(e.to_string()))?;
+        )
+        .map_err(|e| CapabilityRegistryError::NotFound(e.to_string()))?;
 
-        watcher.watch(&path, RecursiveMode::NonRecursive)
+        watcher
+            .watch(&path, RecursiveMode::NonRecursive)
             .map_err(|e| CapabilityRegistryError::NotFound(e.to_string()))?;
 
         // Spawn background task to handle events with debouncing

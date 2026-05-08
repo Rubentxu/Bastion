@@ -20,26 +20,26 @@ impl FsArtifactStore {
 
     fn artifact_path(&self, artifact_id: &str, digest: &str) -> PathBuf {
         // Use digest as filename for content-addressing
-        self.root.join(format!("{}-{}.tar.gz", artifact_id.replace('/', "-"), &digest[..digest.len().min(16)]))
+        self.root.join(format!(
+            "{}-{}.tar.gz",
+            artifact_id.replace('/', "-"),
+            &digest[..digest.len().min(16)]
+        ))
     }
 }
 
 #[async_trait]
 impl ArtifactStore for FsArtifactStore {
-    async fn fetch(
-        &self,
-        artifact_id: &str,
-        digest: &str,
-    ) -> Result<Vec<u8>, DomainError> {
+    async fn fetch(&self, artifact_id: &str, digest: &str) -> Result<Vec<u8>, DomainError> {
         let path = self.artifact_path(artifact_id, digest);
-        tokio::fs::read(&path)
-            .await
-            .map_err(|e| DomainError::NotFound(format!(
+        tokio::fs::read(&path).await.map_err(|e| {
+            DomainError::NotFound(format!(
                 "Artifact {} not found at {}: {}",
                 artifact_id,
                 path.display(),
                 e
-            )))
+            ))
+        })
     }
 
     async fn is_cached(&self, artifact_id: &str, digest: &str) -> Result<bool, DomainError> {

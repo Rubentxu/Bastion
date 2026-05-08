@@ -13,8 +13,10 @@ use bastion_domain::provider::port::SandboxProvider;
 use bastion_domain::shared::id::SandboxId;
 use uuid::Uuid;
 
-use enrichment_engine::models::{AgentContext, EnrichmentRunRecord, OperationInvocation, OperationResult};
 use enrichment_engine::metrics::{EnrichmentHealth, EnrichmentMetrics, EnrichmentMetricsSnapshot};
+use enrichment_engine::models::{
+    AgentContext, EnrichmentRunRecord, OperationInvocation, OperationResult,
+};
 use enrichment_engine::optimizer::{OptimizerReport, OptimizerRepository};
 use enrichment_engine::pipeline::FactPipeline;
 use enrichment_engine::traits::{CatalogRepository, EnrichmentError, RunRecorder};
@@ -132,7 +134,10 @@ impl BastionEnrichmentAdapter {
     /// # Arguments
     ///
     /// * `optimizer_repo` - The optimizer repository for generating reports
-    pub fn with_optimizer_repo(self: Arc<Self>, optimizer_repo: Arc<dyn OptimizerRepository>) -> Arc<Self> {
+    pub fn with_optimizer_repo(
+        self: Arc<Self>,
+        optimizer_repo: Arc<dyn OptimizerRepository>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             pipeline: self.pipeline.clone(),
             provider: self.provider.clone(),
@@ -147,7 +152,10 @@ impl BastionEnrichmentAdapter {
     /// Get an optimizer report from recorded enrichment runs.
     ///
     /// Returns `None` if the optimizer repository is not configured.
-    pub async fn get_optimizer_report(&self, after: Option<&str>) -> Result<Option<OptimizerReport>, EnrichmentError> {
+    pub async fn get_optimizer_report(
+        &self,
+        after: Option<&str>,
+    ) -> Result<Option<OptimizerReport>, EnrichmentError> {
         let repo = match &self.optimizer_repo {
             Some(r) => r,
             None => return Ok(None),
@@ -287,13 +295,18 @@ impl BastionEnrichmentAdapter {
         let fs = SandboxFileSystem::new(self.provider.clone(), sandbox_id.clone());
 
         let start = Instant::now();
-        let ctx = match self.pipeline.run(invocation.clone(), result.clone(), &fs).await {
+        let ctx = match self
+            .pipeline
+            .run(invocation.clone(), result.clone(), &fs)
+            .await
+        {
             Ok(ctx) => ctx,
             Err(e) => {
                 tracing::warn!(error = %e, "Enrichment pipeline failed");
                 // Record even on pipeline error (partial results may exist)
                 self.metrics.record_failure();
-                self.metrics.record_latency(start.elapsed().as_millis() as u64);
+                self.metrics
+                    .record_latency(start.elapsed().as_millis() as u64);
                 self.record_run(&invocation, &result, None, start.elapsed(), Some(&e));
                 return None;
             }
@@ -305,7 +318,10 @@ impl BastionEnrichmentAdapter {
 
         // Don't block on slow enrichment — trace and continue
         if elapsed > Duration::from_millis(100) {
-            tracing::debug!(elapsed_ms = elapsed.as_millis() as u64, "Enrichment completed slowly");
+            tracing::debug!(
+                elapsed_ms = elapsed.as_millis() as u64,
+                "Enrichment completed slowly"
+            );
         }
 
         // Return None if no facts were extracted (no enricher matched)
@@ -424,12 +440,13 @@ impl BastionEnrichmentAdapter {
 
         // rule_hits_count: we track via derived facts since RuleOutput is internal
         // A rule hit produces at least one derived fact or a verdict/recommendation
-        let rule_hits_count = if derived_facts_count > 0 || recommendation_count > 0 || verdict.is_some() {
-            // Estimate based on having any rule activity
-            1
-        } else {
-            0
-        };
+        let rule_hits_count =
+            if derived_facts_count > 0 || recommendation_count > 0 || verdict.is_some() {
+                // Estimate based on having any rule activity
+                1
+            } else {
+                0
+            };
 
         // Compute average confidence
         let confidence_avg = ctx
@@ -446,8 +463,8 @@ impl BastionEnrichmentAdapter {
         // Truncate outputs (500 char limit, None if empty)
         let output_summary_stdout = truncate_string(&result.stdout, 500);
         let output_summary_stderr = truncate_string(&result.stderr, 500);
-        let command = truncate_string(&invocation.command, 500)
-            .unwrap_or_else(|| invocation.command.clone());
+        let command =
+            truncate_string(&invocation.command, 500).unwrap_or_else(|| invocation.command.clone());
 
         EnrichmentRunRecord::new(
             Uuid::new_v4().to_string(),
@@ -529,7 +546,11 @@ impl BastionEnrichmentAdapter {
         let fs = SandboxFileSystem::new(self.provider.clone(), sandbox_id.clone());
 
         let start = Instant::now();
-        let ctx = match self.pipeline.run(invocation.clone(), result.clone(), &fs).await {
+        let ctx = match self
+            .pipeline
+            .run(invocation.clone(), result.clone(), &fs)
+            .await
+        {
             Ok(ctx) => ctx,
             Err(e) => {
                 tracing::warn!(error = %e, "Enrichment pipeline failed for stream");
@@ -541,7 +562,10 @@ impl BastionEnrichmentAdapter {
         let elapsed = start.elapsed();
 
         if elapsed > Duration::from_millis(100) {
-            tracing::debug!(elapsed_ms = elapsed.as_millis() as u64, "Stream enrichment completed slowly");
+            tracing::debug!(
+                elapsed_ms = elapsed.as_millis() as u64,
+                "Stream enrichment completed slowly"
+            );
         }
 
         if ctx.facts.is_empty() {
@@ -560,17 +584,17 @@ impl BastionEnrichmentAdapter {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use bastion_domain::execution::command::CommandSpec;
     use bastion_domain::execution::command::CommandResult;
+    use bastion_domain::execution::command::CommandSpec;
+    use bastion_domain::file_ops::FileEntry;
     use bastion_domain::provider::capabilities::ProviderCapabilities;
-    use bastion_domain::provider::port::SandboxProvider;
-    use bastion_domain::shared::DomainError;
-    use bastion_domain::shared::id::SandboxId;
     use bastion_domain::provider::port::CommandStream;
+    use bastion_domain::provider::port::SandboxProvider;
     use bastion_domain::sandbox::entity::Sandbox;
     use bastion_domain::sandbox::snapshot::SnapshotInfo;
     use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
-    use bastion_domain::file_ops::FileEntry;
+    use bastion_domain::shared::DomainError;
+    use bastion_domain::shared::id::SandboxId;
     use enrichment_engine::models::{EnricherDescriptor, EnrichmentMeta, Fact};
     use enrichment_engine::traits::CatalogRepository;
     use std::collections::HashMap;
@@ -592,18 +616,22 @@ mod tests {
 
     #[async_trait]
     impl RunRecorder for MockRecorder {
-        async fn record(&self, run: &EnrichmentRunRecord) -> Result<(), enrichment_engine::traits::EnrichmentError> {
+        async fn record(
+            &self,
+            run: &EnrichmentRunRecord,
+        ) -> Result<(), enrichment_engine::traits::EnrichmentError> {
             self.records.lock().await.push(run.clone());
             Ok(())
         }
 
         fn retention_config(&self) -> &enrichment_engine::models::RetentionConfig {
-            static DEFAULT: enrichment_engine::models::RetentionConfig = enrichment_engine::models::RetentionConfig {
-                max_age_days: 90,
-                max_rows: 100_000,
-                enabled: false,
-                sanitize: false,
-            };
+            static DEFAULT: enrichment_engine::models::RetentionConfig =
+                enrichment_engine::models::RetentionConfig {
+                    max_age_days: 90,
+                    max_rows: 100_000,
+                    enabled: false,
+                    sanitize: false,
+                };
             &DEFAULT
         }
 
@@ -611,7 +639,12 @@ mod tests {
             Ok(0)
         }
 
-        async fn stats(&self) -> Result<enrichment_engine::models::RunRecorderStats, enrichment_engine::traits::EnrichmentError> {
+        async fn stats(
+            &self,
+        ) -> Result<
+            enrichment_engine::models::RunRecorderStats,
+            enrichment_engine::traits::EnrichmentError,
+        > {
             Ok(enrichment_engine::models::RunRecorderStats::empty())
         }
     }
@@ -679,11 +712,7 @@ mod tests {
         ) -> Result<(), DomainError> {
             Ok(())
         }
-        async fn read_file(
-            &self,
-            _id: &SandboxId,
-            _path: &str,
-        ) -> Result<Vec<u8>, DomainError> {
+        async fn read_file(&self, _id: &SandboxId, _path: &str) -> Result<Vec<u8>, DomainError> {
             Ok(vec![])
         }
         async fn list_files(
@@ -693,7 +722,11 @@ mod tests {
         ) -> Result<Vec<FileEntry>, DomainError> {
             Ok(vec![])
         }
-        async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+        async fn create_snapshot(
+            &self,
+            _id: &SandboxId,
+            _name: &str,
+        ) -> Result<SnapshotInfo, DomainError> {
             unimplemented!()
         }
         async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
@@ -728,7 +761,10 @@ mod tests {
         let invocation = BastionEnrichmentAdapter::map_command_spec(&spec);
         assert_eq!(invocation.command, "mvn package");
         assert_eq!(invocation.working_dir.as_deref(), Some("/workspace"));
-        assert_eq!(invocation.env_vars.get("MAVEN_OPTS").map(|s| s.as_str()), Some("-Xmx512m"));
+        assert_eq!(
+            invocation.env_vars.get("MAVEN_OPTS").map(|s| s.as_str()),
+            Some("-Xmx512m")
+        );
     }
 
     #[tokio::test]
@@ -811,7 +847,13 @@ mod tests {
             recommendations: None,
         };
 
-        let record = adapter.build_record(&invocation, &result, Some(&ctx), Duration::from_millis(5000), None);
+        let record = adapter.build_record(
+            &invocation,
+            &result,
+            Some(&ctx),
+            Duration::from_millis(5000),
+            None,
+        );
 
         // stdout should be truncated to 500 chars + ellipsis
         assert!(record.output_summary_stdout.is_some());
@@ -840,7 +882,8 @@ mod tests {
             timed_out: false,
         };
 
-        let record = adapter.build_record(&invocation, &result, None, Duration::from_millis(100), None);
+        let record =
+            adapter.build_record(&invocation, &result, None, Duration::from_millis(100), None);
 
         // Empty stderr should be stored as None
         assert!(record.output_summary_stderr.is_none());
@@ -855,7 +898,8 @@ mod tests {
         ));
 
         let recorder = Arc::new(MockRecorder::new());
-        let adapter_with_recorder = BastionEnrichmentAdapter::with_recorder(adapter.clone(), recorder);
+        let adapter_with_recorder =
+            BastionEnrichmentAdapter::with_recorder(adapter.clone(), recorder);
 
         // Should be a different Arc
         assert_ne!(Arc::as_ptr(&adapter), Arc::as_ptr(&adapter_with_recorder));

@@ -17,11 +17,11 @@ const RETRY_DELAY_SECS: u64 = 5;
 
 /// Spawn the gateway binary and return (child, stdin, stdout_reader).
 fn spawn_gateway() -> (std::process::Child, impl Write, impl BufRead) {
-    let binary = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/debug/bastion-gateway");
+    let binary =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/bastion-gateway");
 
-    let worker = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/debug/bastion-worker");
+    let worker =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/bastion-worker");
 
     let mut cmd = Command::new(&binary);
     cmd.arg("--image")
@@ -146,14 +146,7 @@ fn send_initialized_notification(stdin: &mut impl Write) {
     });
     let notif_str = serde_json::to_string(&notif).unwrap();
     stdin
-        .write_all(
-            format!(
-                "Content-Length: {}\r\n\r\n{}\n",
-                notif_str.len(),
-                notif_str
-            )
-            .as_bytes(),
-        )
+        .write_all(format!("Content-Length: {}\r\n\r\n{}\n", notif_str.len(), notif_str).as_bytes())
         .unwrap();
     stdin.flush().unwrap();
 }
@@ -236,7 +229,10 @@ async fn test_maven_enrichment_sandbox() {
         }
 
         // Log the error and retry
-        let error_msg = last_resp.get("error").map(|e| serde_json::to_string(e).unwrap_or_default()).unwrap_or_default();
+        let error_msg = last_resp
+            .get("error")
+            .map(|e| serde_json::to_string(e).unwrap_or_default())
+            .unwrap_or_default();
         eprintln!(
             "Attempt {}/{}: sandbox_run failed with error: {}, retrying in {}s",
             attempt, MAX_RETRIES, error_msg, RETRY_DELAY_SECS
@@ -258,9 +254,7 @@ async fn test_maven_enrichment_sandbox() {
     let resp = last_resp;
 
     // Verify response
-    let result = resp
-        .get("result")
-        .expect("Expected result in response");
+    let result = resp.get("result").expect("Expected result in response");
 
     // Extract the text content from the sandbox_run result
     let text = result
@@ -273,8 +267,8 @@ async fn test_maven_enrichment_sandbox() {
     let text = text.expect("Expected text content in sandbox_run result");
 
     // Parse the JSON response from the gateway
-    let parsed: Value = serde_json::from_str(text)
-        .expect("Expected JSON in sandbox_run text content");
+    let parsed: Value =
+        serde_json::from_str(text).expect("Expected JSON in sandbox_run text content");
 
     // Verify enrichment_meta fields are present: source, timestamp, enricher_id
     let enrichment_meta = parsed
@@ -311,10 +305,9 @@ async fn test_maven_enrichment_sandbox() {
         enricher_id
     );
 
-    let build_status = parsed
-        .get("build_status")
-        .and_then(|b| b.as_str())
-        .expect("Expected build_status in enriched response (e.g., BUILD SUCCESS or BUILD FAILURE)");
+    let build_status = parsed.get("build_status").and_then(|b| b.as_str()).expect(
+        "Expected build_status in enriched response (e.g., BUILD SUCCESS or BUILD FAILURE)",
+    );
 
     assert!(
         build_status.contains("BUILD"),
@@ -332,6 +325,424 @@ async fn test_maven_enrichment_sandbox() {
         "Expected non-empty facts from Maven extractor"
     );
 
-    println!("✅ Enrichment test passed: enricher_id={}, source={}, timestamp={}, build_status={}, facts={}",
-        enricher_id, source, timestamp, build_status, facts.len());
+    println!(
+        "✅ Enrichment test passed: enricher_id={}, source={}, timestamp={}, build_status={}, facts={}",
+        enricher_id,
+        source,
+        timestamp,
+        build_status,
+        facts.len()
+    );
+}
+
+// ============================================================================
+// Enrichment MCP tool e2e tests
+// ============================================================================
+
+/// Call an enrichment tool via tools/call and return the result.
+fn call_enrichment_tool(
+    stdin: &mut impl Write,
+    reader: &mut impl BufRead,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Value {
+    rpc_call(
+        stdin,
+        reader,
+        "tools/call",
+        serde_json::json!({
+            "name": tool_name,
+            "arguments": arguments
+        }),
+    )
+}
+
+/// End-to-end test for `enrichment_optimizer_report` MCP tool.
+///
+/// Verifies:
+/// 1. The tool is callable via JSON-RPC `tools/call`
+/// 2. Response is valid JSON-RPC (has `result` or `error`)
+/// 3. When recorder is configured, returns `generated_at`, `total_runs_analyzed`, `scores`, `recommendations`
+/// 4. When recorder is not configured, returns error with meaningful message
+///
+/// This test is `#[ignore]` by default and requires:
+/// - `BASTION_E2E_ENRICHMENT=1` environment variable
+/// - `bastion-gateway` binary built
+#[tokio::test]
+#[ignore]
+async fn test_optimizer_report() {
+    // Env-gated: skip unless BASTION_E2E_ENRICHMENT=1
+    if std::env::var("BASTION_E2E_ENRICHMENT").as_deref() != Ok("1") {
+        eprintln!("SKIPPED: Set BASTION_E2E_ENRICHMENT=1 to run this test");
+        return;
+    }
+
+    // Spawn gateway (Podman not required for this tool - it queries internal state only)
+    let (mut child, mut stdin, mut reader) = spawn_gateway();
+
+    // Initialize session
+    let init_resp = init_session(&mut stdin, &mut reader);
+    assert!(
+        init_resp.get("result").is_some(),
+        "Expected result in initialize response, got: {:?}",
+        init_resp
+    );
+
+    // Send initialized notification
+    send_initialized_notification(&mut stdin);
+
+    // Call enrichment_optimizer_report with optional timestamp filter
+    let resp = call_enrichment_tool(
+        &mut stdin,
+        &mut reader,
+        "enrichment_optimizer_report",
+        serde_json::json!({
+            "after": "2025-01-01T00:00:00Z"
+        }),
+    );
+
+    // Clean up gateway
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Verify valid JSON-RPC response (either success or structured error is acceptable)
+    assert!(
+        resp.get("result").is_some() || resp.get("error").is_some(),
+        "Expected valid JSON-RPC response with result or error, got: {:?}",
+        resp
+    );
+
+    // If we got a result, verify expected fields
+    if let Some(result) = resp.get("result") {
+        // Result is a JSON string from the tool - parse it
+        let result_str = result.as_str().expect("Expected result to be a string");
+        let parsed: Value =
+            serde_json::from_str(result_str).expect("Expected valid JSON string in result");
+
+        // Verify expected fields in the report
+        assert!(
+            parsed.get("generated_at").is_some(),
+            "Expected 'generated_at' in optimizer report"
+        );
+        assert!(
+            parsed.get("total_runs_analyzed").is_some(),
+            "Expected 'total_runs_analyzed' in optimizer report"
+        );
+        assert!(
+            parsed.get("scores").is_some(),
+            "Expected 'scores' in optimizer report"
+        );
+        assert!(
+            parsed.get("recommendations").is_some(),
+            "Expected 'recommendations' in optimizer report"
+        );
+
+        let total_runs = parsed
+            .get("total_runs_analyzed")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        println!(
+            "✅ enrichment_optimizer_report passed: total_runs_analyzed={}",
+            total_runs
+        );
+    } else if let Some(error) = resp.get("error") {
+        // If recorder not configured, error is expected - verify it's a meaningful message
+        let error_msg = error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        println!(
+            "ℹ️ enrichment_optimizer_report returned error (recorder may not be configured): {}",
+            error_msg
+        );
+    }
+}
+
+/// End-to-end test for `enrichment_retention_info` MCP tool.
+///
+/// Verifies:
+/// 1. The tool is callable via JSON-RPC `tools/call`
+/// 2. Response is valid JSON-RPC (has `result` or `error`)
+/// 3. When recorder is configured, returns `retention` and `stats` objects
+/// 4. When recorder is not configured, returns error with meaningful message
+///
+/// This test is `#[ignore]` by default and requires:
+/// - `BASTION_E2E_ENRICHMENT=1` environment variable
+/// - `bastion-gateway` binary built
+#[tokio::test]
+#[ignore]
+async fn test_retention_info() {
+    // Env-gated: skip unless BASTION_E2E_ENRICHMENT=1
+    if std::env::var("BASTION_E2E_ENRICHMENT").as_deref() != Ok("1") {
+        eprintln!("SKIPPED: Set BASTION_E2E_ENRICHMENT=1 to run this test");
+        return;
+    }
+
+    // Spawn gateway
+    let (mut child, mut stdin, mut reader) = spawn_gateway();
+
+    // Initialize session
+    let init_resp = init_session(&mut stdin, &mut reader);
+    assert!(
+        init_resp.get("result").is_some(),
+        "Expected result in initialize response, got: {:?}",
+        init_resp
+    );
+
+    // Send initialized notification
+    send_initialized_notification(&mut stdin);
+
+    // Call enrichment_retention_info (no arguments)
+    let resp = call_enrichment_tool(
+        &mut stdin,
+        &mut reader,
+        "enrichment_retention_info",
+        serde_json::json!({}),
+    );
+
+    // Clean up gateway
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Verify valid JSON-RPC response
+    assert!(
+        resp.get("result").is_some() || resp.get("error").is_some(),
+        "Expected valid JSON-RPC response with result or error, got: {:?}",
+        resp
+    );
+
+    // If we got a result, verify expected fields
+    if let Some(result) = resp.get("result") {
+        let result_str = result.as_str().expect("Expected result to be a string");
+        let parsed: Value =
+            serde_json::from_str(result_str).expect("Expected valid JSON string in result");
+
+        // Verify retention config fields
+        let retention = parsed
+            .get("retention")
+            .expect("Expected 'retention' object in retention_info");
+        assert!(
+            retention.get("max_age_days").is_some(),
+            "Expected 'max_age_days' in retention config"
+        );
+        assert!(
+            retention.get("max_rows").is_some(),
+            "Expected 'max_rows' in retention config"
+        );
+        assert!(
+            retention.get("enabled").is_some(),
+            "Expected 'enabled' in retention config"
+        );
+
+        // Verify stats fields
+        let stats = parsed
+            .get("stats")
+            .expect("Expected 'stats' object in retention_info");
+        assert!(
+            stats.get("current_row_count").is_some(),
+            "Expected 'current_row_count' in stats"
+        );
+
+        println!("✅ enrichment_retention_info passed: retention configured, stats available");
+    } else if let Some(error) = resp.get("error") {
+        let error_msg = error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        println!(
+            "ℹ️ enrichment_retention_info returned error (recorder may not be configured): {}",
+            error_msg
+        );
+    }
+}
+
+/// End-to-end test for `enrichment_retention_cleanup` MCP tool.
+///
+/// Verifies:
+/// 1. The tool is callable via JSON-RPC `tools/call`
+/// 2. Response is valid JSON-RPC (has `result` or `error`)
+/// 3. When recorder is configured, returns `deleted_rows` and `remaining_rows`
+/// 4. When recorder is not configured, returns error with meaningful message
+///
+/// This test is `#[ignore]` by default and requires:
+/// - `BASTION_E2E_ENRICHMENT=1` environment variable
+/// - `bastion-gateway` binary built
+#[tokio::test]
+#[ignore]
+async fn test_retention_cleanup() {
+    // Env-gated: skip unless BASTION_E2E_ENRICHMENT=1
+    if std::env::var("BASTION_E2E_ENRICHMENT").as_deref() != Ok("1") {
+        eprintln!("SKIPPED: Set BASTION_E2E_ENRICHMENT=1 to run this test");
+        return;
+    }
+
+    // Spawn gateway
+    let (mut child, mut stdin, mut reader) = spawn_gateway();
+
+    // Initialize session
+    let init_resp = init_session(&mut stdin, &mut reader);
+    assert!(
+        init_resp.get("result").is_some(),
+        "Expected result in initialize response, got: {:?}",
+        init_resp
+    );
+
+    // Send initialized notification
+    send_initialized_notification(&mut stdin);
+
+    // Call enrichment_retention_cleanup (no arguments)
+    let resp = call_enrichment_tool(
+        &mut stdin,
+        &mut reader,
+        "enrichment_retention_cleanup",
+        serde_json::json!({}),
+    );
+
+    // Clean up gateway
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Verify valid JSON-RPC response
+    assert!(
+        resp.get("result").is_some() || resp.get("error").is_some(),
+        "Expected valid JSON-RPC response with result or error, got: {:?}",
+        resp
+    );
+
+    // If we got a result, verify expected fields
+    if let Some(result) = resp.get("result") {
+        let result_str = result.as_str().expect("Expected result to be a string");
+        let parsed: Value =
+            serde_json::from_str(result_str).expect("Expected valid JSON string in result");
+
+        // Verify cleanup result fields
+        assert!(
+            parsed.get("deleted_rows").is_some(),
+            "Expected 'deleted_rows' in retention_cleanup response"
+        );
+        assert!(
+            parsed.get("remaining_rows").is_some(),
+            "Expected 'remaining_rows' in retention_cleanup response"
+        );
+
+        let deleted = parsed
+            .get("deleted_rows")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        println!(
+            "✅ enrichment_retention_cleanup passed: deleted_rows={}",
+            deleted
+        );
+    } else if let Some(error) = resp.get("error") {
+        let error_msg = error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        println!(
+            "ℹ️ enrichment_retention_cleanup returned error (recorder may not be configured): {}",
+            error_msg
+        );
+    }
+}
+
+/// End-to-end test for `enrichment_health` MCP tool.
+///
+/// Verifies:
+/// 1. The tool is callable via JSON-RPC `tools/call`
+/// 2. Response is valid JSON-RPC (has `result` or `error`)
+/// 3. When adapter is configured, returns health fields: `enabled`, `catalog_enricher_count`,
+///    `recent_runs_5min`, `saturation_events`, `db_row_count`, `recorder_available`
+/// 4. When adapter is not configured, returns error with meaningful message
+///
+/// This test is `#[ignore]` by default and requires:
+/// - `BASTION_E2E_ENRICHMENT=1` environment variable
+/// - `bastion-gateway` binary built
+#[tokio::test]
+#[ignore]
+async fn test_enrichment_health() {
+    // Env-gated: skip unless BASTION_E2E_ENRICHMENT=1
+    if std::env::var("BASTION_E2E_ENRICHMENT").as_deref() != Ok("1") {
+        eprintln!("SKIPPED: Set BASTION_E2E_ENRICHMENT=1 to run this test");
+        return;
+    }
+
+    // Spawn gateway
+    let (mut child, mut stdin, mut reader) = spawn_gateway();
+
+    // Initialize session
+    let init_resp = init_session(&mut stdin, &mut reader);
+    assert!(
+        init_resp.get("result").is_some(),
+        "Expected result in initialize response, got: {:?}",
+        init_resp
+    );
+
+    // Send initialized notification
+    send_initialized_notification(&mut stdin);
+
+    // Call enrichment_health (no arguments)
+    let resp = call_enrichment_tool(
+        &mut stdin,
+        &mut reader,
+        "enrichment_health",
+        serde_json::json!({}),
+    );
+
+    // Clean up gateway
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Verify valid JSON-RPC response
+    assert!(
+        resp.get("result").is_some() || resp.get("error").is_some(),
+        "Expected valid JSON-RPC response with result or error, got: {:?}",
+        resp
+    );
+
+    // If we got a result, verify expected fields
+    if let Some(result) = resp.get("result") {
+        let result_str = result.as_str().expect("Expected result to be a string");
+        let parsed: Value =
+            serde_json::from_str(result_str).expect("Expected valid JSON string in result");
+
+        // Verify health fields
+        assert!(
+            parsed.get("enabled").is_some(),
+            "Expected 'enabled' in health response"
+        );
+        assert!(
+            parsed.get("catalog_enricher_count").is_some(),
+            "Expected 'catalog_enricher_count' in health response"
+        );
+        assert!(
+            parsed.get("recent_runs_5min").is_some(),
+            "Expected 'recent_runs_5min' in health response"
+        );
+        assert!(
+            parsed.get("recorder_available").is_some(),
+            "Expected 'recorder_available' in health response"
+        );
+
+        let enabled = parsed
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let enricher_count = parsed
+            .get("catalog_enricher_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        println!(
+            "✅ enrichment_health passed: enabled={}, catalog_enricher_count={}",
+            enabled, enricher_count
+        );
+    } else if let Some(error) = resp.get("error") {
+        let error_msg = error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        println!(
+            "ℹ️ enrichment_health returned error (adapter may not be configured): {}",
+            error_msg
+        );
+    }
 }

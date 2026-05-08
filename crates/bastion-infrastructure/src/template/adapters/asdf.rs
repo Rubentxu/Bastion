@@ -4,7 +4,10 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use bastion_domain::shared::DomainError;
-use bastion_domain::template::{ManagerType, SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep, ToolVerifyStep};
+use bastion_domain::template::{
+    ManagerType, SupportLevel, ToolManagerAdapter, ToolVerifyStep, ToolchainPlan, ToolchainRequest,
+    ToolchainStep,
+};
 
 /// Adapter for asdf-vm based tool installation.
 pub struct AsdfAdapter;
@@ -17,15 +20,20 @@ const PREREQ_INSTALL: &str = "apt-get update && apt-get install -y git curl unzi
 
 #[async_trait]
 impl ToolManagerAdapter for AsdfAdapter {
-    fn id(&self) -> &'static str { "asdf" }
-    fn name(&self) -> &'static str { "asdf Version Manager" }
-    fn manager_type(&self) -> ManagerType { ManagerType::Asdf }
+    fn id(&self) -> &'static str {
+        "asdf"
+    }
+    fn name(&self) -> &'static str {
+        "asdf Version Manager"
+    }
+    fn manager_type(&self) -> ManagerType {
+        ManagerType::Asdf
+    }
 
     fn supports(&self, req: &ToolchainRequest) -> SupportLevel {
         match req.capability.as_str() {
-            "jvm-build" | "node-build" | "python-build" | "ruby-build" | "go-build" | "rust-build" => {
-                SupportLevel::Full
-            }
+            "jvm-build" | "node-build" | "python-build" | "ruby-build" | "go-build"
+            | "rust-build" => SupportLevel::Full,
             _ => SupportLevel::None,
         }
     }
@@ -117,7 +125,8 @@ impl ToolManagerAdapter for AsdfAdapter {
             }
             _ => {
                 return Err(DomainError::UnsupportedOperation(format!(
-                    "asdf doesn't know how to install {}", req.capability
+                    "asdf doesn't know how to install {}",
+                    req.capability
                 )));
             }
         }

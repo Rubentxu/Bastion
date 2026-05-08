@@ -10,11 +10,11 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use bastion_domain::provider::port::SandboxProvider;
-use bastion_domain::shared::id::SandboxId;
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 use bastion_domain::template::{
-    ArtifactStore, LayerArtifact, MaterializationMode, MaterializationResult, ProviderKind,
-    ProviderMaterializer, TemplateArtifact, LAYER_MOUNT_PREFIX,
+    ArtifactStore, LAYER_MOUNT_PREFIX, LayerArtifact, MaterializationMode, MaterializationResult,
+    ProviderKind, ProviderMaterializer, TemplateArtifact,
 };
 
 /// Materializer that deploys artifacts as zip layers.
@@ -40,10 +40,7 @@ impl<S: ArtifactStore> ZipLayerMaterializer<S> {
     }
 
     /// Build a zip layer from the artifact content and cache it on host.
-    async fn build_zip_layer(
-        &self,
-        artifact: &TemplateArtifact,
-    ) -> Result<Vec<u8>, DomainError> {
+    async fn build_zip_layer(&self, artifact: &TemplateArtifact) -> Result<Vec<u8>, DomainError> {
         let zip_path = self
             .cache_root
             .join("layers")
@@ -83,19 +80,19 @@ impl<S: ArtifactStore> ZipLayerMaterializer<S> {
         let cursor = std::io::Cursor::new(zip_buffer);
         let mut zip_writer = zip::ZipWriter::new(cursor);
 
-        let options =
-            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
 
-        for entry in tar_archive.entries().map_err(|e| {
-            DomainError::Internal(format!("tar entries: {}", e))
-        })? {
-            let mut entry = entry.map_err(|e| {
-                DomainError::Internal(format!("tar entry: {}", e))
-            })?;
+        for entry in tar_archive
+            .entries()
+            .map_err(|e| DomainError::Internal(format!("tar entries: {}", e)))?
+        {
+            let mut entry =
+                entry.map_err(|e| DomainError::Internal(format!("tar entry: {}", e)))?;
 
-            let path = entry.path().map_err(|e| {
-                DomainError::Internal(format!("tar path: {}", e))
-            })?;
+            let path = entry
+                .path()
+                .map_err(|e| DomainError::Internal(format!("tar path: {}", e)))?;
 
             if path.as_os_str().is_empty() || entry.header().entry_type().is_dir() {
                 continue;
@@ -176,10 +173,7 @@ impl<S: ArtifactStore + Sync + Send> ProviderMaterializer for ZipLayerMaterializ
         ProviderKind::FaaS
     }
 
-    async fn can_materialize(
-        &self,
-        artifact: &TemplateArtifact,
-    ) -> Result<bool, DomainError> {
+    async fn can_materialize(&self, artifact: &TemplateArtifact) -> Result<bool, DomainError> {
         self.store
             .is_cached(&artifact.id.to_string(), &artifact.digest)
             .await

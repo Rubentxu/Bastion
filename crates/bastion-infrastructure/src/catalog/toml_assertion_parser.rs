@@ -3,9 +3,9 @@
 //! Loads `AssertionDescriptor` from TOML files in `.bastion/catalog/assertions/`.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-use std::fs;
 
 use bastion_domain::catalog::assertion::{AssertionCheck, AssertionDescriptor};
 use serde::Deserialize;
@@ -71,7 +71,12 @@ impl From<TomlAssertionConfig> for AssertionDescriptor {
             .check
             .map(|c| c.into_assertion_check())
             .into_iter()
-            .chain(assertion.checks.into_iter().map(|c| c.into_assertion_check()))
+            .chain(
+                assertion
+                    .checks
+                    .into_iter()
+                    .map(|c| c.into_assertion_check()),
+            )
             .collect();
         // Ensure at least one check exists (normalize empty to first check if needed).
         if all_checks.is_empty() {
@@ -140,7 +145,9 @@ impl AssertionRegistry {
                         path = %path.display(),
                         "Loaded assertion"
                     );
-                    self.assertions.write().unwrap()
+                    self.assertions
+                        .write()
+                        .unwrap()
                         .insert(assertion.id.clone(), assertion);
                     loaded += 1;
                 }
@@ -197,7 +204,9 @@ mod tests {
     fn test_load_from_dir() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("command.exit_code.zero.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 [assertion]
 id = "command.exit_code.zero"
 name = "Exit Code Zero"
@@ -207,7 +216,9 @@ category = "command"
 [assertion.check]
 type = "exit_code"
 expected = 0
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let registry = AssertionRegistry::new();
         let count = registry.load_from_dir(dir.path()).unwrap();
@@ -226,7 +237,9 @@ expected = 0
         // Test multi-check via [[assertion.checks]]
         let dir = tempdir().unwrap();
         let path = dir.path().join("maven.build.success.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 [assertion]
 id = "maven.build.success"
 name = "Maven Build Success"
@@ -240,7 +253,9 @@ expected = 0
 [[assertion.checks]]
 type = "stdout_contains"
 substring = "BUILD SUCCESS"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let registry = AssertionRegistry::new();
         let count = registry.load_from_dir(dir.path()).unwrap();
@@ -263,7 +278,9 @@ substring = "BUILD SUCCESS"
         // Test backwards compatibility with legacy [assertion.check]
         let dir = tempdir().unwrap();
         let path = dir.path().join("command.exit_code.zero.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 [assertion]
 id = "command.exit_code.zero"
 name = "Exit Code Zero"
@@ -273,7 +290,9 @@ category = "command"
 [assertion.check]
 type = "exit_code"
 expected = 0
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let registry = AssertionRegistry::new();
         let count = registry.load_from_dir(dir.path()).unwrap();
@@ -292,7 +311,9 @@ expected = 0
         // Test that both legacy check and new checks can coexist (check first, then checks)
         let dir = tempdir().unwrap();
         let path = dir.path().join("combined.checks.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 [assertion]
 id = "combined.checks"
 name = "Combined Checks"
@@ -306,7 +327,9 @@ expected = 0
 [[assertion.checks]]
 type = "stdout_contains"
 substring = "done"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let registry = AssertionRegistry::new();
         let count = registry.load_from_dir(dir.path()).unwrap();

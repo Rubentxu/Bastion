@@ -19,13 +19,15 @@ pub use artifact::{
     PreparedEnvironmentSpec, TemplateArtifact, ToolDescriptor, VerificationStep,
 };
 pub use catalog::{ArtifactCatalog, CatalogEntry};
-pub use layer::{LayerArtifact, LayerStack, LayerStackError, LAYER_MOUNT_PREFIX, MAX_LAYERS_PER_FUNCTION};
+pub use layer::{
+    LAYER_MOUNT_PREFIX, LayerArtifact, LayerStack, LayerStackError, MAX_LAYERS_PER_FUNCTION,
+};
 pub use materializer::{
     MaterializationMode, MaterializationResult, ProviderKind, ProviderMaterializer,
 };
 pub use store::ArtifactStore;
 pub use toolchain::{
     ManagerType, PreparedEnvironment, SupportLevel, ToolManagerAdapter, ToolResolver,
-    ToolchainPlan, ToolchainRequest, ToolchainStep, ToolchainStrategy, ToolVerifyResult,
-    ToolVerifyStep,
+    ToolVerifyResult, ToolVerifyStep, ToolchainPlan, ToolchainRequest, ToolchainStep,
+    ToolchainStrategy,
 };

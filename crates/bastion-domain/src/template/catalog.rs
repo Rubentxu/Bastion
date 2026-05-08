@@ -55,7 +55,11 @@ impl ArtifactCatalog {
         self.entries
             .values()
             .filter(|entry| {
-                entry.artifact.capabilities.iter().any(|c| c.name == capability)
+                entry
+                    .artifact
+                    .capabilities
+                    .iter()
+                    .any(|c| c.name == capability)
             })
             .collect()
     }
@@ -68,13 +72,7 @@ impl ArtifactCatalog {
         let candidates: Vec<&CatalogEntry> = self
             .entries
             .values()
-            .filter(|e| {
-                e.enabled
-                    && e.artifact
-                        .capabilities
-                        .iter()
-                        .any(|c| c.name == capability)
-            })
+            .filter(|e| e.enabled && e.artifact.capabilities.iter().any(|c| c.name == capability))
             .collect();
 
         if candidates.is_empty() {
@@ -123,8 +121,18 @@ mod tests {
             .add_capability(CapabilityDescriptor {
                 name: "jvm-build".into(),
                 tools: vec![
-                    ToolDescriptor { name: "java".into(), version: "17".into(), category: Category::Generic, manager_preference: vec![] },
-                    ToolDescriptor { name: "maven".into(), version: "3.9".into(), category: Category::Generic, manager_preference: vec![] },
+                    ToolDescriptor {
+                        name: "java".into(),
+                        version: "17".into(),
+                        category: Category::Generic,
+                        manager_preference: vec![],
+                    },
+                    ToolDescriptor {
+                        name: "maven".into(),
+                        version: "3.9".into(),
+                        category: Category::Generic,
+                        manager_preference: vec![],
+                    },
                 ],
                 verification: vec![VerificationStep {
                     label: "java -version".into(),
@@ -143,8 +151,18 @@ mod tests {
             .add_capability(CapabilityDescriptor {
                 name: "node-build".into(),
                 tools: vec![
-                    ToolDescriptor { name: "node".into(), version: "20".into(), category: Category::Generic, manager_preference: vec![] },
-                    ToolDescriptor { name: "npm".into(), version: "10".into(), category: Category::Generic, manager_preference: vec![] },
+                    ToolDescriptor {
+                        name: "node".into(),
+                        version: "20".into(),
+                        category: Category::Generic,
+                        manager_preference: vec![],
+                    },
+                    ToolDescriptor {
+                        name: "npm".into(),
+                        version: "10".into(),
+                        category: Category::Generic,
+                        manager_preference: vec![],
+                    },
                 ],
                 verification: vec![],
             })

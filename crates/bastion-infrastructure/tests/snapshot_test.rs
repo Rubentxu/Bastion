@@ -49,16 +49,24 @@ async fn test_snapshot_create_and_restore() {
         .expect("create");
 
     // Install marker
-    let cmd = CommandSpec::new(
-        "echo 'SNAPSHOT_MARKER' > /snapshot_test_file",
-    );
-    provider.run_command(&sandbox_id, &cmd).await.expect("marker write");
+    let cmd = CommandSpec::new("echo 'SNAPSHOT_MARKER' > /snapshot_test_file");
+    provider
+        .run_command(&sandbox_id, &cmd)
+        .await
+        .expect("marker write");
 
     // Verify marker exists
     let cmd2 = CommandSpec::new("cat /snapshot_test_file");
-    let result = provider.run_command(&sandbox_id, &cmd2).await.expect("marker read");
+    let result = provider
+        .run_command(&sandbox_id, &cmd2)
+        .await
+        .expect("marker read");
     let output = String::from_utf8_lossy(&result.stdout);
-    assert!(output.contains("SNAPSHOT_MARKER"), "Marker should exist: {}", output);
+    assert!(
+        output.contains("SNAPSHOT_MARKER"),
+        "Marker should exist: {}",
+        output
+    );
 
     // Create snapshot
     let snapshot_name = format!("test-snap-{}", sandbox_id.as_str());
@@ -103,13 +111,19 @@ async fn test_snapshot_create_and_restore() {
             eprintln!("Restored marker verified!");
         }
         Err(e) => {
-            eprintln!("Warning: could not verify marker in restored sandbox: {}", e);
+            eprintln!(
+                "Warning: could not verify marker in restored sandbox: {}",
+                e
+            );
         }
     }
 
     // Cleanup
     provider.terminate(&restored_id).await.ok();
-    snapshot_mgr.delete_snapshot(&snapshot.snapshot_id).await.ok();
+    snapshot_mgr
+        .delete_snapshot(&snapshot.snapshot_id)
+        .await
+        .ok();
 
     eprintln!("Snapshot cycle test PASSED");
 }

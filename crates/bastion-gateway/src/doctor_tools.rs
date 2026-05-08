@@ -2,8 +2,8 @@
 //!
 //! Exposes `doctor_list`, `doctor_run`, and `doctor_explain` as MCP tools.
 
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{schemars, tool};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -37,9 +37,18 @@ pub struct DoctorExplainParams {
 /// Returns the doctor tools router.
 pub fn doctor_tools() -> ToolRouter<BastionGateway> {
     ToolRouter::<BastionGateway>::new()
-        .with_route((BastionGateway::doctor_list_tool_attr(), BastionGateway::doctor_list))
-        .with_route((BastionGateway::doctor_run_tool_attr(), BastionGateway::doctor_run))
-        .with_route((BastionGateway::doctor_explain_tool_attr(), BastionGateway::doctor_explain))
+        .with_route((
+            BastionGateway::doctor_list_tool_attr(),
+            BastionGateway::doctor_list,
+        ))
+        .with_route((
+            BastionGateway::doctor_run_tool_attr(),
+            BastionGateway::doctor_run,
+        ))
+        .with_route((
+            BastionGateway::doctor_explain_tool_attr(),
+            BastionGateway::doctor_explain,
+        ))
 }
 
 // ─── Tool implementations ───────────────────────────────────────────────────
@@ -183,12 +192,16 @@ impl BastionGateway {
     }
 
     /// Run a single doctor check and return the result.
-    async fn run_doctor_check(&self, check: &DoctorCheck, sandbox_id: &str) -> AssertionCheckResult {
+    async fn run_doctor_check(
+        &self,
+        check: &DoctorCheck,
+        sandbox_id: &str,
+    ) -> AssertionCheckResult {
         match check {
-            DoctorCheck::Aliveness { sandbox_id: check_sandbox_id } => {
-                let target_id = check_sandbox_id
-                    .as_deref()
-                    .unwrap_or(sandbox_id);
+            DoctorCheck::Aliveness {
+                sandbox_id: check_sandbox_id,
+            } => {
+                let target_id = check_sandbox_id.as_deref().unwrap_or(sandbox_id);
 
                 match self.provider.is_alive(&target_id.to_string().into()).await {
                     Ok(true) => AssertionCheckResult {
@@ -311,12 +324,14 @@ impl BastionGateway {
                         reason: if all_passed {
                             None
                         } else {
-                            Some(check_results
-                                .iter()
-                                .filter(|r| !r.passed)
-                                .map(|r| r.reason.as_deref().unwrap_or("failed"))
-                                .collect::<Vec<_>>()
-                                .join("; "))
+                            Some(
+                                check_results
+                                    .iter()
+                                    .filter(|r| !r.passed)
+                                    .map(|r| r.reason.as_deref().unwrap_or("failed"))
+                                    .collect::<Vec<_>>()
+                                    .join("; "),
+                            )
                         },
                     }
                 } else {

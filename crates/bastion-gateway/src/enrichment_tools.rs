@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
-use rmcp::handler::server::wrapper::Parameters;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{schemars, tool};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -31,10 +31,22 @@ pub struct EnrichmentOptimizerReportParams {
 /// Returns the enrichment tools router, combining all enrichment MCP tools.
 pub fn enrichment_tools() -> ToolRouter<BastionGateway> {
     ToolRouter::<BastionGateway>::new()
-        .with_route((BastionGateway::enrichment_optimizer_report_tool_attr(), BastionGateway::enrichment_optimizer_report))
-        .with_route((BastionGateway::enrichment_retention_info_tool_attr(), BastionGateway::enrichment_retention_info))
-        .with_route((BastionGateway::enrichment_retention_cleanup_tool_attr(), BastionGateway::enrichment_retention_cleanup))
-        .with_route((BastionGateway::enrichment_health_tool_attr(), BastionGateway::enrichment_health))
+        .with_route((
+            BastionGateway::enrichment_optimizer_report_tool_attr(),
+            BastionGateway::enrichment_optimizer_report,
+        ))
+        .with_route((
+            BastionGateway::enrichment_retention_info_tool_attr(),
+            BastionGateway::enrichment_retention_info,
+        ))
+        .with_route((
+            BastionGateway::enrichment_retention_cleanup_tool_attr(),
+            BastionGateway::enrichment_retention_cleanup,
+        ))
+        .with_route((
+            BastionGateway::enrichment_health_tool_attr(),
+            BastionGateway::enrichment_health,
+        ))
 }
 
 // ─── Tool implementations ────────────────────────────────────────────────────
@@ -66,18 +78,22 @@ impl BastionGateway {
         };
 
         // Get the optimizer repository from the adapter
-        let optimizer_repo: &Arc<dyn enrichment_engine::optimizer::OptimizerRepository> = match adapter.optimizer_repo() {
-            Some(repo) => repo,
-            None => {
-                return serde_json::json!({
-                    "error": "enrichment optimizer repository not configured"
-                })
-                .to_string();
-            }
-        };
+        let optimizer_repo: &Arc<dyn enrichment_engine::optimizer::OptimizerRepository> =
+            match adapter.optimizer_repo() {
+                Some(repo) => repo,
+                None => {
+                    return serde_json::json!({
+                        "error": "enrichment optimizer repository not configured"
+                    })
+                    .to_string();
+                }
+            };
 
         // Read records and generate report
-        let records_result: Result<Vec<enrichment_engine::models::EnrichmentRunRecord>, enrichment_engine::traits::EnrichmentError> = optimizer_repo.read_records(params.after.as_deref()).await;
+        let records_result: Result<
+            Vec<enrichment_engine::models::EnrichmentRunRecord>,
+            enrichment_engine::traits::EnrichmentError,
+        > = optimizer_repo.read_records(params.after.as_deref()).await;
         match records_result {
             Ok(records) => {
                 use enrichment_engine::optimizer::generate_report;

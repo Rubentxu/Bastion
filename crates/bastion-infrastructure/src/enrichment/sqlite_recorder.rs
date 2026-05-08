@@ -61,9 +61,8 @@ impl SqliteRunRecorder {
             })?;
         }
 
-        let conn = rusqlite::Connection::open(db_path).map_err(|e| {
-            DomainError::Internal(format!("Failed to open SQLite DB: {}", e))
-        })?;
+        let conn = rusqlite::Connection::open(db_path)
+            .map_err(|e| DomainError::Internal(format!("Failed to open SQLite DB: {}", e)))?;
 
         // Run schema migrations before any schema creation
         // This ensures backward compatibility with existing databases
@@ -95,9 +94,8 @@ impl SqliteRunRecorder {
         )
         .map_err(|e| DomainError::Internal(format!("Failed to create schema: {}", e)))?;
 
-        let worker = SqliteWorker::new(conn).map_err(|e| {
-            DomainError::Internal(format!("Failed to start SQLite worker: {}", e))
-        })?;
+        let worker = SqliteWorker::new(conn)
+            .map_err(|e| DomainError::Internal(format!("Failed to start SQLite worker: {}", e)))?;
 
         Ok(Self {
             worker: Arc::new(worker),
@@ -118,9 +116,8 @@ impl SqliteRunRecorder {
     /// This is intended for testing only. The schema is created automatically.
     #[cfg(test)]
     pub fn with_retention_in_memory(retention: RetentionConfig) -> Result<Self, DomainError> {
-        let conn = rusqlite::Connection::open_in_memory().map_err(|e| {
-            DomainError::Internal(format!("Failed to open in-memory DB: {}", e))
-        })?;
+        let conn = rusqlite::Connection::open_in_memory()
+            .map_err(|e| DomainError::Internal(format!("Failed to open in-memory DB: {}", e)))?;
 
         conn.execute_batch(
             r#"
@@ -145,14 +142,10 @@ impl SqliteRunRecorder {
             );
             "#,
         )
-        .map_err(|e| {
-            DomainError::Internal(format!("Failed to create in-memory schema: {}", e))
-        })?;
+        .map_err(|e| DomainError::Internal(format!("Failed to create in-memory schema: {}", e)))?;
 
-        let worker =
-            SqliteWorker::new(conn).map_err(|e| {
-                DomainError::Internal(format!("Failed to start SQLite worker: {}", e))
-            })?;
+        let worker = SqliteWorker::new(conn)
+            .map_err(|e| DomainError::Internal(format!("Failed to start SQLite worker: {}", e)))?;
 
         Ok(Self {
             worker: Arc::new(worker),

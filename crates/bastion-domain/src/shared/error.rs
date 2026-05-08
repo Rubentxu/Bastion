@@ -38,6 +38,9 @@ pub enum DomainError {
     #[error("Validation error: {0}")]
     Validation(String),
 
-    #[error("{0}")]
+    #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Rate limiter lock poisoned: {0}")]
+    PoisonedLock(String),
 }

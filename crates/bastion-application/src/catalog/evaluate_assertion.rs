@@ -28,19 +28,24 @@ impl<S: ExperienceStore> EvaluateAssertionUseCase<S> {
         assertion: &AssertionDescriptor,
         experience_id: &str,
     ) -> Result<AssertionResult, DomainError> {
-        let experience = self.store
+        let experience = self
+            .store
             .find_by_id(experience_id)
             .await?
             .ok_or_else(|| DomainError::NotFound(format!("experience '{}'", experience_id)))?;
 
-        let check_results: Vec<CheckResult> = assertion.checks.iter().map(|check| {
-            let (passed, reason) = check.evaluate(&experience);
-            CheckResult {
-                check: format!("{:?}", check),
-                passed,
-                reason,
-            }
-        }).collect();
+        let check_results: Vec<CheckResult> = assertion
+            .checks
+            .iter()
+            .map(|check| {
+                let (passed, reason) = check.evaluate(&experience);
+                CheckResult {
+                    check: format!("{:?}", check),
+                    passed,
+                    reason,
+                }
+            })
+            .collect();
 
         let passed = check_results.iter().all(|r| r.passed);
 
@@ -57,14 +62,18 @@ impl<S: ExperienceStore> EvaluateAssertionUseCase<S> {
         assertion: &AssertionDescriptor,
         experience: &ExperienceRecord,
     ) -> AssertionResult {
-        let check_results: Vec<CheckResult> = assertion.checks.iter().map(|check| {
-            let (passed, reason) = check.evaluate(experience);
-            CheckResult {
-                check: format!("{:?}", check),
-                passed,
-                reason,
-            }
-        }).collect();
+        let check_results: Vec<CheckResult> = assertion
+            .checks
+            .iter()
+            .map(|check| {
+                let (passed, reason) = check.evaluate(experience);
+                CheckResult {
+                    check: format!("{:?}", check),
+                    passed,
+                    reason,
+                }
+            })
+            .collect();
 
         let passed = check_results.iter().all(|r| r.passed);
 

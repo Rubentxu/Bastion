@@ -21,27 +21,26 @@ use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, Sandbox
 use bastion_domain::secret::SecretResolver;
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::SandboxId;
+use bastion_infrastructure::catalog::sqlite_experience_store::SqliteExperienceStore;
+use bastion_infrastructure::catalog::toml_advice_parser::{AdviceConfigStore, AdviceRegistry};
+use bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry;
+use bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry;
 use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::persistence::SqliteSandboxRepository;
 use bastion_infrastructure::pool::{PoolConfig, SandboxPoolManager};
 use bastion_infrastructure::provider::{PodmanProvider, ProviderFactory, ProviderRegistry};
 use bastion_infrastructure::secret::EnvSecretResolver;
 use bastion_infrastructure::template::CapabilityRegistry;
-use bastion_infrastructure::catalog::sqlite_experience_store::SqliteExperienceStore;
-use bastion_infrastructure::catalog::toml_advice_parser::{AdviceConfigStore, AdviceRegistry};
-use bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry;
-use bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry;
 use enrichment_engine::traits::RunRecorder;
 
 use rmcp::{ServiceExt, service::RoleServer};
 
 // HTTP transport imports
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpService, StreamableHttpServerConfig,
-    session::local::LocalSessionManager,
-};
-use hyper_util::service::TowerToHyperService;
 use hyper::server::conn::http1;
+use hyper_util::service::TowerToHyperService;
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+};
 
 mod advice_tools;
 mod auth;
@@ -153,11 +152,8 @@ where
     session_manager.session_config.keep_alive = Some(std::time::Duration::from_secs(1800));
     let session_manager = Arc::new(session_manager);
     let config = StreamableHttpServerConfig::default();
-    let mcp_service = StreamableHttpService::new(
-        move || Ok(gateway.clone()),
-        session_manager,
-        config,
-    );
+    let mcp_service =
+        StreamableHttpService::new(move || Ok(gateway.clone()), session_manager, config);
     // Wrap with TowerToHyperService for hyper compatibility
     let service = TowerToHyperService::new(mcp_service);
 
@@ -197,7 +193,9 @@ async fn main() -> Result<()> {
         // SAFETY: This modifies process-global state but is intentional
         // when the user explicitly enables the dangerous local provider.
         unsafe { std::env::set_var("DANGEROUS_ALLOW_LOCAL", "1") };
-        tracing::warn!("DANGEROUS: LocalProvider is enabled. Commands will run on host filesystem!");
+        tracing::warn!(
+            "DANGEROUS: LocalProvider is enabled. Commands will run on host filesystem!"
+        );
     }
 
     tracing::info!("Bastion MCP Gateway starting...");
@@ -209,8 +207,7 @@ async fn main() -> Result<()> {
     let bastion_home = dirs::home_dir()
         .map(|h| h.join(".bastion"))
         .unwrap_or_else(|| PathBuf::from(".bastion"));
-    std::fs::create_dir_all(&bastion_home)
-        .context("Failed to create ~/.bastion directory")?;
+    std::fs::create_dir_all(&bastion_home).context("Failed to create ~/.bastion directory")?;
 
     let jwt_manager = auth::JwtManager::init_or_load(&bastion_home)?;
     auto_tls::init_or_load(bastion_home.clone()).await?;
@@ -256,7 +253,10 @@ async fn main() -> Result<()> {
             if count > 0 {
                 tracing::info!(count, path = %providers_dir.display(), "Loaded TOML provider configs");
             } else {
-                tracing::info!("No TOML provider configs found in {}, using hardcoded defaults", providers_dir.display());
+                tracing::info!(
+                    "No TOML provider configs found in {}, using hardcoded defaults",
+                    providers_dir.display()
+                );
             }
         }
         Err(e) => {
@@ -264,10 +264,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Create the RegistryService (gRPC) with JWT + auto_tls support
+    // Create the RegistryService (gRPC) with JWT + auto_tls + auth config support
     let grpc_registry: Arc<RegistryService> = Arc::new(RegistryService::new(
         jwt_manager.clone(),
         Arc::new(auto_tls::get_auto_tls().clone()),
+        server::AuthConfig::default(),
     ));
 
     // Start watchdog to detect dead workers (10s heartbeat, 30s watchdog timeout)
@@ -275,8 +276,11 @@ async fn main() -> Result<()> {
 
     // Create PodmanProvider WITHOUT doing network I/O yet (ping is deferred).
     // This is fast — no socket connection involved.
-    let podman_result =
-        PodmanProvider::new(&args.socket, &args.image, PathBuf::from(&args.worker_binary));
+    let podman_result = PodmanProvider::new(
+        &args.socket,
+        &args.image,
+        PathBuf::from(&args.worker_binary),
+    );
 
     // Build the provider — ping is fast (~500ms) and we want it ready before serve.
     // Pool start is the slow one (deferred below).
@@ -287,7 +291,9 @@ async fn main() -> Result<()> {
             // Quick ping to verify Podman is reachable
             match p.ping().await {
                 Ok(pong) => tracing::info!(pong = %pong, "Connected to Podman"),
-                Err(e) => tracing::warn!(error = %e, "Failed to ping Podman, containers may not be reachable"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to ping Podman, containers may not be reachable")
+                }
             }
             tracing::info!("Podman provider initialized");
             Arc::new(p)
@@ -362,7 +368,10 @@ async fn main() -> Result<()> {
                 match repo_for_expiry.find_expired().await {
                     Ok(expired) => {
                         if !expired.is_empty() {
-                            tracing::info!(count = expired.len(), "Found expired sandboxes, terminating...");
+                            tracing::info!(
+                                count = expired.len(),
+                                "Found expired sandboxes, terminating..."
+                            );
                             for sandbox in expired {
                                 tracing::info!(sandbox_id = %sandbox.id, "Terminating expired sandbox");
                                 match provider_for_expiry.terminate(&sandbox.id).await {
@@ -404,7 +413,10 @@ async fn main() -> Result<()> {
                 if count > 0 {
                     tracing::info!(count, path = %capabilities_dir.display(), "Loaded TOML capability configs");
                 } else {
-                    tracing::info!("No capability TOMLs found in {}, using hardcoded resolvers", capabilities_dir.display());
+                    tracing::info!(
+                        "No capability TOMLs found in {}, using hardcoded resolvers",
+                        capabilities_dir.display()
+                    );
                 }
             }
             Err(e) => {
@@ -412,7 +424,10 @@ async fn main() -> Result<()> {
             }
         }
     } else {
-        tracing::info!("No capabilities directory at {}, using hardcoded resolvers", capabilities_dir.display());
+        tracing::info!(
+            "No capabilities directory at {}, using hardcoded resolvers",
+            capabilities_dir.display()
+        );
     }
 
     // Create experience store (SQLite-backed)
@@ -420,7 +435,10 @@ async fn main() -> Result<()> {
     let experience_store = match SqliteExperienceStore::new(&experience_db_path) {
         Ok(store) => {
             tracing::info!(path = %experience_db_path.display(), "Experience store initialized");
-            Some(Arc::new(store) as Arc<dyn bastion_domain::catalog::experience::ExperienceStore>)
+            Some(Arc::new(store)
+                as Arc<
+                    dyn bastion_domain::catalog::experience::ExperienceStore,
+                >)
         }
         Err(e) => {
             tracing::warn!(error = %e, "Failed to initialize experience store, catalog features disabled");
@@ -442,7 +460,10 @@ async fn main() -> Result<()> {
                 }
             }
         } else {
-            tracing::info!("No assertions directory at {}, using empty registry", assertions_dir.display());
+            tracing::info!(
+                "No assertions directory at {}, using empty registry",
+                assertions_dir.display()
+            );
         }
         registry
     });
@@ -461,7 +482,10 @@ async fn main() -> Result<()> {
                 }
             }
         } else {
-            tracing::info!("No doctors directory at {}, using empty registry", doctors_dir.display());
+            tracing::info!(
+                "No doctors directory at {}, using empty registry",
+                doctors_dir.display()
+            );
         }
         registry
     });
@@ -480,7 +504,10 @@ async fn main() -> Result<()> {
                 }
             }
         } else {
-            tracing::info!("No advice directory at {}, using empty registry", advice_dir.display());
+            tracing::info!(
+                "No advice directory at {}, using empty registry",
+                advice_dir.display()
+            );
         }
         registry
     });
@@ -493,97 +520,131 @@ async fn main() -> Result<()> {
 
     // Initialize enrichment catalog: SQLite-backed repository with built-in + file-based enrichers
     let enrichment_catalog_db_path = bastion_home.join("enrichment_catalog.db");
-    let (enrichment_adapter, enrichment_config) = match bastion_infrastructure::enrichment::SqliteCatalogRepository::new(&enrichment_catalog_db_path) {
-        Ok(catalog_repo) => {
-            let catalog_repo = Arc::new(catalog_repo);
-            let importer = bastion_infrastructure::enrichment::YamlCatalogImporter::new(&catalog_repo);
+    let (enrichment_adapter, enrichment_config) =
+        match bastion_infrastructure::enrichment::SqliteCatalogRepository::new(
+            &enrichment_catalog_db_path,
+        ) {
+            Ok(catalog_repo) => {
+                let catalog_repo = Arc::new(catalog_repo);
+                let importer =
+                    bastion_infrastructure::enrichment::YamlCatalogImporter::new(&catalog_repo);
 
-            // Upsert built-in enrichers (Maven, etc.) first
-            let built_in = enrichment_engine::enrichers::all_enrichers();
-            for enricher in &built_in {
-                if let Err(e) = catalog_repo.upsert_enricher(enricher).await {
-                    tracing::warn!(enricher_id = %enricher.id, error = %e, "Failed to upsert built-in enricher");
-                } else {
-                    tracing::debug!(enricher_id = %enricher.id, "Upserted built-in enricher");
-                }
-            }
-
-            // Import from catalog directory (if present)
-            let enrichers_dir = bastion_config_dir.join("catalog").join("enrichers");
-            if enrichers_dir.exists() {
-                match importer.import_dir(&enrichers_dir).await {
-                    Ok(count) if count > 0 => {
-                        tracing::info!(count, path = %enrichers_dir.display(), "Imported enricher descriptors from catalog");
-                    }
-                    Ok(_) => {
-                        tracing::debug!("No enricher descriptor files found in {}", enrichers_dir.display());
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, path = %enrichers_dir.display(), "Failed to import enricher descriptors");
+                // Upsert built-in enrichers (Maven, etc.) first
+                let built_in = enrichment_engine::enrichers::all_enrichers();
+                for enricher in &built_in {
+                    if let Err(e) = catalog_repo.upsert_enricher(enricher).await {
+                        tracing::warn!(enricher_id = %enricher.id, error = %e, "Failed to upsert built-in enricher");
+                    } else {
+                        tracing::debug!(enricher_id = %enricher.id, "Upserted built-in enricher");
                     }
                 }
-            } else {
-                tracing::debug!("No enrichers catalog directory at {}, using built-in enrichers only", enrichers_dir.display());
-            }
 
-            // Create the BastionEnrichmentAdapter wrapping the catalog repository
-            let enrichment_cfg = bastion_infrastructure::enrichment::EnrichmentConfig {
-                enabled: true,
-                catalog_dir: enrichers_dir.clone(),
-                retention: bastion_infrastructure::enrichment::RetentionConfig::default(),
-                semaphore: bastion_infrastructure::enrichment::SemaphoreConfig::default(),
-            };
-            let adapter = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::new(
-                catalog_repo,
-                registry.default().clone(),
-                enrichment_cfg.clone(),
-            );
-
-            // Initialize the enrichment runs recorder (persistence for Meta-Harness optimization)
-            let enrichment_runs_db_path = bastion_home.join("data").join("enrichment_runs.db");
-            let (adapter, _enrichment_log) = match bastion_infrastructure::enrichment::SqliteRunRecorder::new(&enrichment_runs_db_path) {
-                Ok(recorder) => {
-                    // Run retention cleanup if requested via CLI flag (before wrapping in Arc)
-                    if args.enrichment_retention_cleanup {
-                        match recorder.cleanup().await {
-                            Ok(deleted) if deleted > 0 => {
-                                tracing::info!(rows_deleted = deleted, "Retention cleanup completed at startup");
-                            }
-                            Ok(_) => {
-                                tracing::debug!("Retention cleanup completed, no rows deleted");
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "Retention cleanup failed at startup, continuing");
-                            }
+                // Import from catalog directory (if present)
+                let enrichers_dir = bastion_config_dir.join("catalog").join("enrichers");
+                if enrichers_dir.exists() {
+                    match importer.import_dir(&enrichers_dir).await {
+                        Ok(count) if count > 0 => {
+                            tracing::info!(count, path = %enrichers_dir.display(), "Imported enricher descriptors from catalog");
+                        }
+                        Ok(_) => {
+                            tracing::debug!(
+                                "No enricher descriptor files found in {}",
+                                enrichers_dir.display()
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, path = %enrichers_dir.display(), "Failed to import enricher descriptors");
                         }
                     }
+                } else {
+                    tracing::debug!(
+                        "No enrichers catalog directory at {}, using built-in enrichers only",
+                        enrichers_dir.display()
+                    );
+                }
 
-                    let concrete_recorder = Arc::new(recorder);
-                    let run_recorder: Arc<dyn enrichment_engine::traits::RunRecorder> = concrete_recorder.clone();
-                    let adapter_arc = Arc::new(adapter);
+                // Create the BastionEnrichmentAdapter wrapping the catalog repository
+                let enrichment_cfg = bastion_infrastructure::enrichment::EnrichmentConfig {
+                    enabled: true,
+                    catalog_dir: enrichers_dir.clone(),
+                    retention: bastion_infrastructure::enrichment::RetentionConfig::default(),
+                    semaphore: bastion_infrastructure::enrichment::SemaphoreConfig::default(),
+                };
+                let adapter = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::new(
+                    catalog_repo,
+                    registry.default().clone(),
+                    enrichment_cfg.clone(),
+                );
 
-                    // Create optimizer repository from the same recorder
-                    let optimizer_repo = Arc::new(bastion_infrastructure::enrichment::SqliteOptimizerRepository::new(concrete_recorder));
-                    let adapter_with_recorder_and_optimizer = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::with_recorder(adapter_arc, run_recorder)
+                // Initialize the enrichment runs recorder (persistence for Meta-Harness optimization)
+                let enrichment_runs_db_path = bastion_home.join("data").join("enrichment_runs.db");
+                let (adapter, _enrichment_log) =
+                    match bastion_infrastructure::enrichment::SqliteRunRecorder::new(
+                        &enrichment_runs_db_path,
+                    ) {
+                        Ok(recorder) => {
+                            // Run retention cleanup if requested via CLI flag (before wrapping in Arc)
+                            if args.enrichment_retention_cleanup {
+                                match recorder.cleanup().await {
+                                    Ok(deleted) if deleted > 0 => {
+                                        tracing::info!(
+                                            rows_deleted = deleted,
+                                            "Retention cleanup completed at startup"
+                                        );
+                                    }
+                                    Ok(_) => {
+                                        tracing::debug!(
+                                            "Retention cleanup completed, no rows deleted"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "Retention cleanup failed at startup, continuing");
+                                    }
+                                }
+                            }
+
+                            let concrete_recorder = Arc::new(recorder);
+                            let run_recorder: Arc<dyn enrichment_engine::traits::RunRecorder> =
+                                concrete_recorder.clone();
+                            let adapter_arc = Arc::new(adapter);
+
+                            // Create optimizer repository from the same recorder
+                            let optimizer_repo = Arc::new(
+                                bastion_infrastructure::enrichment::SqliteOptimizerRepository::new(
+                                    concrete_recorder,
+                                ),
+                            );
+                            let adapter_with_recorder_and_optimizer = bastion_infrastructure::enrichment::BastionEnrichmentAdapter::with_recorder(adapter_arc, run_recorder)
                         .with_optimizer_repo(optimizer_repo);
-                    tracing::info!("Enrichment catalog initialized at {}, runs recorded at {}", enrichment_catalog_db_path.display(), enrichment_runs_db_path.display());
-                    // adapter_with_recorder_and_optimizer is Arc<BastionEnrichmentAdapter>, and BastionGateway expects Arc<Option<BastionEnrichmentAdapter>>
-                    let inner = Arc::try_unwrap(adapter_with_recorder_and_optimizer).unwrap_or_else(|arc| (*arc).clone());
-                    (inner, Some(enrichment_runs_db_path.clone()))
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to initialize enrichment run recorder, continuing without recording");
-                    tracing::info!("Enrichment catalog initialized at {}", enrichment_catalog_db_path.display());
-                    (adapter, None)
-                }
-            };
-            (Arc::new(Some(adapter)), enrichment_cfg)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to initialize enrichment catalog, enrichment disabled");
-            (Arc::new(None), bastion_infrastructure::enrichment::EnrichmentConfig::default())
-        }
-    };
+                            tracing::info!(
+                                "Enrichment catalog initialized at {}, runs recorded at {}",
+                                enrichment_catalog_db_path.display(),
+                                enrichment_runs_db_path.display()
+                            );
+                            // adapter_with_recorder_and_optimizer is Arc<BastionEnrichmentAdapter>, and BastionGateway expects Arc<Option<BastionEnrichmentAdapter>>
+                            let inner = Arc::try_unwrap(adapter_with_recorder_and_optimizer)
+                                .unwrap_or_else(|arc| (*arc).clone());
+                            (inner, Some(enrichment_runs_db_path.clone()))
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to initialize enrichment run recorder, continuing without recording");
+                            tracing::info!(
+                                "Enrichment catalog initialized at {}",
+                                enrichment_catalog_db_path.display()
+                            );
+                            (adapter, None)
+                        }
+                    };
+                (Arc::new(Some(adapter)), enrichment_cfg)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to initialize enrichment catalog, enrichment disabled");
+                (
+                    Arc::new(None),
+                    bastion_infrastructure::enrichment::EnrichmentConfig::default(),
+                )
+            }
+        };
 
     // Create gateway — ready to serve MCP immediately
     let default_provider = registry.default().clone();
@@ -592,6 +653,7 @@ async fn main() -> Result<()> {
         pool_manager,
         metrics,
         auto_tls: Arc::new(auto_tls::get_auto_tls().clone()),
+        auth: server::AuthConfig::default(),
     };
     let catalog_config = server::CatalogConfig {
         experience_store,
@@ -600,11 +662,22 @@ async fn main() -> Result<()> {
         advice_registry: Some(advice_registry),
         advice_config: Some(advice_config),
     };
-    let gateway =
-        server::BastionGateway::new(default_provider, providers_map, repository.clone(), secret_resolver.clone(), gateway_config, capability_registry, catalog_config, enrichment_adapter, enrichment_config);
+    let gateway = server::BastionGateway::new(
+        default_provider,
+        providers_map,
+        repository.clone(),
+        secret_resolver.clone(),
+        gateway_config,
+        capability_registry,
+        catalog_config,
+        enrichment_adapter,
+        enrichment_config,
+    );
 
     // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS)
-    let registry_addr: std::net::SocketAddr = args.registry_addr.parse()
+    let registry_addr: std::net::SocketAddr = args
+        .registry_addr
+        .parse()
         .expect("Invalid registry address");
 
     let registry_for_grpc = Arc::clone(&grpc_registry);
@@ -763,23 +836,19 @@ impl SandboxProvider for NullProvider {
         Err(DomainError::ProviderUnavailable(self.reason.clone()))
     }
 
-    async fn read_file(
-        &self,
-        _id: &SandboxId,
-        _path: &str,
-    ) -> Result<Vec<u8>, DomainError> {
+    async fn read_file(&self, _id: &SandboxId, _path: &str) -> Result<Vec<u8>, DomainError> {
         Err(DomainError::ProviderUnavailable(self.reason.clone()))
     }
 
-    async fn list_files(
-        &self,
-        _id: &SandboxId,
-        _dir: &str,
-    ) -> Result<Vec<FileEntry>, DomainError> {
+    async fn list_files(&self, _id: &SandboxId, _dir: &str) -> Result<Vec<FileEntry>, DomainError> {
         Err(DomainError::ProviderUnavailable(self.reason.clone()))
     }
 
-    async fn create_snapshot(&self, _id: &SandboxId, _name: &str) -> Result<SnapshotInfo, DomainError> {
+    async fn create_snapshot(
+        &self,
+        _id: &SandboxId,
+        _name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
         Err(DomainError::ProviderUnavailable(self.reason.clone()))
     }
 
@@ -795,10 +864,7 @@ impl SandboxProvider for NullProvider {
         "null"
     }
 
-    async fn list_sandboxes(
-        &self,
-        _filter: &SandboxFilter,
-    ) -> Result<Vec<Sandbox>, DomainError> {
+    async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
         Err(DomainError::ProviderUnavailable(self.reason.clone()))
     }
 

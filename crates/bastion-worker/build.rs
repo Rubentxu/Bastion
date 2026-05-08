@@ -3,7 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if proto_path.exists() {
         tonic_prost_build::configure()
             .build_server(false)
-            .build_client(true)   // Worker is a gRPC client
+            .build_client(true) // Worker is a gRPC client
             .compile_protos(&[proto_path.to_str().unwrap()], &["../../proto"])?;
     }
     Ok(())

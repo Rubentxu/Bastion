@@ -5,10 +5,10 @@
 
 use std::collections::HashMap;
 
+use crate::shared::DomainError;
+use crate::shared::id::SandboxId;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use crate::shared::id::SandboxId;
-use crate::shared::DomainError;
 
 /// Request to prepare a sandbox with a specific capability.
 #[derive(Debug, Clone)]
@@ -40,7 +40,9 @@ impl ToolchainStrategy {
         match self {
             ToolchainStrategy::Auto => true,
             ToolchainStrategy::SystemPackage => matches!(mt, ManagerType::Apt | ManagerType::Brew),
-            ToolchainStrategy::VersionManager => matches!(mt, ManagerType::Asdf | ManagerType::Sdkman),
+            ToolchainStrategy::VersionManager => {
+                matches!(mt, ManagerType::Asdf | ManagerType::Sdkman)
+            }
             ToolchainStrategy::ContentAddressed => matches!(mt, ManagerType::CaStore),
         }
     }
@@ -144,7 +146,9 @@ pub struct ToolResolver {
 
 impl ToolResolver {
     pub fn new() -> Self {
-        Self { adapters: Vec::new() }
+        Self {
+            adapters: Vec::new(),
+        }
     }
 
     /// Register an adapter. Order matters — first registered gets priority.
@@ -159,14 +163,18 @@ impl ToolResolver {
 
         // Try to find an adapter with full support, filtered by strategy
         for adapter in &self.adapters {
-            if strategy.accepts(&adapter.manager_type()) && adapter.supports(req) == SupportLevel::Full {
+            if strategy.accepts(&adapter.manager_type())
+                && adapter.supports(req) == SupportLevel::Full
+            {
                 return adapter.plan(req).await;
             }
         }
 
         // Fallback: try any adapter with partial support, filtered by strategy
         for adapter in &self.adapters {
-            if strategy.accepts(&adapter.manager_type()) && adapter.supports(req) == SupportLevel::Partial {
+            if strategy.accepts(&adapter.manager_type())
+                && adapter.supports(req) == SupportLevel::Partial
+            {
                 return adapter.plan(req).await;
             }
         }

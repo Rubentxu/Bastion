@@ -148,7 +148,10 @@ mod tests {
         assert_eq!(round_tripped.max_tokens, 128);
         assert_eq!(round_tripped.max_input_len, 8192);
         assert!(round_tripped.goal_map.is_some());
-        assert_eq!(round_tripped.goal_map.as_ref().unwrap().get("clean"), Some(&"cleanup".to_string()));
+        assert_eq!(
+            round_tripped.goal_map.as_ref().unwrap().get("clean"),
+            Some(&"cleanup".to_string())
+        );
     }
 
     #[test]

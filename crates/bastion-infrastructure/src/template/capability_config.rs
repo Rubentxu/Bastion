@@ -3,9 +3,9 @@
 //! These types allow loading capability definitions from `.bastion/capabilities/*.toml` files
 //! and mapping them to ToolchainPlan instances.
 
-use std::collections::HashMap;
+use bastion_domain::template::{ManagerType, ToolVerifyStep, ToolchainPlan, ToolchainStep};
 use serde::Deserialize;
-use bastion_domain::template::{ToolchainPlan, ToolchainStep, ToolVerifyStep, ManagerType};
+use std::collections::HashMap;
 
 /// TOML-deserializable capability configuration.
 #[derive(Debug, Clone, Deserialize)]

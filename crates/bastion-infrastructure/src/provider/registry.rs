@@ -5,16 +5,16 @@
 //! - File watcher for hot-reload (optional, enabled via --watch-config)
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::fs;
 
-use bastion_domain::provider::SandboxProvider;
-use crate::provider::factory::ProviderFactory;
 use crate::provider::config::ProviderConfig;
+use crate::provider::factory::ProviderFactory;
+use bastion_domain::provider::SandboxProvider;
 
 #[cfg(feature = "file-watcher")]
-use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, Config as NotifyConfig};
+use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 #[cfg(feature = "file-watcher")]
 use tokio::sync::mpsc;
 
@@ -133,16 +133,32 @@ impl ProviderRegistry {
     ///
     /// For "builtin" kinds, this would look up the appropriate factory method.
     /// Currently supports: podman, local, and wasm.
-    fn instantiate_provider(&self, config: &ProviderConfig) -> Result<Arc<dyn SandboxProvider>, RegistryError> {
+    fn instantiate_provider(
+        &self,
+        config: &ProviderConfig,
+    ) -> Result<Arc<dyn SandboxProvider>, RegistryError> {
         match config.kind.as_str() {
             "podman" => {
                 // PodmanProvider::new requires socket, image, worker_binary
-                let socket = config.socket.clone().unwrap_or_else(|| "/run/user/1000/podman/podman.sock".to_string());
-                let image = config.image.clone().unwrap_or_else(|| "debian:bookworm-slim".to_string());
-                let worker_binary = config.worker_binary.clone().unwrap_or_else(|| "target/debug/bastion-worker".to_string());
+                let socket = config
+                    .socket
+                    .clone()
+                    .unwrap_or_else(|| "/run/user/1000/podman/podman.sock".to_string());
+                let image = config
+                    .image
+                    .clone()
+                    .unwrap_or_else(|| "debian:bookworm-slim".to_string());
+                let worker_binary = config
+                    .worker_binary
+                    .clone()
+                    .unwrap_or_else(|| "target/debug/bastion-worker".to_string());
 
-                let podman = crate::provider::PodmanProvider::new(&socket, &image, PathBuf::from(&worker_binary))
-                    .map_err(|e| RegistryError::Watcher(e.to_string()))?;
+                let podman = crate::provider::PodmanProvider::new(
+                    &socket,
+                    &image,
+                    PathBuf::from(&worker_binary),
+                )
+                .map_err(|e| RegistryError::Watcher(e.to_string()))?;
                 Ok(Arc::new(podman) as Arc<dyn SandboxProvider>)
             }
             "local" => {
@@ -164,14 +180,13 @@ impl ProviderRegistry {
                 Ok(Arc::new(wasm) as Arc<dyn SandboxProvider>)
             }
             #[cfg(not(feature = "wasm-sandbox"))]
-            "wasm" => {
-                Err(RegistryError::Watcher(
-                    "wasm-sandbox feature not enabled. Rebuild with --features wasm-sandbox".into(),
-                ))
-            }
-            _ => {
-                Err(RegistryError::Watcher(format!("Unknown provider kind: {}", config.kind)))
-            }
+            "wasm" => Err(RegistryError::Watcher(
+                "wasm-sandbox feature not enabled. Rebuild with --features wasm-sandbox".into(),
+            )),
+            _ => Err(RegistryError::Watcher(format!(
+                "Unknown provider kind: {}",
+                config.kind
+            ))),
         }
     }
 
@@ -235,9 +250,11 @@ impl ProviderRegistry {
                 }
             },
             NotifyConfig::default(),
-        ).map_err(|e| RegistryError::Watcher(e.to_string()))?;
+        )
+        .map_err(|e| RegistryError::Watcher(e.to_string()))?;
 
-        watcher.watch(&path, RecursiveMode::NonRecursive)
+        watcher
+            .watch(&path, RecursiveMode::NonRecursive)
             .map_err(|e| RegistryError::Watcher(e.to_string()))?;
 
         // Spawn background task to handle events with debouncing

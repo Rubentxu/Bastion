@@ -3,10 +3,10 @@
 //! Uses tar streaming over gRPC for universal file transfer.
 //! Works with any sandbox provider that supports file access.
 
-use std::path::{Path, PathBuf};
+use super::DeltaSyncBackend;
 use async_trait::async_trait;
 use bastion_domain::shared::DomainError;
-use super::DeltaSyncBackend;
+use std::path::{Path, PathBuf};
 
 /// TarStream backend — streams files as tarball over gRPC.
 pub struct TarStreamBackend {
@@ -47,7 +47,8 @@ impl DeltaSyncBackend for TarStreamBackend {
         let total_files = entries.len() as u64;
 
         for (idx, entry) in entries.into_iter().enumerate() {
-            let relative_path = entry.strip_prefix(source)
+            let relative_path = entry
+                .strip_prefix(source)
                 .map_err(|e| DomainError::Internal(format!("Path error: {}", e)))?;
 
             let target_path = target.join(relative_path);
@@ -63,7 +64,8 @@ impl DeltaSyncBackend for TarStreamBackend {
                 std::fs::copy(&entry, &target_path)
                     .map_err(|e| DomainError::Internal(format!("Failed to copy: {}", e)))?;
 
-                let file_size = entry.metadata()
+                let file_size = entry
+                    .metadata()
                     .map_err(|e| DomainError::Internal(format!("Metadata error: {}", e)))?
                     .len();
                 bytes_transferred += file_size;
@@ -109,14 +111,10 @@ fn walkdir_recursive(
     for entry in read_dir {
         let entry = entry.map_err(|e| DomainError::Internal(format!("Read dir error: {}", e)))?;
         let path = entry.path();
-        let file_name = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         // Check exclude patterns
-        let should_exclude = exclude.iter().any(|pattern| {
-            glob_match(pattern, file_name)
-        });
+        let should_exclude = exclude.iter().any(|pattern| glob_match(pattern, file_name));
 
         if should_exclude {
             continue;

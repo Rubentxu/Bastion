@@ -7,12 +7,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use sha2::{Digest, Sha256};
 use bastion_domain::shared::DomainError;
 use bastion_domain::template::{
-    ManagerType, SupportLevel, ToolManagerAdapter, ToolchainPlan, ToolchainRequest, ToolchainStep,
-    ToolVerifyStep,
+    ManagerType, SupportLevel, ToolManagerAdapter, ToolVerifyStep, ToolchainPlan, ToolchainRequest,
+    ToolchainStep,
 };
+use sha2::{Digest, Sha256};
 
 /// Content-addressed store adapter.
 /// Provides zero-copy tool provisioning via hardlinks from a CA store.
@@ -65,8 +65,9 @@ impl CaStoreAdapter {
 
         // Ensure provision directory exists
         if let Some(parent) = provision_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| DomainError::Internal(format!("Failed to create provision dir: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                DomainError::Internal(format!("Failed to create provision dir: {}", e))
+            })?;
         }
 
         // Create hardlink (fails if already exists)
@@ -115,9 +116,9 @@ impl ToolManagerAdapter for CaStoreAdapter {
             .unwrap_or_else(|| req.capability.clone());
 
         // Verify tool exists in CA store
-        let store_path = self
-            .lookup(&tool_hash)
-            .ok_or_else(|| DomainError::NotFound(format!("Tool {} not found in CA store", tool_hash)))?;
+        let store_path = self.lookup(&tool_hash).ok_or_else(|| {
+            DomainError::NotFound(format!("Tool {} not found in CA store", tool_hash))
+        })?;
 
         // Create hardlink to provision directory
         let provision_path = self.create_hardlink(&tool_hash, &tool_name)?;
@@ -131,7 +132,10 @@ impl ToolManagerAdapter for CaStoreAdapter {
             capability: req.capability.clone(),
             adapter_used: "ca-store".into(),
             steps: vec![ToolchainStep {
-                description: format!("Provision tool from CA store via hardlink to {}", provision_path.display()),
+                description: format!(
+                    "Provision tool from CA store via hardlink to {}",
+                    provision_path.display()
+                ),
                 command: format!("ln {} {}", store_path.display(), provision_path.display()),
                 env: HashMap::new(),
                 timeout_ms: 10_000,
@@ -144,9 +148,12 @@ impl ToolManagerAdapter for CaStoreAdapter {
                 expected_exit_code: 0,
             }],
             env: HashMap::new(),
-            path_prefix: vec![provision_path.parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()],
+            path_prefix: vec![
+                provision_path
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            ],
         })
     }
 }
@@ -213,7 +220,12 @@ mod tests {
         let adapter = CaStoreAdapter::new(&store_root, temp_dir.path().join("provision"));
         let result = adapter.verify(&tool_path, "sha256:wronghash");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("checksum mismatch"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("checksum mismatch")
+        );
     }
 
     #[test]

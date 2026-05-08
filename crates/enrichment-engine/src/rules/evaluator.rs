@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::models::{Fact, OperationInvocation, OperationResult, RuleAction, RuleConfig, RuleOutput};
+use crate::models::{
+    Fact, OperationInvocation, OperationResult, RuleAction, RuleConfig, RuleOutput,
+};
 
 use super::ast::{EvalContext, Expr, Parser};
 
@@ -74,28 +76,22 @@ impl DefaultRuleEvaluator {
         let configs = self.repo.find_rules(enricher_id).await;
         configs
             .into_iter()
-            .filter_map(|config| {
-                match Parser::parse(&config.condition) {
-                    Ok(expr) => Some(ParsedRule { config, expr }),
-                    Err(e) => {
-                        tracing::warn!(
-                            rule_id = %config.id,
-                            condition = %config.condition,
-                            error = %e,
-                            "Skipping rule with invalid condition"
-                        );
-                        None
-                    }
+            .filter_map(|config| match Parser::parse(&config.condition) {
+                Ok(expr) => Some(ParsedRule { config, expr }),
+                Err(e) => {
+                    tracing::warn!(
+                        rule_id = %config.id,
+                        condition = %config.condition,
+                        error = %e,
+                        "Skipping rule with invalid condition"
+                    );
+                    None
                 }
             })
             .collect()
     }
 
-    fn evaluate_rules(
-        &self,
-        parsed_rules: Vec<ParsedRule>,
-        ctx: &EvalContext<'_>,
-    ) -> RuleOutput {
+    fn evaluate_rules(&self, parsed_rules: Vec<ParsedRule>, ctx: &EvalContext<'_>) -> RuleOutput {
         let mut output = RuleOutput::empty();
 
         // Sort by priority ascending (0 = highest)
@@ -116,7 +112,11 @@ impl DefaultRuleEvaluator {
 
     fn execute_action(&self, action: &RuleAction, output: &mut RuleOutput) {
         match action {
-            RuleAction::DeriveFact { key, value, confidence } => {
+            RuleAction::DeriveFact {
+                key,
+                value,
+                confidence,
+            } => {
                 output.derived_facts.push(Fact {
                     key: key.clone(),
                     value: value.clone(),
@@ -352,7 +352,12 @@ mod tests {
 
         let facts = vec![fact("tests_failed", "2")];
         let output = evaluator
-            .evaluate("maven", &make_invocation(), &make_result(0, false, ""), &facts)
+            .evaluate(
+                "maven",
+                &make_invocation(),
+                &make_result(0, false, ""),
+                &facts,
+            )
             .await;
 
         // R0 matches first → verdict="PASSED", then R1 matches → verdict="TEST_FAILURES" (last wins)

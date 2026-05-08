@@ -31,16 +31,22 @@
 
 // ─── Public re-exports ────────────────────────────────────────────────────────
 
-pub use crate::models::{
-    AgentContext, CommandExtractorPolicy, EnricherDescriptor, EnrichmentMeta,     EnrichmentRunRecord,
-    ExtractorConfig, Fact, OperationInvocation, OperationResult, RetentionConfig, RuleAction, RuleConfig,
-    RuleOutput, RunRecorderStats, TestSummary, UtilityMetrics,
-};
-pub use crate::traits::{CatalogRepository, EnrichmentError, Extractor, FactStore, FileSystem, RuleRepository, RunRecorder};
-pub use crate::rules::{DefaultRuleEvaluator, Expr, ParseError, RuleEvaluator};
-pub use crate::optimizer::{OptimizerReport, EnricherScore, OptimizationRecommendation, RecAction, OptimizerRepository, AggregateStats};
-pub use crate::sanitizer::sanitize_command;
 pub use crate::metrics::{EnrichmentHealth, EnrichmentMetrics, EnrichmentMetricsSnapshot};
+pub use crate::models::{
+    AgentContext, CommandExtractorPolicy, EnricherDescriptor, EnrichmentMeta, EnrichmentRunRecord,
+    ExtractorConfig, Fact, OperationInvocation, OperationResult, RetentionConfig, RuleAction,
+    RuleConfig, RuleOutput, RunRecorderStats, TestSummary, UtilityMetrics,
+};
+pub use crate::optimizer::{
+    AggregateStats, EnricherScore, OptimizationRecommendation, OptimizerReport,
+    OptimizerRepository, RecAction,
+};
+pub use crate::rules::{DefaultRuleEvaluator, Expr, ParseError, RuleEvaluator};
+pub use crate::sanitizer::sanitize_command;
+pub use crate::traits::{
+    CatalogRepository, EnrichmentError, Extractor, FactStore, FileSystem, RuleRepository,
+    RunRecorder,
+};
 
 // ─── Modules ─────────────────────────────────────────────────────────────────
 

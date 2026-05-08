@@ -22,9 +22,6 @@ impl SecretResolver for EnvSecretResolver {
     async fn resolve(&self, key: &str) -> Result<SecretValue, DomainError> {
         std::env::var(key)
             .map(|value| SecretValue::new(value, format!("env:{}", key)))
-            .map_err(|_| DomainError::Config(format!(
-                "Secret '{}' not found in environment",
-                key
-            )))
+            .map_err(|_| DomainError::Config(format!("Secret '{}' not found in environment", key)))
     }
 }

@@ -100,10 +100,7 @@ async fn test_zip_layer_materializer_deploys_layer() {
     );
 
     // Check the layer was deployed
-    let cmd = CommandSpec::new(format!(
-        "ls -la {}/layer_script.sh",
-        result.mount_path
-    ));
+    let cmd = CommandSpec::new(format!("ls -la {}/layer_script.sh", result.mount_path));
     let ls_result = provider.run_command(&sandbox_id, &cmd).await;
     match ls_result {
         Ok(r) => {
@@ -112,9 +109,8 @@ async fn test_zip_layer_materializer_deploys_layer() {
         }
         Err(_) => {
             // If unzip wasn't available, check via find
-            let cmd2 = CommandSpec::new(format!(
-                "find /opt/bastion/layers -name '*.sh' 2>/dev/null"
-            ));
+            let cmd2 =
+                CommandSpec::new(format!("find /opt/bastion/layers -name '*.sh' 2>/dev/null"));
             if let Ok(r2) = provider.run_command(&sandbox_id, &cmd2).await {
                 eprintln!("find: {}", String::from_utf8_lossy(&r2.stdout));
             }
@@ -145,5 +141,9 @@ async fn test_zip_layer_creates_layer_artifact() {
     assert!(layer.arn.starts_with("arn:bastion:layer:"));
     assert!(layer.mount_path().starts_with("/opt/bastion/layers/"));
 
-    eprintln!("LayerArtifact: arn={} mount={}", layer.arn, layer.mount_path());
+    eprintln!(
+        "LayerArtifact: arn={} mount={}",
+        layer.arn,
+        layer.mount_path()
+    );
 }

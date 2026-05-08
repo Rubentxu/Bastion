@@ -33,7 +33,11 @@ fn find_runsc() -> Option<PathBuf> {
             std::env::var_os("PATH").and_then(|paths| {
                 std::env::split_paths(&paths).find_map(|dir| {
                     let candidate = dir.join("runsc");
-                    if candidate.exists() { Some(candidate) } else { None }
+                    if candidate.exists() {
+                        Some(candidate)
+                    } else {
+                        None
+                    }
                 })
             })
         })
@@ -41,7 +45,17 @@ fn find_runsc() -> Option<PathBuf> {
 
 /// Create a minimal OCI rootfs directory with busybox.
 fn create_rootfs(dir: &std::path::Path) {
-    let bins = ["bin", "usr/bin", "usr/local/bin", "tmp", "workspace", "etc", "dev", "proc", "root"];
+    let bins = [
+        "bin",
+        "usr/bin",
+        "usr/local/bin",
+        "tmp",
+        "workspace",
+        "etc",
+        "dev",
+        "proc",
+        "root",
+    ];
     for b in &bins {
         std::fs::create_dir_all(dir.join(b)).expect("Cannot create rootfs dir");
     }
@@ -54,17 +68,25 @@ fn create_rootfs(dir: &std::path::Path) {
         .filter(|o| o.status.success())
         .and_then(|o| {
             let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if !path.is_empty() { Some(PathBuf::from(path)) } else { None }
+            if !path.is_empty() {
+                Some(PathBuf::from(path))
+            } else {
+                None
+            }
         });
 
     if let Some(busybox_path) = busybox {
         let _ = std::fs::copy(&busybox_path, dir.join("bin/busybox"));
-        for cmd in &["sh", "ls", "cat", "echo", "printf", "sleep", "mkdir", "chmod",
-                      "cp", "mv", "rm", "id", "pwd", "uname", "whoami"] {
+        for cmd in &[
+            "sh", "ls", "cat", "echo", "printf", "sleep", "mkdir", "chmod", "cp", "mv", "rm", "id",
+            "pwd", "uname", "whoami",
+        ] {
             let _ = std::os::unix::fs::symlink("/bin/busybox", dir.join("bin").join(cmd));
         }
     } else {
-        for cmd in &["sh", "ls", "cat", "echo", "printf", "sleep", "mkdir", "id", "pwd", "uname"] {
+        for cmd in &[
+            "sh", "ls", "cat", "echo", "printf", "sleep", "mkdir", "id", "pwd", "uname",
+        ] {
             let found = std::process::Command::new("which")
                 .arg(cmd)
                 .output()
@@ -72,7 +94,11 @@ fn create_rootfs(dir: &std::path::Path) {
                 .filter(|o| o.status.success())
                 .and_then(|o| {
                     let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if !path.is_empty() { Some(PathBuf::from(path)) } else { None }
+                    if !path.is_empty() {
+                        Some(PathBuf::from(path))
+                    } else {
+                        None
+                    }
                 });
             if let Some(src) = found {
                 let _ = std::fs::copy(&src, dir.join("bin").join(cmd));
@@ -100,8 +126,11 @@ fn provider() -> bastion_infrastructure::provider::GVisorProvider {
     // Create a dummy worker binary
     let worker_bin = rootfs_dir.join("bastion-worker");
     std::fs::write(&worker_bin, b"#!/bin/sh\necho 'mock worker'\n").expect("Cannot write worker");
-    std::fs::set_permissions(&worker_bin, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .expect("Cannot set worker permissions");
+    std::fs::set_permissions(
+        &worker_bin,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("Cannot set worker permissions");
 
     bastion_infrastructure::provider::GVisorProvider::new(
         runsc,
@@ -124,7 +153,11 @@ fn cleanup(rootfs_dir: &std::path::Path) {
 async fn test_gvisor_provider_init() {
     let provider = provider();
     // Just verify the provider was created successfully
-    assert!(provider.name().contains("gvisor") || provider.name().contains("gVisor") || provider.name().contains("runsc"));
+    assert!(
+        provider.name().contains("gvisor")
+            || provider.name().contains("gVisor")
+            || provider.name().contains("runsc")
+    );
 }
 
 /// Test: Create and terminate a gVisor sandbox
@@ -152,13 +185,22 @@ async fn test_gvisor_create_and_terminate() {
     assert!(sandbox.is_active());
     assert_eq!(sandbox.id, sandbox_id);
 
-    let alive = provider.is_alive(&sandbox_id).await.expect("is_alive should work");
+    let alive = provider
+        .is_alive(&sandbox_id)
+        .await
+        .expect("is_alive should work");
     assert!(alive, "Sandbox should be alive after creation");
 
     // Terminate
-    provider.terminate(&sandbox_id).await.expect("terminate should work");
+    provider
+        .terminate(&sandbox_id)
+        .await
+        .expect("terminate should work");
 
-    let alive = provider.is_alive(&sandbox_id).await.expect("is_alive after terminate");
+    let alive = provider
+        .is_alive(&sandbox_id)
+        .await
+        .expect("is_alive after terminate");
     assert!(!alive, "Sandbox should not be alive after termination");
 
     cleanup(&rootfs);
@@ -186,13 +228,22 @@ async fn test_gvisor_run_command() {
 
     // Run echo command
     let cmd = CommandSpec::new("echo hello");
-    let output = provider.run_command(&sandbox_id, &cmd)
+    let output = provider
+        .run_command(&sandbox_id, &cmd)
         .await
         .expect("run_command should work");
 
-    assert!(output.is_success(), "Command should succeed, got exit code: {}", output.exit_code);
+    assert!(
+        output.is_success(),
+        "Command should succeed, got exit code: {}",
+        output.exit_code
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("hello"), "Expected 'hello' in output, got: {}", stdout);
+    assert!(
+        stdout.contains("hello"),
+        "Expected 'hello' in output, got: {}",
+        stdout
+    );
 
     provider.terminate(&sandbox_id).await.unwrap();
     cleanup(&rootfs);
@@ -226,20 +277,24 @@ async fn test_gvisor_networking_respects_flag() {
 
     // Should NOT be able to reach external network
     let cmd = CommandSpec::new("curl -s ifconfig.me || echo 'blocked'");
-    let output = provider.run_command(&sandbox_id, &cmd)
+    let output = provider
+        .run_command(&sandbox_id, &cmd)
         .await
         .expect("run_command should work");
 
     // Should be blocked or have no curl
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let is_blocked = stdout.contains("blocked")
-        || stdout.contains("not found")
-        || !output.is_success();
+    let is_blocked =
+        stdout.contains("blocked") || stdout.contains("not found") || !output.is_success();
 
     provider.terminate(&sandbox_id).await.unwrap();
     cleanup(&rootfs);
 
-    assert!(is_blocked, "gVisor with no-internet should block network: {:?}", output);
+    assert!(
+        is_blocked,
+        "gVisor with no-internet should block network: {:?}",
+        output
+    );
 }
 
 /// Test: gVisor with networking enabled
@@ -270,7 +325,8 @@ async fn test_gvisor_networking_enabled() {
 
     // Try to use network (ping might be blocked, but network namespace should exist)
     let cmd = CommandSpec::new("ping -c 1 8.8.8.8 || echo 'no ping'");
-    let output = provider.run_command(&sandbox_id, &cmd)
+    let output = provider
+        .run_command(&sandbox_id, &cmd)
         .await
         .expect("run_command should work");
 
@@ -322,11 +378,15 @@ async fn test_gvisor_command_failure() {
 
     // Run a command that should fail
     let cmd = CommandSpec::new("nonexistent_command_xyz");
-    let output = provider.run_command(&sandbox_id, &cmd)
+    let output = provider
+        .run_command(&sandbox_id, &cmd)
         .await
         .expect("run_command should work");
 
-    assert!(!output.is_success(), "Expected non-zero exit code for nonexistent command");
+    assert!(
+        !output.is_success(),
+        "Expected non-zero exit code for nonexistent command"
+    );
 
     provider.terminate(&sandbox_id).await.unwrap();
     cleanup(&rootfs);

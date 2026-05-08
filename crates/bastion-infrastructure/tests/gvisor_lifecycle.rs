@@ -21,19 +21,32 @@ fn find_runsc() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| {
             // Search PATH
-            std::env::var_os("PATH")
-                .and_then(|paths| {
-                    std::env::split_paths(&paths).find_map(|dir| {
-                        let candidate = dir.join("runsc");
-                        if candidate.exists() { Some(candidate) } else { None }
-                    })
+            std::env::var_os("PATH").and_then(|paths| {
+                std::env::split_paths(&paths).find_map(|dir| {
+                    let candidate = dir.join("runsc");
+                    if candidate.exists() {
+                        Some(candidate)
+                    } else {
+                        None
+                    }
                 })
+            })
         })
 }
 
 /// Create a minimal OCI rootfs directory with busybox.
 fn create_rootfs(dir: &std::path::Path) {
-    let bins = ["bin", "usr/bin", "usr/local/bin", "tmp", "workspace", "etc", "dev", "proc", "root"];
+    let bins = [
+        "bin",
+        "usr/bin",
+        "usr/local/bin",
+        "tmp",
+        "workspace",
+        "etc",
+        "dev",
+        "proc",
+        "root",
+    ];
     for b in &bins {
         std::fs::create_dir_all(dir.join(b)).expect("Cannot create rootfs dir");
     }
@@ -46,17 +59,25 @@ fn create_rootfs(dir: &std::path::Path) {
         .filter(|o| o.status.success())
         .and_then(|o| {
             let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if !path.is_empty() { Some(std::path::PathBuf::from(path)) } else { None }
+            if !path.is_empty() {
+                Some(std::path::PathBuf::from(path))
+            } else {
+                None
+            }
         });
     if let Some(busybox_path) = busybox {
         std::fs::copy(&busybox_path, dir.join("bin/busybox")).expect("Cannot copy busybox");
-        for cmd in &["sh", "ls", "cat", "echo", "printf", "sleep", "mkdir", "chmod",
-                      "cp", "mv", "rm", "id", "pwd", "uname", "whoami"] {
+        for cmd in &[
+            "sh", "ls", "cat", "echo", "printf", "sleep", "mkdir", "chmod", "cp", "mv", "rm", "id",
+            "pwd", "uname", "whoami",
+        ] {
             let _ = std::os::unix::fs::symlink("/bin/busybox", dir.join("bin").join(cmd));
         }
     } else {
         // Fallback: copy key binaries from host
-        for cmd in &["sh", "ls", "cat", "echo", "printf", "sleep", "mkdir", "id", "pwd", "uname"] {
+        for cmd in &[
+            "sh", "ls", "cat", "echo", "printf", "sleep", "mkdir", "id", "pwd", "uname",
+        ] {
             let found = std::process::Command::new("which")
                 .arg(cmd)
                 .output()
@@ -64,7 +85,11 @@ fn create_rootfs(dir: &std::path::Path) {
                 .filter(|o| o.status.success())
                 .and_then(|o| {
                     let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    if !path.is_empty() { Some(std::path::PathBuf::from(path)) } else { None }
+                    if !path.is_empty() {
+                        Some(std::path::PathBuf::from(path))
+                    } else {
+                        None
+                    }
                 });
             if let Some(src) = found {
                 let _ = std::fs::copy(&src, dir.join("bin").join(cmd));
@@ -92,8 +117,11 @@ fn create_provider() -> bastion_infrastructure::provider::GVisorProvider {
     // Create a dummy worker binary (provider validates it exists)
     let worker_bin = rootfs_dir.join("bastion-worker");
     std::fs::write(&worker_bin, b"#!/bin/sh\necho 'mock worker'\n").expect("Cannot write worker");
-    std::fs::set_permissions(&worker_bin, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .expect("Cannot set worker permissions");
+    std::fs::set_permissions(
+        &worker_bin,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("Cannot set worker permissions");
 
     bastion_infrastructure::provider::GVisorProvider::new(
         runsc,
@@ -179,7 +207,11 @@ async fn test_gvisor_run_command() {
         .await
         .expect("Failed to run command");
 
-    assert!(result.is_success(), "Command failed with exit code {}", result.exit_code);
+    assert!(
+        result.is_success(),
+        "Command failed with exit code {}",
+        result.exit_code
+    );
     let stdout = String::from_utf8_lossy(&result.stdout);
     assert!(
         stdout.contains("hello from gvisor"),
@@ -243,7 +275,8 @@ async fn test_gvisor_write_and_read_file() {
     let expected = &content[..];
     let actual = &read_content[..read_content.len().min(content.len())];
     assert_eq!(
-        actual, expected,
+        actual,
+        expected,
         "File content mismatch. Expected: {:?}, Got: {:?}",
         String::from_utf8_lossy(expected),
         String::from_utf8_lossy(actual)
@@ -396,18 +429,38 @@ async fn test_gvisor_multiple_vms() {
 
     // Run commands in both
     let cmd = CommandSpec::new("echo sandbox1");
-    let r1 = provider.run_command(&id1, &cmd).await.expect("Command in 1 failed");
+    let r1 = provider
+        .run_command(&id1, &cmd)
+        .await
+        .expect("Command in 1 failed");
     let stdout1 = String::from_utf8_lossy(&r1.stdout);
-    assert!(stdout1.contains("sandbox1"), "Sandbox 1 output mismatch: {}", stdout1);
+    assert!(
+        stdout1.contains("sandbox1"),
+        "Sandbox 1 output mismatch: {}",
+        stdout1
+    );
 
     let cmd2 = CommandSpec::new("echo sandbox2");
-    let r2 = provider.run_command(&id2, &cmd2).await.expect("Command in 2 failed");
+    let r2 = provider
+        .run_command(&id2, &cmd2)
+        .await
+        .expect("Command in 2 failed");
     let stdout2 = String::from_utf8_lossy(&r2.stdout);
-    assert!(stdout2.contains("sandbox2"), "Sandbox 2 output mismatch: {}", stdout2);
+    assert!(
+        stdout2.contains("sandbox2"),
+        "Sandbox 2 output mismatch: {}",
+        stdout2
+    );
 
     // Terminate both
-    provider.terminate(&id1).await.expect("Failed to terminate 1");
-    provider.terminate(&id2).await.expect("Failed to terminate 2");
+    provider
+        .terminate(&id1)
+        .await
+        .expect("Failed to terminate 1");
+    provider
+        .terminate(&id2)
+        .await
+        .expect("Failed to terminate 2");
 
     // Both should be dead
     assert!(
@@ -442,9 +495,7 @@ async fn test_gvisor_streaming_command() {
 
     // Stream a command (falls back to non-streaming since no registry)
     let cmd = CommandSpec::new("echo streaming test");
-    let result = provider
-        .run_command_stream(&sandbox_id, &cmd)
-        .await;
+    let result = provider.run_command_stream(&sandbox_id, &cmd).await;
 
     // Without registry, streaming returns UnsupportedOperation
     match result {

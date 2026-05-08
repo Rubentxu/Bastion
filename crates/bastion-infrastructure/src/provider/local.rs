@@ -6,26 +6,26 @@
 //!
 //! This provider is intended for development and testing only.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::pin::Pin;
 use async_trait::async_trait;
 use chrono::Utc;
+use futures::Stream;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
-use futures::Stream;
 
+use bastion_domain::execution::command::{CommandResult, CommandSpec};
+use bastion_domain::execution::stream::CommandChunk;
+use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::sandbox::entity::Sandbox;
-use bastion_domain::sandbox::value_objects::{ResourcesSpec, NetworkSpec, SandboxFilter};
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
-use bastion_domain::execution::command::{CommandSpec, CommandResult};
-use bastion_domain::execution::stream::CommandChunk;
-use bastion_domain::file_ops::FileEntry;
-use bastion_domain::shared::id::SandboxId;
+use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 
 /// Stream type for command output chunks.
 pub type LocalCommandStream = Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>;
@@ -116,9 +116,8 @@ impl SandboxProvider for LocalProvider {
         let workspace = self.base_dir.join(&dir_name);
 
         // Create workspace directory
-        std::fs::create_dir_all(&workspace).map_err(|e| {
-            DomainError::Internal(format!("Failed to create workspace: {e}"))
-        })?;
+        std::fs::create_dir_all(&workspace)
+            .map_err(|e| DomainError::Internal(format!("Failed to create workspace: {e}")))?;
 
         // Record workspace
         self.workspaces.write().await.insert(id.clone(), workspace);
@@ -135,7 +134,10 @@ impl SandboxProvider for LocalProvider {
         sandbox.mark_running()?;
         sandbox.set_timeout(_timeout_ms);
 
-        self.sandboxes.write().await.insert(id.clone(), sandbox.clone());
+        self.sandboxes
+            .write()
+            .await
+            .insert(id.clone(), sandbox.clone());
 
         tracing::info!(sandbox_id = %id, workspace = %dir_name, "LocalProvider: created sandbox");
         Ok(sandbox)
@@ -232,11 +234,15 @@ impl SandboxProvider for LocalProvider {
         tokio::spawn(async move {
             // Send stdout
             if !result.stdout.is_empty() {
-                let _ = tx.send(Ok(CommandChunk::stdout(result.stdout.clone()))).await;
+                let _ = tx
+                    .send(Ok(CommandChunk::stdout(result.stdout.clone())))
+                    .await;
             }
             // Send stderr
             if !result.stderr.is_empty() {
-                let _ = tx.send(Ok(CommandChunk::stderr(result.stderr.clone()))).await;
+                let _ = tx
+                    .send(Ok(CommandChunk::stderr(result.stderr.clone())))
+                    .await;
             }
             // Send exit code
             let _ = tx.send(Ok(CommandChunk::exit_code(result.exit_code))).await;
@@ -263,9 +269,8 @@ impl SandboxProvider for LocalProvider {
 
         // Create parent directories if needed
         if let Some(parent) = full_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                DomainError::Internal(format!("Failed to create directory: {e}"))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| DomainError::Internal(format!("Failed to create directory: {e}")))?;
         }
 
         std::fs::write(&full_path, content)
@@ -302,12 +307,14 @@ impl SandboxProvider for LocalProvider {
         let mut entries = Vec::new();
 
         if full_path.is_dir() {
-            for entry in std::fs::read_dir(&full_path).map_err(|e| {
-                DomainError::Internal(format!("Failed to read directory: {e}"))
-            })? {
+            for entry in std::fs::read_dir(&full_path)
+                .map_err(|e| DomainError::Internal(format!("Failed to read directory: {e}")))?
+            {
                 let entry = entry.map_err(|e| DomainError::Internal(e.to_string()))?;
 
-                let metadata = entry.metadata().map_err(|e| DomainError::Internal(e.to_string()))?;
+                let metadata = entry
+                    .metadata()
+                    .map_err(|e| DomainError::Internal(e.to_string()))?;
                 entries.push(FileEntry {
                     path: entry.path().to_string_lossy().to_string(),
                     is_directory: metadata.is_dir(),
@@ -337,10 +344,7 @@ impl SandboxProvider for LocalProvider {
         ))
     }
 
-    async fn list_sandboxes(
-        &self,
-        _filter: &SandboxFilter,
-    ) -> Result<Vec<Sandbox>, DomainError> {
+    async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
         Ok(self.sandboxes.read().await.values().cloned().collect())
     }
 
@@ -390,7 +394,10 @@ mod tests {
 
         // Verify LocalProvider::new fails without the env var
         let result = LocalProvider::new(std::env::temp_dir().join("test"));
-        assert!(result.is_err(), "Expected LocalProvider::new to fail without DANGEROUS_ALLOW_LOCAL");
+        assert!(
+            result.is_err(),
+            "Expected LocalProvider::new to fail without DANGEROUS_ALLOW_LOCAL"
+        );
         if let Err(DomainError::PermissionDenied(msg)) = result {
             assert!(msg.contains("DANGEROUS_ALLOW_LOCAL"));
         } else {
