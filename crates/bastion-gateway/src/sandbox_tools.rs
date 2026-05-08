@@ -52,6 +52,7 @@ use serde::Deserialize;
 
 use bastion_application::execution::{RunCommandStreamUseCase, RunCommandUseCase};
 use bastion_application::file_ops::{ListFilesUseCase, ReadFileUseCase, WriteFileUseCase};
+use bastion_application::template::MaterializationStrategyResolver;
 use bastion_application::sandbox::{
     CreateSandboxUseCase, GetSandboxInfoUseCase, ListSandboxesUseCase, TerminateSandboxUseCase,
 };
@@ -63,7 +64,7 @@ use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::secret::{SecretResolver, SecretSource, parse_secret_ref};
 use bastion_domain::shared::{DomainError, id::SandboxId};
 use bastion_domain::template::{
-    ArtifactCatalog, CapabilityDescriptor, MaterializationMode, ProviderMaterializer,
+    ArtifactCatalog, CapabilityDescriptor, MaterializationMode, ProviderKind, ProviderMaterializer,
     TemplateArtifact, ToolDescriptor, ToolResolver, ToolchainRequest, ToolchainStrategy,
 };
 use bastion_infrastructure::metrics::GatewayMetrics;
@@ -1031,28 +1032,50 @@ impl BastionGateway {
         // If artifact found, use materializer
         if let Ok(artifact) = artifact {
             let provider_name = prepare_provider.name().to_lowercase();
-            // Podman/Docker: use PodmanOptimizedMaterializer (copy_to via bollard)
-            // gVisor/Firecracker/K8s: use UniversalMaterializer (write_file + run_command)
-            let use_optimized = matches!(provider_name.as_str(), "podman" | "docker");
 
-            let result = if use_optimized {
-                let materializer = PodmanOptimizedMaterializer::new(
-                    prepare_provider.clone(),
-                    self.artifact_store.clone(),
-                    PathBuf::from("/tmp/bastion-cache"),
-                );
-                materializer
-                    .materialize(&sandbox_id, &artifact, MaterializationMode::Auto)
-                    .await
-            } else {
-                let materializer = UniversalMaterializer::new(
-                    prepare_provider.clone(),
-                    self.artifact_store.clone(),
-                    PathBuf::from("/tmp/bastion-cache"),
-                );
-                materializer
-                    .materialize(&sandbox_id, &artifact, MaterializationMode::Auto)
-                    .await
+            // Get provider kind from provider name
+            let provider_kind = match provider_name.as_str() {
+                "podman" => ProviderKind::Podman,
+                "docker" => ProviderKind::Docker,
+                "gvisor" | "gvisor-sandbox" => ProviderKind::GVisor,
+                "firecracker" => ProviderKind::Firecracker,
+                "kubernetes" | "k8s" => ProviderKind::Kubernetes,
+                "wasm" => ProviderKind::Wasm,
+                "local" => ProviderKind::Local,
+                _ => ProviderKind::Custom,
+            };
+
+            // Use MaterializationStrategyResolver for smarter routing
+            let catalog = self.artifact_catalog.read().await;
+            let resolution = MaterializationStrategyResolver::resolve(
+                capability,
+                provider_kind,
+                &catalog,
+            );
+            drop(catalog);
+
+            // Select materializer based on resolution
+            let result = match resolution.materializer_name.as_str() {
+                "PodmanOptimizedMaterializer" => {
+                    let materializer = PodmanOptimizedMaterializer::new(
+                        prepare_provider.clone(),
+                        self.artifact_store.clone(),
+                        PathBuf::from("/tmp/bastion-cache"),
+                    );
+                    materializer
+                        .materialize(&sandbox_id, &artifact, resolution.mode)
+                        .await
+                }
+                _ => {
+                    let materializer = UniversalMaterializer::new(
+                        prepare_provider.clone(),
+                        self.artifact_store.clone(),
+                        PathBuf::from("/tmp/bastion-cache"),
+                    );
+                    materializer
+                        .materialize(&sandbox_id, &artifact, resolution.mode)
+                        .await
+                }
             };
 
             match result {

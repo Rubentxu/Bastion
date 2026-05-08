@@ -75,6 +75,24 @@ impl SqliteCatalogRepository {
         )
         .map_err(|e| DomainError::Internal(format!("Failed to create schema: {}", e)))?;
 
+        // Migration: add merge_mode column to extractors table (if not exists)
+        // This handles existing databases that were created before the merge_mode column was added
+        let has_column: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('extractors') WHERE name = 'merge_mode'",
+                [],
+                |row| Ok(row.get::<_, i32>(0)? > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_column {
+            conn.execute(
+                "ALTER TABLE extractors ADD COLUMN merge_mode TEXT NOT NULL DEFAULT 'single'",
+                [],
+            )
+            .expect("Failed to add merge_mode column to extractors table");
+        }
+
         Ok(Self {
             conn: Mutex::new(conn),
             // db_path: db_path.to_path_buf(),
