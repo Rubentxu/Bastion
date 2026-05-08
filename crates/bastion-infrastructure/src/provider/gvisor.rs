@@ -173,15 +173,19 @@ impl GVisorProvider {
         shell_cmd: &str,
         env_vars: Option<&HashMap<String, String>>,
     ) -> Result<(Vec<u8>, Vec<u8>, i32), DomainError> {
-        tracing::debug!(container_id, shell_cmd, "Running runsc exec");
-
-        // If env_vars provided, prepend them as exports in the shell command
+        // If env_vars provided (and non-empty), prepend them as exports in the shell command
         let full_cmd = if let Some(vars) = env_vars {
-            let exports: Vec<String> = vars.iter().map(|(k, v)| format!("export {k}={v}")).collect();
-            format!("{} && {}", exports.join(" && "), shell_cmd)
+            if vars.is_empty() {
+                shell_cmd.to_string()
+            } else {
+                let exports: Vec<String> = vars.iter().map(|(k, v)| format!("export {k}={v}")).collect();
+                format!("{} && {}", exports.join(" && "), shell_cmd)
+            }
         } else {
             shell_cmd.to_string()
         };
+
+        tracing::debug!(container_id, %full_cmd, "Running runsc exec");
 
         let output = self
             .runsc_cmd()
@@ -244,11 +248,18 @@ impl GVisorProvider {
 
     /// Wait for the worker to connect to the gateway.
     /// Polls the command router to check if the worker has registered.
+    /// If no command router is configured, skip the wait (fallback mode — worker is not used).
     async fn wait_for_worker_connection(
         &self,
         sandbox_id: &str,
         timeout: std::time::Duration,
     ) -> Result<(), DomainError> {
+        // If no router is configured, we're in fallback mode — skip wait
+        let Some(ref router) = self.command_router else {
+            tracing::debug!(sandbox_id, "No command router configured — skipping worker connection wait");
+            return Ok(());
+        };
+
         let deadline = std::time::Instant::now() + timeout;
 
         loop {
@@ -259,11 +270,9 @@ impl GVisorProvider {
                 )));
             }
 
-            if let Some(ref router) = self.command_router {
-                if router.is_worker_connected(sandbox_id) {
-                    tracing::info!(sandbox_id, "Worker connected to gateway");
-                    return Ok(());
-                }
+            if router.is_worker_connected(sandbox_id) {
+                tracing::info!(sandbox_id, "Worker connected to gateway");
+                return Ok(());
             }
 
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -476,6 +485,9 @@ impl GVisorProvider {
     fn runsc_cmd_static(runsc: &Path) -> Command {
         let mut cmd = Command::new(runsc);
         cmd.arg("-rootless");
+        // NOTE: rootless runsc does not support sandbox networking.
+        // Use host network to avoid "sandbox network isn't supported with --rootless" error.
+        cmd.arg("-network=host");
         cmd
     }
 

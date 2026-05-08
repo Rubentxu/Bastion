@@ -71,7 +71,8 @@ fn create_rootfs(dir: &std::path::Path) {
             "sh", "ls", "cat", "echo", "printf", "sleep", "mkdir", "chmod", "cp", "mv", "rm", "id",
             "pwd", "uname", "whoami",
         ] {
-            let _ = std::os::unix::fs::symlink("/bin/busybox", dir.join("bin").join(cmd));
+            // Use relative symlink so it resolves correctly inside the container
+            let _ = std::os::unix::fs::symlink("busybox", dir.join("bin").join(cmd));
         }
     } else {
         // Fallback: copy key binaries from host
