@@ -9,6 +9,7 @@ license.workspace = true
 default = []
 file-watcher = ["notify"]
 wasm-sandbox = ["dep:wasmtime", "dep:wasmtime-wasi"]
+use-segregated-traits = ["bastion-domain/use-segregated-traits"]
 
 [dependencies]
 bastion-domain = { workspace = true }
@@ -35,6 +36,7 @@ base64 = { workspace = true }
 dashmap = "6.1"
 tar = "0.4"
 zip = "2"
+bytes = "1"
 rusqlite = { version = "0.35", features = ["bundled"] }
 sha2 = { workspace = true }
 hyper-util = { version = "0.1", features = ["tokio"] }

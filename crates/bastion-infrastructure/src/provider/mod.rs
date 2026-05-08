@@ -10,6 +10,13 @@ pub mod podman;
 pub mod registry;
 pub mod wasm;
 
+#[cfg(feature = "use-segregated-traits")]
+pub mod network;
+#[cfg(feature = "use-segregated-traits")]
+pub mod rootfs_manager;
+#[cfg(feature = "use-segregated-traits")]
+pub use rootfs_manager::DefaultRootfsManager;
+
 pub use config::{ProviderCapabilitiesConfig, ProviderConfig};
 pub use docker::DockerProvider;
 pub use factory::{ProviderFactory, ProviderInfo};

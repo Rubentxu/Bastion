@@ -27,6 +27,7 @@ use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
+use bastion_domain::sandbox::snapshot::SnapshotInfo;
 use bastion_domain::sandbox::value_objects::{
     NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus,
 };
@@ -641,6 +642,44 @@ impl SandboxProvider for PodmanProvider {
         Ok(entries)
     }
 
+    async fn copy_to(
+        &self,
+        id: &SandboxId,
+        host_dir: &std::path::Path,
+        target: &str,
+    ) -> Result<(), DomainError> {
+        let container_name = id.to_string();
+
+        // Build an in-memory tarball of the host directory
+        let mut tar_bytes = Vec::new();
+        {
+            let mut ar = tar::Builder::new(&mut tar_bytes);
+            ar.append_dir_all(".", host_dir)
+                .map_err(|e| DomainError::Internal(format!("Failed to create tar: {e}")))?;
+            ar.finish()
+                .map_err(|e| DomainError::Internal(format!("Failed to finalize tar: {e}")))?;
+        }
+
+        // Upload to container using bollard upload_to_container
+        // Options include the target path in the container
+        use bollard::query_parameters::UploadToContainerOptions;
+        let options = UploadToContainerOptions {
+            path: target.to_string(),
+            ..Default::default()
+        };
+
+        self.docker
+            .upload_to_container(
+                &container_name,
+                Some(options),
+                bollard::body_full(bytes::Bytes::from(tar_bytes)),
+            )
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to copy files to container: {e}")))?;
+
+        Ok(())
+    }
+
     /// Cancel a running command by sending SIGTERM to the process group,
     /// then SIGKILL after the grace period.
     async fn cancel_command(
@@ -706,9 +745,36 @@ impl SandboxProvider for PodmanProvider {
         }
     }
 
+    // ── Snapshot Operations ─────────────────────────────────────
+
+    async fn create_snapshot(
+        &self,
+        id: &SandboxId,
+        name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
+        crate::template::snapshot_ops::create_snapshot(&self.docker, &id.to_string(), name).await
+    }
+
+    async fn restore_snapshot(&self, snapshot_id: &str) -> Result<Sandbox, DomainError> {
+        crate::template::snapshot_ops::restore_snapshot(&self.docker, snapshot_id).await
+    }
+
+    async fn snapshot_exists(&self, snapshot_id: &str) -> Result<bool, DomainError> {
+        let name = crate::template::snapshot_ops::snapshot_name_from_id(snapshot_id);
+        crate::template::snapshot_ops::snapshot_exists(&self.docker, &name).await
+    }
+
+    async fn delete_snapshot(&self, snapshot_id: &str) -> Result<(), DomainError> {
+        crate::template::snapshot_ops::delete_snapshot(&self.docker, snapshot_id).await
+    }
+
+    async fn list_snapshots(&self) -> Result<Vec<SnapshotInfo>, DomainError> {
+        crate::template::snapshot_ops::list_snapshots(&self.docker).await
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            supports_snapshots: false,
+            supports_snapshots: true,
             supports_streaming: true,
             supports_pause_resume: false,
             max_timeout_ms: 86_400_000,

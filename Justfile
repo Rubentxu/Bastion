@@ -10,7 +10,6 @@ config_dir := env_var_or_default("BASTION_CONFIG_DIR", ".bastion")
 runtime_dir := env_var_or_default("BASTION_RUNTIME_DIR", ".bastion/runtime")
 pid_file := runtime_dir + "/bastion-gateway.pid"
 log_file := runtime_dir + "/bastion-gateway.log"
-health_script := runtime_dir + "/mcp-health.py"
 
 alias opencode-mcp-start := mcp-start
 alias opencode-mcp-stop := mcp-stop
@@ -27,7 +26,7 @@ build-release:
 	cargo build --release
 
 # Start Bastion Gateway as a remote HTTP MCP server for OpenCode.
-mcp-start: build-release
+mcp-start:
 	#!/usr/bin/env bash
 	set -euo pipefail
 	mkdir -p "{{runtime_dir}}"
@@ -43,7 +42,7 @@ mcp-start: build-release
 		--config-dir "{{config_dir}}" \
 		> "{{log_file}}" 2>&1 &
 	echo "$!" > "{{pid_file}}"
-	sleep 1
+	sleep 2
 	just mcp-status
 
 # Stop the Bastion Gateway MCP server started by `just mcp-start`.
@@ -88,55 +87,9 @@ mcp-status:
 		exit 1
 	fi
 
-# Generate the MCP health check script.
-_generate-health-script:
-	#!/usr/bin/env bash
-	set -euo pipefail
-	mkdir -p "{{runtime_dir}}"
-	cat > "{{health_script}}" <<'PYEOF'
-import json
-import urllib.request
-
-url = "http://{{host}}:{{port}}/"
-
-def parse_sse(body):
-	for line in body.splitlines():
-		if line.startswith("data: "):
-			payload = line[6:]
-			if payload:
-				return json.loads(payload)
-	raise RuntimeError(f"No JSON data found in SSE response: {body!r}")
-
-def request(method, params, id_):
-	payload = json.dumps({"jsonrpc": "2.0", "id": id_, "method": method, "params": params}).encode()
-	req = urllib.request.Request(
-		url,
-		data=payload,
-		headers={
-			"Content-Type": "application/json",
-			"Accept": "application/json, text/event-stream",
-			"MCP-Protocol-Version": "2024-11-05",
-		},
-		method="POST",
-	)
-	with urllib.request.urlopen(req, timeout=30) as response:
-		return parse_sse(response.read().decode())
-
-print(json.dumps(request("initialize", {
-	"protocolVersion": "2024-11-05",
-	"capabilities": {},
-	"clientInfo": {"name": "just-mcp-health", "version": "1.0.0"},
-}, 0), indent=2))
-
-health = request("tools/call", {"name": "sandbox_health", "arguments": {}}, 1)
-print(json.dumps(health, indent=2))
-PYEOF
-
 # Call MCP initialize + sandbox_health over Streamable HTTP.
-mcp-health: _generate-health-script
-	#!/usr/bin/env bash
-	set -euo pipefail
-	python3 "{{health_script}}"
+mcp-health:
+	python3 scripts/mcp-health.py "{{host}}" "{{port}}"
 
 # Follow the gateway log created by `just mcp-start`.
 mcp-logs:

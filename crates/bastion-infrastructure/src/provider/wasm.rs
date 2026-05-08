@@ -27,6 +27,8 @@ use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
+#[cfg(feature = "use-segregated-traits")]
+use bastion_domain::provider::state_machine::SandboxStateMachine;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
@@ -54,6 +56,9 @@ pub struct WasmSandboxProvider {
     vfs: Arc<RwLock<HashMap<SandboxId, HashMap<String, Vec<u8>>>>>,
     /// Sandbox entities
     sandboxes: Arc<RwLock<HashMap<SandboxId, Sandbox>>>,
+    /// State machine for sandbox lifecycle (when use-segregated-traits is enabled)
+    #[cfg(feature = "use-segregated-traits")]
+    state_machine: Arc<SandboxStateMachine>,
 }
 
 #[cfg(feature = "wasm-sandbox")]
@@ -63,6 +68,8 @@ impl WasmSandboxProvider {
         Self {
             vfs: Arc::new(RwLock::new(HashMap::new())),
             sandboxes: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(feature = "use-segregated-traits")]
+            state_machine: Arc::new(SandboxStateMachine::new()),
         }
     }
 
@@ -138,6 +145,13 @@ impl SandboxProvider for WasmSandboxProvider {
             .await
             .insert(id.clone(), sandbox.clone());
 
+        // Register with state machine when feature is enabled
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            self.state_machine.register(id.clone())?;
+            self.state_machine.transition(id, bastion_domain::sandbox::value_objects::SandboxStatus::Running)?;
+        }
+
         tracing::info!(sandbox_id = %id, "WasmSandboxProvider: created sandbox");
         Ok(sandbox)
     }
@@ -145,11 +159,24 @@ impl SandboxProvider for WasmSandboxProvider {
     async fn terminate(&self, id: &SandboxId) -> Result<(), DomainError> {
         self.vfs.write().await.remove(id);
         self.sandboxes.write().await.remove(id);
+
+        // Remove from state machine when feature is enabled
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            self.state_machine.remove(id);
+        }
+
         tracing::info!(sandbox_id = %id, "WasmSandboxProvider: terminated sandbox");
         Ok(())
     }
 
     async fn is_alive(&self, id: &SandboxId) -> Result<bool, DomainError> {
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            if let Some(status) = self.state_machine.get_state(id) {
+                return Ok(status == bastion_domain::sandbox::value_objects::SandboxStatus::Running);
+            }
+        }
         Ok(self.sandboxes.read().await.contains_key(id))
     }
 
@@ -293,10 +320,32 @@ impl SandboxProvider for WasmSandboxProvider {
     }
 
     async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
-        Ok(self.sandboxes.read().await.values().cloned().collect())
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            // When FSM is enabled, use list_active and get sandbox info
+            let active_ids = self.state_machine.list_active();
+            let mut result = Vec::new();
+            for id in active_ids {
+                if let Ok(sandbox) = self.get_info(&id).await {
+                    result.push(sandbox);
+                }
+            }
+            return Ok(result);
+        }
+        #[cfg(not(feature = "use-segregated-traits"))]
+        {
+            Ok(self.sandboxes.read().await.values().cloned().collect())
+        }
     }
 
     async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            // First check if sandbox is in FSM
+            if self.state_machine.get_state(id).is_none() {
+                return Err(DomainError::NotFound(format!("Sandbox {} not found", id)));
+            }
+        }
         self.sandboxes
             .read()
             .await

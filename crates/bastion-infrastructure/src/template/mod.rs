@@ -10,6 +10,7 @@ pub mod capability_registry;
 pub mod layer;
 pub mod podman;
 pub mod snapshot;
+pub mod snapshot_ops;
 pub mod store;
 pub mod sync;
 pub mod universal;
@@ -20,7 +21,7 @@ pub use capability_config::{CapabilityConfig, ToolVerifyStepDef, ToolchainDef, T
 pub use capability_registry::{CapabilityRegistry, CapabilityRegistryError};
 pub use layer::ZipLayerMaterializer;
 pub use podman::PodmanOptimizedMaterializer;
-pub use snapshot::SnapshotManager;
+pub use snapshot_ops::snapshot_name_from_id;
 pub use store::FsArtifactStore;
 pub use sync::{DeltaSyncBackend, RsyncBackend, TarStreamBackend};
 pub use universal::UniversalMaterializer;

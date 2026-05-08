@@ -1,0 +1,202 @@
+2026-05-08T08:12:42.289986Z  INFO bastion_gateway: Bastion MCP Gateway starting...
+2026-05-08T08:12:42.291144Z  INFO bastion_infrastructure::provider::registry: Loaded provider config name=wasm path=.bastion/providers/wasm.toml
+2026-05-08T08:12:42.291194Z  INFO bastion_infrastructure::provider::registry: Loaded provider config name=firecracker path=.bastion/providers/firecracker.toml
+2026-05-08T08:12:42.291224Z  INFO bastion_infrastructure::provider::registry: Loaded provider config name=podman path=.bastion/providers/podman.toml
+2026-05-08T08:12:42.291252Z  INFO bastion_infrastructure::provider::registry: Loaded provider config name=local path=.bastion/providers/local.toml
+2026-05-08T08:12:42.291275Z  INFO bastion_infrastructure::provider::registry: Loaded provider config name=gvisor path=.bastion/providers/gvisor.toml
+2026-05-08T08:12:42.291292Z  WARN bastion_infrastructure::provider::registry: Could not instantiate provider, skipping registration name=local error=Failed to start file watcher: Permission denied: LocalProvider requires DANGEROUS_ALLOW_LOCAL=1 for security
+2026-05-08T08:12:42.291297Z  WARN bastion_infrastructure::provider::registry: Could not instantiate provider, skipping registration name=gvisor error=Failed to start file watcher: Unknown provider kind: gvisor
+2026-05-08T08:12:42.291300Z  WARN bastion_infrastructure::provider::registry: Could not instantiate provider, skipping registration name=wasm error=Failed to start file watcher: wasm-sandbox feature not enabled. Rebuild with --features wasm-sandbox
+2026-05-08T08:12:42.291303Z  WARN bastion_infrastructure::provider::registry: Could not instantiate provider, skipping registration name=firecracker error=Failed to start file watcher: Unknown provider kind: firecracker
+2026-05-08T08:12:42.291326Z  INFO bastion_infrastructure::provider::registry: Provider configs loaded from .bastion/providers loaded=5
+2026-05-08T08:12:42.291335Z  INFO bastion_gateway: Loaded TOML provider configs count=5 path=.bastion/providers
+2026-05-08T08:12:42.393215Z  INFO bastion_gateway: Connected to Podman pong="OK"
+2026-05-08T08:12:42.393240Z  INFO bastion_gateway: Podman provider initialized
+2026-05-08T08:12:42.547001Z  INFO bastion_gateway: Sandbox repository synced with provider
+2026-05-08T08:12:42.547053Z  INFO bastion_gateway: Sandbox pooling enabled
+2026-05-08T08:12:42.547114Z  INFO bastion_infrastructure::pool::manager: Starting pool recovery...
+2026-05-08T08:12:42.547225Z  INFO bastion_infrastructure::template::capability_registry: Loaded capability config name=node-build path=.bastion/capabilities/node-build.toml
+2026-05-08T08:12:42.547325Z  INFO bastion_infrastructure::template::capability_registry: Loaded capability config name=jvm-build path=.bastion/capabilities/jvm-build.toml
+2026-05-08T08:12:42.547341Z  INFO bastion_infrastructure::template::capability_registry: Capability configs loaded from .bastion/capabilities loaded=2
+2026-05-08T08:12:42.547348Z  INFO bastion_gateway: Loaded TOML capability configs count=2 path=.bastion/capabilities
+2026-05-08T08:12:42.547787Z  INFO bastion_gateway: Experience store initialized path=/home/rubentxu/.bastion/experiences.db
+2026-05-08T08:12:42.547924Z  INFO bastion_infrastructure::catalog::toml_assertion_parser: Loaded assertion id=maven.build.success path=.bastion/catalog/assertions/maven.build.success.toml
+2026-05-08T08:12:42.547980Z  INFO bastion_infrastructure::catalog::toml_assertion_parser: Loaded assertion id=container.alive path=.bastion/catalog/assertions/container.alive.toml
+2026-05-08T08:12:42.548016Z  INFO bastion_infrastructure::catalog::toml_assertion_parser: Loaded assertion id=command.exit_code.zero path=.bastion/catalog/assertions/command.exit_code.zero.toml
+2026-05-08T08:12:42.548038Z  INFO bastion_infrastructure::catalog::toml_assertion_parser: Assertions loaded from .bastion/catalog/assertions loaded=3
+2026-05-08T08:12:42.548045Z  INFO bastion_gateway: Loaded assertion files count=3 path=.bastion/catalog/assertions
+2026-05-08T08:12:42.548121Z  INFO bastion_infrastructure::catalog::toml_doctor_parser: Loaded doctor id=docker.daemon path=.bastion/catalog/doctors/docker.daemon.toml
+2026-05-08T08:12:42.548178Z  INFO bastion_infrastructure::catalog::toml_doctor_parser: Loaded doctor id=sandbox.alive path=.bastion/catalog/doctors/sandbox.alive.toml
+2026-05-08T08:12:42.548217Z  INFO bastion_infrastructure::catalog::toml_doctor_parser: Loaded doctor id=sandbox.resources path=.bastion/catalog/doctors/sandbox.resources.toml
+2026-05-08T08:12:42.548230Z  INFO bastion_infrastructure::catalog::toml_doctor_parser: Doctors loaded from .bastion/catalog/doctors loaded=3
+2026-05-08T08:12:42.548235Z  INFO bastion_gateway: Loaded doctor files count=3 path=.bastion/catalog/doctors
+2026-05-08T08:12:42.548380Z  INFO bastion_infrastructure::catalog::toml_advice_parser: Loaded advice id=sandbox.alive.failure path=.bastion/catalog/advice/sandbox.alive.failure.toml
+2026-05-08T08:12:42.548479Z  INFO bastion_infrastructure::catalog::toml_advice_parser: Loaded advice id=command.exit_code.nonzero path=.bastion/catalog/advice/command.exit_code.nonzero.toml
+2026-05-08T08:12:42.548563Z  INFO bastion_infrastructure::catalog::toml_advice_parser: Loaded advice id=maven.build.failure path=.bastion/catalog/advice/maven.build.failure.toml
+2026-05-08T08:12:42.548628Z  INFO bastion_infrastructure::catalog::toml_advice_parser: Loaded advice id=sandbox_run.failure.spike path=.bastion/catalog/advice/sandbox_run.failure.spike.toml
+2026-05-08T08:12:42.548645Z  INFO bastion_infrastructure::catalog::toml_advice_parser: Advice loaded from .bastion/catalog/advice loaded=4
+2026-05-08T08:12:42.548651Z  INFO bastion_gateway: Loaded advice files count=4 path=.bastion/catalog/advice
+2026-05-08T08:12:42.549910Z  WARN bastion_gateway: Failed to upsert built-in enricher enricher_id=maven error=Internal error: Insert extractor failed: table extractors has no column named merge_mode
+2026-05-08T08:12:42.550641Z  INFO bastion_gateway: Enrichment catalog initialized at /home/rubentxu/.bastion/enrichment_catalog.db, runs recorded at /home/rubentxu/.bastion/data/enrichment_runs.db
+2026-05-08T08:12:42.550777Z  INFO bastion_gateway: Worker registry listening on 127.0.0.1:50052
+2026-05-08T08:12:42.550792Z  INFO bastion_gateway: MCP Gateway ready — serving on HTTP transport
+2026-05-08T08:12:42.550850Z  INFO bastion_gateway: HTTP server listening on 127.0.0.1:18765
+2026-05-08T08:12:42.550848Z  INFO bastion_gateway: Starting registry with AutoTLS (mTLS) + gzip compression
+2026-05-08T08:12:42.655644Z  INFO bastion_infrastructure::pool::manager: Pool recovery completed reintegrated=0 skipped_pool_full=0 skipped_not_registered=3 orphaned_terminated=0 failed=0
+2026-05-08T08:12:42.655692Z  INFO bastion_infrastructure::pool::manager: Pool recovery completed reintegrated=0 skipped_pool_full=0 orphaned_terminated=0
+2026-05-08T08:12:42.655703Z  INFO bastion_infrastructure::pool::manager: SandboxPoolManager started min_idle=2 max_idle=5 max_total=50
+2026-05-08T08:12:42.655708Z  INFO bastion_gateway: Sandbox pool initialized
+2026-05-08T08:12:42.656902Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed image=debian:bookworm-slim
+2026-05-08T08:12:43.015977Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed
+2026-05-08T08:12:43.142416Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc image=debian:bookworm-slim
+2026-05-08T08:12:43.483290Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc
+2026-05-08T08:14:03.026499Z  INFO bastion_gateway::server::sandbox_tools: Creating sandbox template=debian:bookworm-slim provider=podman
+2026-05-08T08:14:03.043558Z  INFO bastion_gateway::server::sandbox_tools: Reading file sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed path=/etc/hostname
+2026-05-08T08:14:03.043778Z  INFO bastion_infrastructure::provider::podman: Reading file via exec (fallback) sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed path="/etc/hostname"
+2026-05-08T08:14:04.422169Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed command=apt-get update
+2026-05-08T08:14:07.657202Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=f7f875e7-1b1d-4d67-b9a9-8adc67582b06 image=debian:bookworm-slim
+2026-05-08T08:14:07.774134Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed exit_code=0 duration_ms=3351
+2026-05-08T08:14:07.774179Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed command=apt-get install -y openjdk-17-jdk maven
+2026-05-08T08:14:08.025577Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=f7f875e7-1b1d-4d67-b9a9-8adc67582b06
+2026-05-08T08:16:32.470319Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed exit_code=0 duration_ms=144696
+2026-05-08T08:16:32.470491Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed command=java -version 2>&1
+2026-05-08T08:16:32.654248Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed exit_code=0 duration_ms=183
+2026-05-08T08:16:32.654282Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed command=mvn --version 2>&1
+2026-05-08T08:16:33.066278Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed exit_code=0 duration_ms=411
+2026-05-08T08:16:33.066343Z  INFO bastion_gateway::server::sandbox_tools: Sandbox prepared via TOML capability registry capability=jvm-build adapter=apt
+2026-05-08T08:16:33.076088Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed command=java -version 2>&1
+2026-05-08T08:16:33.076308Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed command=java -version 2>&1
+2026-05-08T08:16:33.076324Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed command=java -version 2>&1
+2026-05-08T08:16:33.267014Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed exit_code=0 duration_ms=190
+2026-05-08T08:16:33.276631Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed command=mvn --version 2>&1 | head -1
+2026-05-08T08:16:33.276816Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed command=mvn --version 2>&1 | head -1
+2026-05-08T08:16:33.276834Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed command=mvn --version 2>&1 | head -1
+2026-05-08T08:16:33.675575Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed exit_code=0 duration_ms=398
+2026-05-08T08:16:33.695116Z  INFO bastion_gateway::server::sandbox_tools: Syncing files sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed mode="pull" backend=Tar source="/etc/hostname" target="/tmp/sync-test"
+2026-05-08T08:16:33.980300Z  INFO bastion_gateway::server::sandbox_tools: Terminating sandbox sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed
+2026-05-08T08:16:33.980469Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed
+2026-05-08T08:16:45.248821Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed
+2026-05-08T08:19:30.355214Z  INFO bastion_gateway::server::sandbox_tools: Listing active sandboxes
+2026-05-08T08:19:30.360680Z  INFO bastion_gateway::server::sandbox_tools: Listing available templates
+2026-05-08T08:19:32.959536Z  INFO bastion_gateway::server::sandbox_tools: Creating sandbox template=debian:bookworm-slim provider=podman
+2026-05-08T08:19:32.962823Z  INFO bastion_gateway::server::sandbox_tools: Getting sandbox info sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc
+2026-05-08T08:19:32.965651Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=echo 'hello world'
+2026-05-08T08:19:32.965845Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=echo 'hello world'
+2026-05-08T08:19:32.965861Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=echo 'hello world'
+2026-05-08T08:19:33.392489Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=0 duration_ms=426
+2026-05-08T08:19:33.461266Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=uname -a
+2026-05-08T08:19:33.461463Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=uname -a
+2026-05-08T08:19:33.461485Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=uname -a
+2026-05-08T08:19:33.687131Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=0 duration_ms=225
+2026-05-08T08:19:33.774149Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=whoami
+2026-05-08T08:19:33.774400Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=whoami
+2026-05-08T08:19:33.774420Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=whoami
+2026-05-08T08:19:34.060203Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=0 duration_ms=285
+2026-05-08T08:19:34.104127Z  INFO bastion_gateway::server::sandbox_tools: Writing file sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc path=/tmp/test-write.txt
+2026-05-08T08:19:34.104341Z  INFO bastion_infrastructure::provider::podman: Writing file via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc path="/tmp/test-write.txt" size=22
+2026-05-08T08:19:34.376949Z  INFO bastion_infrastructure::provider::podman: File written sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc path="/tmp/test-write.txt"
+2026-05-08T08:19:34.379226Z  INFO bastion_gateway::server::sandbox_tools: Reading file sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc path=/tmp/test-write.txt
+2026-05-08T08:19:34.379421Z  INFO bastion_infrastructure::provider::podman: Reading file via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc path="/tmp/test-write.txt"
+2026-05-08T08:19:35.037341Z  INFO bastion_gateway::server::sandbox_tools: Listing files sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc path=/tmp
+2026-05-08T08:19:35.037548Z  INFO bastion_infrastructure::provider::podman: Listing files via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc dir="/tmp"
+2026-05-08T08:19:35.220127Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=apt-get update
+2026-05-08T08:19:38.704816Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=0 duration_ms=3484
+2026-05-08T08:19:38.704852Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=apt-get install -y openjdk-17-jdk maven
+2026-05-08T08:21:56.122957Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=0 duration_ms=137418
+2026-05-08T08:21:56.123001Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=java -version 2>&1
+2026-05-08T08:21:56.348536Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=0 duration_ms=225
+2026-05-08T08:21:56.348619Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=mvn --version 2>&1
+2026-05-08T08:21:56.793923Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=0 duration_ms=445
+2026-05-08T08:21:56.793969Z  INFO bastion_gateway::server::sandbox_tools: Sandbox prepared via TOML capability registry capability=jvm-build adapter=apt
+2026-05-08T08:21:56.801206Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=java -version 2>&1 && mvn --version 2>&1 | head -1
+2026-05-08T08:21:56.801363Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=java -version 2>&1 && mvn --version 2>&1 | head -1
+2026-05-08T08:21:56.801376Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=java -version 2>&1 && mvn --version 2>&1 | head -1
+2026-05-08T08:21:57.265188Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=0 duration_ms=463
+2026-05-08T08:21:57.272256Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=apt-get update -qq && apt-get install -y -qq curl git 2>&1 | tail -3
+2026-05-08T08:21:57.272411Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=apt-get update -qq && apt-get install -y -qq curl git 2>&1 | tail -3
+2026-05-08T08:21:57.272427Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=apt-get update -qq && apt-get install -y -qq curl git 2>&1 | tail -3
+2026-05-08T08:22:06.371254Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=0 duration_ms=9098
+2026-05-08T08:22:06.379190Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.14.0 2>&1 | tail -3 && . ~/.asdf/asdf.sh && asdf --version
+2026-05-08T08:22:06.379358Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.14.0 2>&1 | tail -3 && . ~/.asdf/asdf.sh && asdf --version
+2026-05-08T08:22:06.379373Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.14.0 2>&1 | tail -3 && . ~/.asdf/asdf.sh && asdf --version
+2026-05-08T08:22:07.996692Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=1 duration_ms=1617
+2026-05-08T08:22:08.004128Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && asdf plugin add java 2>&1 | tail -1 && asdf install java adoptopenjdk-17.0.8+7 2>&1 | tail -5 && asdf global java adoptopenjdk-17.0.8+7 && java -version 2>&1
+2026-05-08T08:22:08.004297Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && asdf plugin add java 2>&1 | tail -1 && asdf install java adoptopenjdk-17.0.8+7 2>&1 | tail -5 && asdf global java adoptopenjdk-17.0.8+7 && java -version 2>&1
+2026-05-08T08:22:08.004308Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && asdf plugin add java 2>&1 | tail -1 && asdf install java adoptopenjdk-17.0.8+7 2>&1 | tail -5 && asdf global java adoptopenjdk-17.0.8+7 && java -version 2>&1
+2026-05-08T08:22:08.173193Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=1 duration_ms=168
+2026-05-08T08:22:08.182504Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && asdf plugin add maven 2>&1 | tail -1 && asdf install maven 3.9.6 2>&1 | tail -5 && asdf global maven 3.9.6 && mvn --version 2>&1 | head -1
+2026-05-08T08:22:08.182752Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && asdf plugin add maven 2>&1 | tail -1 && asdf install maven 3.9.6 2>&1 | tail -5 && asdf global maven 3.9.6 && mvn --version 2>&1 | head -1
+2026-05-08T08:22:08.182776Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && asdf plugin add maven 2>&1 | tail -1 && asdf install maven 3.9.6 2>&1 | tail -5 && asdf global maven 3.9.6 && mvn --version 2>&1 | head -1
+2026-05-08T08:22:08.349376Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=1 duration_ms=166
+2026-05-08T08:22:08.356089Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && cd /tmp && git clone --depth 1 https://github.com/spring-projects/spring-petclinic.git 2>&1 | tail -3
+2026-05-08T08:22:08.356231Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && cd /tmp && git clone --depth 1 https://github.com/spring-projects/spring-petclinic.git 2>&1 | tail -3
+2026-05-08T08:22:08.356241Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && cd /tmp && git clone --depth 1 https://github.com/spring-projects/spring-petclinic.git 2>&1 | tail -3
+2026-05-08T08:22:08.525545Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=1 duration_ms=169
+2026-05-08T08:22:08.533362Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && cd /tmp/spring-petclinic && mvn package -DskipTests -q 2>&1 | tail -10
+2026-05-08T08:22:08.533515Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && cd /tmp/spring-petclinic && mvn package -DskipTests -q 2>&1 | tail -10
+2026-05-08T08:22:08.533527Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && cd /tmp/spring-petclinic && mvn package -DskipTests -q 2>&1 | tail -10
+2026-05-08T08:22:08.699587Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=1 duration_ms=166
+2026-05-08T08:22:08.707001Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && ls -lh /tmp/spring-petclinic/target/*.jar 2>&1
+2026-05-08T08:22:08.707130Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && ls -lh /tmp/spring-petclinic/target/*.jar 2>&1
+2026-05-08T08:22:08.707139Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && ls -lh /tmp/spring-petclinic/target/*.jar 2>&1
+2026-05-08T08:22:08.879633Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=1 duration_ms=172
+2026-05-08T08:22:08.888366Z  INFO bastion_gateway::server::sandbox_tools: Running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && cd /tmp/spring-petclinic && mvn dependency:tree -q 2>&1 | head -5
+2026-05-08T08:22:08.888588Z  INFO bastion_application::execution::run_command: Executing command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && cd /tmp/spring-petclinic && mvn dependency:tree -q 2>&1 | head -5
+2026-05-08T08:22:08.888605Z  INFO bastion_infrastructure::provider::podman: Running command via exec (fallback) sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc command=. ~/.asdf/asdf.sh && cd /tmp/spring-petclinic && mvn dependency:tree -q 2>&1 | head -5
+2026-05-08T08:22:09.057493Z  INFO bastion_infrastructure::provider::podman: Command completed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc exit_code=1 duration_ms=168
+2026-05-08T08:22:09.065807Z  INFO bastion_infrastructure::template::snapshot: Creating snapshot sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc name="e2e-petclinic-snapshot"
+2026-05-08T08:23:58.249378Z  INFO bastion_infrastructure::template::snapshot: Snapshot created snapshot_id=snap:e2e-petclinic-snapshot-1778228638
+2026-05-08T08:24:00.235936Z  INFO bastion_gateway::server::sandbox_tools: Syncing files sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc mode="pull" backend=Tar source="/tmp/spring-petclinic/target" target="/tmp/sync-output"
+2026-05-08T08:24:00.349648Z  INFO bastion_gateway::server::sandbox_tools: Cancelling sandbox command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc grace_period_ms=1000
+2026-05-08T08:24:00.349722Z  INFO bastion_infrastructure::provider::podman: Cancelling running command sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc grace_period_ms=1000
+2026-05-08T08:24:01.385852Z  WARN bastion_infrastructure::provider::podman: Container still alive after SIGTERM, sending SIGKILL sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc
+2026-05-08T08:24:02.889387Z  INFO bastion_gateway::server::sandbox_tools: Terminating sandbox sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc
+2026-05-08T08:24:02.889616Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc
+2026-05-08T08:24:03.425926Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc
+2026-05-08T08:24:12.656861Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=f7f875e7-1b1d-4d67-b9a9-8adc67582b06
+2026-05-08T08:24:23.594829Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=f7f875e7-1b1d-4d67-b9a9-8adc67582b06
+2026-05-08T08:26:47.656938Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed
+2026-05-08T08:26:47.773563Z  WARN bastion_infrastructure::provider::podman: Stop failed, will force-remove sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed error=Docker responded with status code 404: no container with name or ID "e3acbeef-ca73-4815-9604-badd6e7375ed" found: no such container
+2026-05-08T08:26:47.784355Z  WARN bastion_infrastructure::pool::manager: Failed to terminate evicted sandbox sandbox_id=e3acbeef-ca73-4815-9604-badd6e7375ed error=Internal error: Failed to remove container: Docker responded with status code 404: no container with ID or name "e3acbeef-ca73-4815-9604-badd6e7375ed" found: no such container
+2026-05-08T08:26:47.788837Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=5e427a18-c86c-441a-a644-805a4282b284 image=debian:bookworm-slim
+2026-05-08T08:26:48.169945Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=5e427a18-c86c-441a-a644-805a4282b284
+2026-05-08T08:34:07.657042Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc
+2026-05-08T08:34:07.754165Z  WARN bastion_infrastructure::provider::podman: Stop failed, will force-remove sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc error=Docker responded with status code 404: no container with name or ID "ba620ba9-bde5-4221-b71f-e413378a73dc" found: no such container
+2026-05-08T08:34:07.759111Z  WARN bastion_infrastructure::pool::manager: Failed to terminate evicted sandbox sandbox_id=ba620ba9-bde5-4221-b71f-e413378a73dc error=Internal error: Failed to remove container: Docker responded with status code 404: no container with ID or name "ba620ba9-bde5-4221-b71f-e413378a73dc" found: no such container
+2026-05-08T08:34:07.764067Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=5544c70f-c2fe-49be-9bb9-39791a038532 image=debian:bookworm-slim
+2026-05-08T08:34:08.140118Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=5544c70f-c2fe-49be-9bb9-39791a038532
+2026-05-08T08:36:52.656723Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=5e427a18-c86c-441a-a644-805a4282b284
+2026-05-08T08:37:33.464987Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=5e427a18-c86c-441a-a644-805a4282b284
+2026-05-08T08:37:34.376247Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=c02d1670-1f8a-4b7c-869b-27afcd5f68e6 image=debian:bookworm-slim
+2026-05-08T08:37:49.188956Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=c02d1670-1f8a-4b7c-869b-27afcd5f68e6
+2026-05-08T08:44:12.656838Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=5544c70f-c2fe-49be-9bb9-39791a038532
+2026-05-08T08:44:23.246022Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=5544c70f-c2fe-49be-9bb9-39791a038532
+2026-05-08T08:44:23.249369Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=62776a43-38f2-4a1c-8f6d-a34598311c98 image=debian:bookworm-slim
+2026-05-08T08:44:23.613349Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=62776a43-38f2-4a1c-8f6d-a34598311c98
+2026-05-08T08:47:52.657104Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=c02d1670-1f8a-4b7c-869b-27afcd5f68e6
+2026-05-08T08:48:03.509345Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=c02d1670-1f8a-4b7c-869b-27afcd5f68e6
+2026-05-08T08:48:03.514432Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=4f67ed1a-864c-43c8-8ba7-6ce250296305 image=debian:bookworm-slim
+2026-05-08T08:48:03.884203Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=4f67ed1a-864c-43c8-8ba7-6ce250296305
+2026-05-08T08:54:27.656915Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=62776a43-38f2-4a1c-8f6d-a34598311c98
+2026-05-08T08:54:38.187502Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=62776a43-38f2-4a1c-8f6d-a34598311c98
+2026-05-08T08:54:38.191619Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=853e2d4d-11a7-4695-8e11-7f44328f5996 image=debian:bookworm-slim
+2026-05-08T08:54:38.514167Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=853e2d4d-11a7-4695-8e11-7f44328f5996
+2026-05-08T08:58:07.657082Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=4f67ed1a-864c-43c8-8ba7-6ce250296305
+2026-05-08T08:58:23.708436Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=4f67ed1a-864c-43c8-8ba7-6ce250296305
+2026-05-08T08:58:23.712112Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=2a923e65-4983-4199-8d25-e19c24b22434 image=debian:bookworm-slim
+2026-05-08T08:58:24.055493Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=2a923e65-4983-4199-8d25-e19c24b22434
+2026-05-08T09:04:42.657059Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=853e2d4d-11a7-4695-8e11-7f44328f5996
+2026-05-08T09:04:53.229139Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=853e2d4d-11a7-4695-8e11-7f44328f5996
+2026-05-08T09:04:53.236877Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=4ae888d1-3dcb-4577-a551-31e3a42f2aa6 image=debian:bookworm-slim
+2026-05-08T09:04:53.653358Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=4ae888d1-3dcb-4577-a551-31e3a42f2aa6
+2026-05-08T09:06:42.547901Z  INFO bastion_gateway: Found expired sandboxes, terminating... count=2
+2026-05-08T09:06:42.547961Z  INFO bastion_gateway: Terminating expired sandbox sandbox_id=15dbee66-76a7-4342-a789-fff897716bdd
+2026-05-08T09:06:42.547974Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=15dbee66-76a7-4342-a789-fff897716bdd
+2026-05-08T09:06:53.091048Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=15dbee66-76a7-4342-a789-fff897716bdd
+2026-05-08T09:06:53.095132Z  INFO bastion_gateway: Terminating expired sandbox sandbox_id=0358c1c1-ef32-458b-b0a4-292344d64cc2
+2026-05-08T09:06:53.095155Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=0358c1c1-ef32-458b-b0a4-292344d64cc2
+2026-05-08T09:07:03.488000Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=0358c1c1-ef32-458b-b0a4-292344d64cc2
+2026-05-08T09:08:27.656798Z  INFO bastion_infrastructure::provider::podman: Terminating Podman container sandbox_id=2a923e65-4983-4199-8d25-e19c24b22434
+2026-05-08T09:08:38.186151Z  INFO bastion_infrastructure::provider::podman: Container terminated and removed sandbox_id=2a923e65-4983-4199-8d25-e19c24b22434
+2026-05-08T09:08:38.190513Z  INFO bastion_infrastructure::provider::podman: Creating Podman container sandbox_id=f258c337-8fc1-4e6e-b4e0-4bb71894233f image=debian:bookworm-slim
+2026-05-08T09:08:38.523877Z  INFO bastion_infrastructure::provider::podman: Container started successfully sandbox_id=f258c337-8fc1-4e6e-b4e0-4bb71894233f

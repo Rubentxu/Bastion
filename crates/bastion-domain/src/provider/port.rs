@@ -26,6 +26,7 @@ pub type CommandStream = Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainEr
 ///
 /// This trait follows Interface Segregation by splitting concerns into logical groups,
 /// while keeping a unified interface for simplicity in the MVP.
+#[deprecated(since = "0.5.0", note = "Use SandboxLifecycle + TaskExecutor instead. See provider/compat.rs for migration.")]
 #[async_trait]
 pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
     // ── Lifecycle ──────────────────────────────────────────────
@@ -97,6 +98,19 @@ pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
     /// List files in a directory inside the sandbox.
     async fn list_files(&self, id: &SandboxId, dir: &str) -> Result<Vec<FileEntry>, DomainError>;
 
+    /// Copy a host directory into the sandbox at the given target path.
+    ///
+    /// For container-based providers (Docker/Podman), this uses put_archive.
+    /// Other providers may use cp or return UnsupportedOperation.
+    async fn copy_to(
+        &self,
+        _id: &SandboxId,
+        _host_dir: &std::path::Path,
+        _target: &str,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::UnsupportedOperation("copy_to".to_string()))
+    }
+
     // ── Snapshot Operations ─────────────────────────────────────
 
     /// Create a snapshot of the sandbox state.
@@ -110,6 +124,21 @@ pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
 
     /// Restore a sandbox from a snapshot.
     async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+        Err(DomainError::UnsupportedOperation("snapshots".to_string()))
+    }
+
+    /// Check if a snapshot exists.
+    async fn snapshot_exists(&self, _snapshot_id: &str) -> Result<bool, DomainError> {
+        Err(DomainError::UnsupportedOperation("snapshots".to_string()))
+    }
+
+    /// Delete a snapshot (remove the image).
+    async fn delete_snapshot(&self, _snapshot_id: &str) -> Result<(), DomainError> {
+        Err(DomainError::UnsupportedOperation("snapshots".to_string()))
+    }
+
+    /// List all snapshots managed by this provider.
+    async fn list_snapshots(&self) -> Result<Vec<SnapshotInfo>, DomainError> {
         Err(DomainError::UnsupportedOperation("snapshots".to_string()))
     }
 

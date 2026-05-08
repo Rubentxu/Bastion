@@ -44,3 +44,9 @@ pub enum DomainError {
     #[error("Rate limiter lock poisoned: {0}")]
     PoisonedLock(String),
 }
+
+impl From<std::io::Error> for DomainError {
+    fn from(e: std::io::Error) -> Self {
+        DomainError::Internal(e.to_string())
+    }
+}

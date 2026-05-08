@@ -533,9 +533,9 @@ async fn main() -> Result<()> {
                 let built_in = enrichment_engine::enrichers::all_enrichers();
                 for enricher in &built_in {
                     if let Err(e) = catalog_repo.upsert_enricher(enricher).await {
-                        tracing::warn!(enricher_id = %enricher.id, error = %e, "Failed to upsert built-in enricher");
+                        tracing::error!(enricher_id = %enricher.id, error = %e, "FATAL: Failed to upsert built-in enricher");
                     } else {
-                        tracing::debug!(enricher_id = %enricher.id, "Upserted built-in enricher");
+                        tracing::info!(enricher_id = %enricher.id, "Upserted built-in enricher");
                     }
                 }
 

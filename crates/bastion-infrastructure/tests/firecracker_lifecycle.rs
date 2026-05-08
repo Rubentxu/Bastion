@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(not(feature = "use-segregated-traits"))]
 fn provider() -> bastion_infrastructure::provider::FirecrackerProvider {
     let fc_bin = std::env::var("FIRECRACKER_BIN")
         .map(PathBuf::from)
@@ -59,6 +60,49 @@ fn provider() -> bastion_infrastructure::provider::FirecrackerProvider {
         data_dir,
         worker_bin,
         "10.0.2.1:50052".to_string(),
+    )
+    .expect("Failed to create FirecrackerProvider")
+}
+
+#[cfg(feature = "use-segregated-traits")]
+fn provider() -> bastion_infrastructure::provider::FirecrackerProvider {
+    use bastion_infrastructure::provider::network::HostBackend;
+
+    let fc_bin = std::env::var("FIRECRACKER_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home().join(".local/bin/firecracker"));
+
+    let kernel = std::env::var("KERNEL_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home().join(".local/share/bastion/vmlinux.bin"));
+
+    let rootfs = std::env::var("ROOTFS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home().join(".local/share/bastion/rootfs.ext4"));
+
+    let worker_bin = std::env::var("WORKER_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from("target/x86_64-unknown-linux-musl/release/bastion-worker")
+        });
+
+    // Unique directory per test to prevent interference
+    let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let data_dir = PathBuf::from(format!(
+        "/tmp/bastion-fc-test-{}-{}",
+        std::process::id(),
+        count
+    ));
+    std::fs::create_dir_all(&data_dir).ok();
+
+    bastion_infrastructure::provider::FirecrackerProvider::new(
+        fc_bin,
+        kernel,
+        rootfs,
+        data_dir,
+        worker_bin,
+        "10.0.2.1:50052".to_string(),
+        HostBackend::new(),
     )
     .expect("Failed to create FirecrackerProvider")
 }

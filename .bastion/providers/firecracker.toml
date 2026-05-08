@@ -7,7 +7,7 @@ plugin = "builtin"
 default = false
 # socket unused for firecracker — binary is auto-detected
 image = "bastion/firecracker:latest"
-worker_binary = "target/release/bastion-worker"
+worker_binary = "target/x86_64-unknown-linux-musl/release/bastion-worker"
 
 [capabilities]
 supports_snapshots = true

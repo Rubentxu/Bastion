@@ -115,7 +115,7 @@ impl<S: ArtifactStore> PodmanOptimizedMaterializer<S> {
         Ok((target, false))
     }
 
-    /// Copy the extracted host cache into the sandbox via podman cp.
+    /// Copy the extracted host cache into the sandbox via the provider's copy_to (bollard put_archive).
     async fn copy_to_sandbox(
         &self,
         sandbox_id: &SandboxId,
@@ -129,27 +129,8 @@ impl<S: ArtifactStore> PodmanOptimizedMaterializer<S> {
         ));
         let _ = self.provider.run_command(sandbox_id, &mkdir_cmd).await;
 
-        // Use podman cp to copy from host to container
-        let container_name = sandbox_id.to_string();
-        let output = tokio::process::Command::new("podman")
-            .args([
-                "cp",
-                &format!("{}/.", host_dir.display()),
-                &format!("{}:{}", container_name, container_target),
-            ])
-            .output()
-            .await
-            .map_err(|e| DomainError::Internal(format!("podman cp: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DomainError::Internal(format!(
-                "podman cp failed: {}",
-                stderr
-            )));
-        }
-
-        Ok(())
+        // Use provider's copy_to (bollard upload_to_container) instead of podman cp CLI
+        self.provider.copy_to(sandbox_id, host_dir, container_target).await
     }
 
     /// Run verification steps inside the sandbox.

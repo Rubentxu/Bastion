@@ -12,6 +12,10 @@ use std::sync::{Arc, RwLock};
 use crate::provider::config::ProviderConfig;
 use crate::provider::factory::ProviderFactory;
 use bastion_domain::provider::SandboxProvider;
+#[cfg(feature = "use-segregated-traits")]
+use bastion_domain::provider::rootfs::RootfsManager;
+#[cfg(feature = "use-segregated-traits")]
+use crate::provider::network::TapBackend;
 
 #[cfg(feature = "file-watcher")]
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -175,6 +179,18 @@ impl ProviderRegistry {
                     .unwrap_or_else(|| PathBuf::from("target/release/bastion-worker"));
                 let gateway_addr = "127.0.0.1:50052".to_string();
 
+                #[cfg(feature = "use-segregated-traits")]
+                let gvisor = crate::provider::GVisorProvider::new(
+                    runsc_binary,
+                    &image,
+                    rootfs_dir,
+                    worker_binary,
+                    gateway_addr,
+                    crate::provider::DefaultRootfsManager::new(),
+                )
+                .map_err(|e| RegistryError::Watcher(e.to_string()))?;
+
+                #[cfg(not(feature = "use-segregated-traits"))]
                 let gvisor = crate::provider::GVisorProvider::new(
                     runsc_binary,
                     &image,
@@ -183,6 +199,7 @@ impl ProviderRegistry {
                     gateway_addr,
                 )
                 .map_err(|e| RegistryError::Watcher(e.to_string()))?;
+
                 Ok(Arc::new(gvisor) as Arc<dyn SandboxProvider>)
             }
             "firecracker" => {
@@ -214,6 +231,19 @@ impl ProviderRegistry {
                     .unwrap_or_else(|| PathBuf::from("target/release/bastion-worker"));
                 let gateway_addr = "127.0.0.1:50052".to_string();
 
+                #[cfg(feature = "use-segregated-traits")]
+                let firecracker = crate::provider::FirecrackerProvider::new(
+                    firecracker_binary,
+                    kernel_path,
+                    rootfs_path,
+                    vm_dir,
+                    worker_binary,
+                    gateway_addr,
+                    TapBackend::new("10.0.2.1".to_string(), 24),
+                )
+                .map_err(|e| RegistryError::Watcher(e.to_string()))?;
+
+                #[cfg(not(feature = "use-segregated-traits"))]
                 let firecracker = crate::provider::FirecrackerProvider::new(
                     firecracker_binary,
                     kernel_path,
@@ -223,6 +253,7 @@ impl ProviderRegistry {
                     gateway_addr,
                 )
                 .map_err(|e| RegistryError::Watcher(e.to_string()))?;
+
                 Ok(Arc::new(firecracker) as Arc<dyn SandboxProvider>)
             }
             "local" => {

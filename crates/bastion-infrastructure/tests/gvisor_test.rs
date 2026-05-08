@@ -108,6 +108,7 @@ fn create_rootfs(dir: &std::path::Path) {
 }
 
 /// Create a GVisorProvider for testing.
+#[cfg(not(feature = "use-segregated-traits"))]
 fn provider() -> bastion_infrastructure::provider::GVisorProvider {
     let runsc = find_runsc().expect("runsc not found in PATH. Install gVisor first.");
 
@@ -138,6 +139,45 @@ fn provider() -> bastion_infrastructure::provider::GVisorProvider {
         rootfs_dir.clone(),
         worker_bin,
         "10.0.2.1:50052".to_string(),
+    )
+    .expect("Failed to create GVisorProvider")
+}
+
+/// Create a GVisorProvider for testing (segregated-traits version).
+#[cfg(feature = "use-segregated-traits")]
+fn provider() -> bastion_infrastructure::provider::GVisorProvider {
+    use bastion_infrastructure::provider::DefaultRootfsManager;
+
+    let runsc = find_runsc().expect("runsc not found in PATH. Install gVisor first.");
+
+    // Create a unique temp rootfs for this test run
+    let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let rootfs_dir = std::env::temp_dir().join(format!("bastion-gvisor-test-{}", count));
+    if rootfs_dir.exists() {
+        std::fs::remove_dir_all(&rootfs_dir).ok();
+    }
+    std::fs::create_dir_all(&rootfs_dir).expect("Cannot create test rootfs dir");
+
+    // Create a minimal rootfs image
+    let image_dir = rootfs_dir.join("default");
+    create_rootfs(&image_dir);
+
+    // Create a dummy worker binary
+    let worker_bin = rootfs_dir.join("bastion-worker");
+    std::fs::write(&worker_bin, b"#!/bin/sh\necho 'mock worker'\n").expect("Cannot write worker");
+    std::fs::set_permissions(
+        &worker_bin,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("Cannot set worker permissions");
+
+    bastion_infrastructure::provider::GVisorProvider::new(
+        runsc,
+        "default",
+        rootfs_dir.clone(),
+        worker_bin,
+        "10.0.2.1:50052".to_string(),
+        DefaultRootfsManager::new(),
     )
     .expect("Failed to create GVisorProvider")
 }

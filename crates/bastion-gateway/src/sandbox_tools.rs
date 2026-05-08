@@ -70,7 +70,7 @@ use bastion_infrastructure::metrics::GatewayMetrics;
 use bastion_infrastructure::pool::SandboxPoolManager;
 use bastion_infrastructure::template::{
     AptAdapter, AsdfAdapter, CapabilityRegistry, FsArtifactStore, PodmanOptimizedMaterializer,
-    SdkmanAdapter, SnapshotManager,
+    SdkmanAdapter, UniversalMaterializer,
 };
 
 use crate::server::BastionGateway;
@@ -1030,15 +1030,32 @@ impl BastionGateway {
 
         // If artifact found, use materializer
         if let Ok(artifact) = artifact {
-            let materializer = PodmanOptimizedMaterializer::new(
-                prepare_provider.clone(),
-                self.artifact_store.clone(),
-                PathBuf::from("/tmp/bastion-cache"),
-            );
-            match materializer
-                .materialize(&sandbox_id, &artifact, MaterializationMode::Auto)
-                .await
-            {
+            let provider_name = prepare_provider.name().to_lowercase();
+            // Podman/Docker: use PodmanOptimizedMaterializer (copy_to via bollard)
+            // gVisor/Firecracker/K8s: use UniversalMaterializer (write_file + run_command)
+            let use_optimized = matches!(provider_name.as_str(), "podman" | "docker");
+
+            let result = if use_optimized {
+                let materializer = PodmanOptimizedMaterializer::new(
+                    prepare_provider.clone(),
+                    self.artifact_store.clone(),
+                    PathBuf::from("/tmp/bastion-cache"),
+                );
+                materializer
+                    .materialize(&sandbox_id, &artifact, MaterializationMode::Auto)
+                    .await
+            } else {
+                let materializer = UniversalMaterializer::new(
+                    prepare_provider.clone(),
+                    self.artifact_store.clone(),
+                    PathBuf::from("/tmp/bastion-cache"),
+                );
+                materializer
+                    .materialize(&sandbox_id, &artifact, MaterializationMode::Auto)
+                    .await
+            };
+
+            match result {
                 Ok(result) => {
                     // Auto-inject: register this env_ref as default for this sandbox
                     if let Some(ref env_ref) = result.env_ref {
@@ -1293,8 +1310,6 @@ impl BastionGateway {
         &self,
         Parameters(params): Parameters<SandboxSnapshotParams>,
     ) -> String {
-        let snapshot_manager = SnapshotManager::new(bastion_domain::template::ProviderKind::Podman);
-
         match params.action.as_str() {
             "create" => {
                 let sandbox_id = match &params.sandbox_id {
@@ -1312,7 +1327,7 @@ impl BastionGateway {
                     }
                 };
 
-                match snapshot_manager.create_snapshot(&sandbox_id, name).await {
+                match self.provider.create_snapshot(&sandbox_id, name).await {
                     Ok(info) => serde_json::json!({
                         "status": "created",
                         "snapshot_id": info.snapshot_id,
@@ -1334,7 +1349,7 @@ impl BastionGateway {
                     }
                 };
 
-                match snapshot_manager.restore_snapshot(snapshot_id).await {
+                match self.provider.restore_snapshot(snapshot_id).await {
                     Ok(sandbox) => {
                         // Register the restored sandbox in the gateway's repository
                         // so it's visible to sandbox_run, sandbox_info, etc.
@@ -1352,7 +1367,7 @@ impl BastionGateway {
                     Err(e) => serde_json::json!({"error": format!("{}", e)}).to_string(),
                 }
             }
-            "list" => match snapshot_manager.list_snapshots().await {
+            "list" => match self.provider.list_snapshots().await {
                 Ok(list) => serde_json::json!({
                     "status": "ok",
                     "snapshots": list.iter().map(|s| {
@@ -1377,7 +1392,7 @@ impl BastionGateway {
                     }
                 };
 
-                match snapshot_manager.delete_snapshot(snapshot_id).await {
+                match self.provider.delete_snapshot(snapshot_id).await {
                     Ok(()) => serde_json::json!({
                         "status": "deleted",
                         "snapshot_id": snapshot_id

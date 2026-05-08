@@ -1,4 +1,5 @@
 //! Integration test for snapshot create/restore cycle.
+//! Uses provider trait methods (bollard SDK), not the deprecated SnapshotManager.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -7,9 +8,7 @@ use std::sync::Arc;
 use bastion_domain::execution::command::CommandSpec;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::shared::id::SandboxId;
-use bastion_domain::template::ProviderKind;
 use bastion_infrastructure::provider::podman::PodmanProvider;
-use bastion_infrastructure::template::SnapshotManager;
 
 fn require_podman() {
     let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
@@ -27,12 +26,10 @@ async fn test_snapshot_create_and_restore() {
         PodmanProvider::new(
             "/run/user/1000/podman/podman.sock",
             "debian:bookworm-slim",
-            PathBuf::from("/tmp"), // Use a directory, not a binary path
+            PathBuf::from("/tmp"),
         )
         .expect("PodmanProvider"),
     );
-
-    let snapshot_mgr = SnapshotManager::new(ProviderKind::Podman);
 
     // Create original sandbox and install something
     let sandbox_id = SandboxId::generate();
@@ -68,9 +65,9 @@ async fn test_snapshot_create_and_restore() {
         output
     );
 
-    // Create snapshot
+    // Create snapshot via provider trait (bollard SDK)
     let snapshot_name = format!("test-snap-{}", sandbox_id.as_str());
-    let snapshot = snapshot_mgr
+    let snapshot = provider
         .create_snapshot(&sandbox_id, &snapshot_name)
         .await
         .expect("create snapshot");
@@ -79,7 +76,7 @@ async fn test_snapshot_create_and_restore() {
     eprintln!("Snapshot created: {}", snapshot.snapshot_id);
 
     // Verify snapshot exists
-    let exists = snapshot_mgr
+    let exists = provider
         .snapshot_exists(&snapshot.snapshot_id)
         .await
         .expect("check exists");
@@ -89,7 +86,7 @@ async fn test_snapshot_create_and_restore() {
     provider.terminate(&sandbox_id).await.expect("terminate");
 
     // Restore from snapshot
-    let restored = snapshot_mgr
+    let restored = provider
         .restore_snapshot(&snapshot.snapshot_id)
         .await
         .expect("restore snapshot");
@@ -120,7 +117,7 @@ async fn test_snapshot_create_and_restore() {
 
     // Cleanup
     provider.terminate(&restored_id).await.ok();
-    snapshot_mgr
+    provider
         .delete_snapshot(&snapshot.snapshot_id)
         .await
         .ok();

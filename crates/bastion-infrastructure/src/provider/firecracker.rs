@@ -22,6 +22,12 @@ use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::port::{CommandStream, SandboxProvider};
+#[cfg(feature = "use-segregated-traits")]
+use bastion_domain::provider::image_source::{ImageSource, SquashfsImage};
+#[cfg(feature = "use-segregated-traits")]
+use bastion_domain::provider::state_machine::SandboxStateMachine;
+#[cfg(feature = "use-segregated-traits")]
+use bastion_domain::provider::network::NetworkBackend;
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
@@ -59,6 +65,12 @@ pub struct FirecrackerProvider {
     gateway_addr: String,
     /// Optional command router for registry-based command execution.
     command_router: Option<Arc<dyn CommandRouter>>,
+    /// State machine for sandbox lifecycle (when use-segregated-traits is enabled)
+    #[cfg(feature = "use-segregated-traits")]
+    state_machine: Arc<SandboxStateMachine>,
+    /// Network backend for TAP device management.
+    #[cfg(feature = "use-segregated-traits")]
+    network_backend: Arc<dyn NetworkBackend>,
 }
 
 impl std::fmt::Debug for FirecrackerProvider {
@@ -71,6 +83,8 @@ impl std::fmt::Debug for FirecrackerProvider {
             .field("worker_binary", &self.worker_binary)
             .field("gateway_addr", &self.gateway_addr)
             .field("command_router", &self.command_router.is_some())
+            .field("state_machine", &"...")
+            .field("network_backend", &"...")
             .finish()
     }
 }
@@ -84,6 +98,60 @@ impl FirecrackerProvider {
     /// * `vm_dir` — directory where per-VM sockets and metadata are stored
     /// * `worker_binary` — path to the bastion-worker MUSL static binary
     /// * `gateway_addr` — host gateway address for worker connections (e.g., "10.0.2.1:50052")
+    /// * `network_backend` — backend for TAP device creation/destruction
+    #[cfg(feature = "use-segregated-traits")]
+    pub fn new(
+        firecracker_binary: PathBuf,
+        kernel_path: PathBuf,
+        rootfs_path: PathBuf,
+        vm_dir: PathBuf,
+        worker_binary: PathBuf,
+        gateway_addr: String,
+        network_backend: impl NetworkBackend + 'static,
+    ) -> Result<Self, DomainError> {
+        // Validate paths exist
+        if !firecracker_binary.exists() {
+            return Err(DomainError::Config(format!(
+                "Firecracker binary not found: {}",
+                firecracker_binary.display()
+            )));
+        }
+        if !kernel_path.exists() {
+            return Err(DomainError::Config(format!(
+                "Kernel not found: {}",
+                kernel_path.display()
+            )));
+        }
+        if !rootfs_path.exists() {
+            return Err(DomainError::Config(format!(
+                "Rootfs not found: {}",
+                rootfs_path.display()
+            )));
+        }
+
+        std::fs::create_dir_all(&vm_dir)
+            .map_err(|e| DomainError::Config(format!("Cannot create VM directory: {e}")))?;
+
+        // Detect read-only filesystems (squashfs) by magic bytes
+        let rootfs_readonly = Self::detect_readonly(&rootfs_path);
+
+        Ok(Self {
+            firecracker_binary,
+            kernel_path,
+            rootfs_path,
+            vm_dir,
+            rootfs_readonly,
+            vms: Arc::new(DashMap::new()),
+            worker_binary,
+            gateway_addr,
+            command_router: None,
+            state_machine: Arc::new(SandboxStateMachine::new()),
+            network_backend: Arc::new(network_backend),
+        })
+    }
+
+    /// Create a new Firecracker provider (legacy API without RootfsManager).
+    #[cfg(not(feature = "use-segregated-traits"))]
     pub fn new(
         firecracker_binary: PathBuf,
         kernel_path: PathBuf,
@@ -327,7 +395,8 @@ impl FirecrackerProvider {
         self.command_router = Some(router);
     }
 
-    /// Create a TAP device for VM networking.
+    /// Create a TAP device for VM networking (legacy path without network backend).
+    #[cfg(not(feature = "use-segregated-traits"))]
     fn create_tap_device(&self, tap_name: &str) -> Result<(), DomainError> {
         let output = std::process::Command::new("ip")
             .args(["tuntap", "add", "dev", tap_name, "mode", "tap"])
@@ -348,14 +417,17 @@ impl FirecrackerProvider {
         Ok(())
     }
 
-    /// Destroy a TAP device.
-    fn destroy_tap_device(&self, tap_name: &str) {
-        let _ = std::process::Command::new("ip")
-            .args(["link", "set", tap_name, "down"])
-            .output();
-        let _ = std::process::Command::new("ip")
-            .args(["tuntap", "del", "dev", tap_name, "mode", "tap"])
-            .output();
+    /// Sanitize sandbox ID for use as a Linux interface name (max 15 chars, no underscores).
+    #[cfg(not(feature = "use-segregated-traits"))]
+    fn tap_name(id: &SandboxId) -> String {
+        format!(
+            "tap-{}",
+            id.to_string()
+                .replace('_', "-")
+                .chars()
+                .take(12)
+                .collect::<String>()
+        )
     }
 
     /// Verify the worker binary is static musl.
@@ -461,18 +533,6 @@ impl FirecrackerProvider {
         Ok(())
     }
 
-    /// Sanitize sandbox ID for use as a Linux interface name (max 15 chars, no underscores).
-    fn tap_name(id: &SandboxId) -> String {
-        format!(
-            "tap-{}",
-            id.to_string()
-                .replace('_', "-")
-                .chars()
-                .take(12)
-                .collect::<String>()
-        )
-    }
-
     /// Start the worker process via serial console (internal helper for create).
     /// Calls through to run_command, which falls through to serial console
     /// when the worker is not yet registered.
@@ -521,13 +581,52 @@ impl SandboxProvider for FirecrackerProvider {
         // Firecracker rootfs uses musl libc, so the binary must be static musl
         self.verify_worker_binary().await?;
 
+        // Validate rootfs image using SquashfsImage
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            let rootfs_image = SquashfsImage::new(self.rootfs_path.clone());
+            rootfs_image.validate().await?;
+        }
+
         // Prepare per-sandbox rootfs with worker binary injected
+        // Note: Firecracker uses disk images with mount/umount injection, not OCI bundles
         let sandbox_rootfs = sandbox_dir.join("rootfs.img");
+
+        #[cfg(not(feature = "use-segregated-traits"))]
         self.prepare_rootfs(&self.rootfs_path, &sandbox_rootfs)?;
 
-        // Create TAP device for networking
-        let tap_name = Self::tap_name(id);
-        self.create_tap_device(&tap_name)?;
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            // With RootfsManager: copy rootfs (injection requires separate handling for disk images)
+            use tokio::fs as tokio_fs;
+            tokio_fs::copy(&self.rootfs_path, &sandbox_rootfs)
+                .await
+                .map_err(|e| DomainError::Internal(format!("Failed to copy rootfs: {e}")))?;
+
+            if self.rootfs_readonly {
+                tracing::debug!("Rootfs is read-only, skipping worker injection (must be pre-baked)");
+            } else {
+                // For Firecracker, we still need mount-based injection for disk images
+                // RootfsManager is designed for OCI bundles - Firecracker needs special handling
+                tracing::warn!("Firecracker worker injection via mount - consider pre-baking worker in rootfs");
+                // Use mount-based injection
+                self.prepare_rootfs(&self.rootfs_path, &sandbox_rootfs)?;
+            }
+        }
+
+        // Create TAP device for networking and get the interface name
+        #[cfg(feature = "use-segregated-traits")]
+        let tap_name = {
+            let config = self.network_backend.setup(id, _network).await?;
+            config.interface_name
+        };
+
+        #[cfg(not(feature = "use-segregated-traits"))]
+        let tap_name = {
+            let name = Self::tap_name(id);
+            self.create_tap_device(&name)?;
+            name
+        };
 
         // 1. Spawn firecracker process with piped stdin/stdout for serial console
         let mut child = Command::new(&self.firecracker_binary)
@@ -680,6 +779,13 @@ impl SandboxProvider for FirecrackerProvider {
         sandbox.set_timeout(timeout_ms);
         sandbox.mark_running()?;
 
+        // Register with state machine when feature is enabled
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            self.state_machine.register(id.clone())?;
+            self.state_machine.transition(id, SandboxStatus::Running)?;
+        }
+
         Ok(sandbox)
     }
 
@@ -709,9 +815,15 @@ impl SandboxProvider for FirecrackerProvider {
             let _ = vm.child.kill().await;
         }
 
+        // Remove from state machine when feature is enabled
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            self.state_machine.remove(id);
+        }
+
         // Clean up TAP device
-        let tap_name = Self::tap_name(id);
-        self.destroy_tap_device(&tap_name);
+        #[cfg(feature = "use-segregated-traits")]
+        self.network_backend.teardown(id).await?;
 
         // Clean up sandbox directory (which also removes the socket)
         let sandbox_dir = self.sandbox_dir(id);
@@ -724,6 +836,18 @@ impl SandboxProvider for FirecrackerProvider {
     }
 
     async fn is_alive(&self, id: &SandboxId) -> Result<bool, DomainError> {
+        // Check FSM state first when feature is enabled
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            if let Some(status) = self.state_machine.get_state(id) {
+                // If FSM says Stopped or Failed, return false immediately
+                if status == SandboxStatus::Stopped || status == SandboxStatus::Failed {
+                    return Ok(false);
+                }
+                // If Running, still verify with process check below
+            }
+        }
+
         let socket_path = self.socket_path(id);
         if !socket_path.exists() {
             return Ok(false);
@@ -1171,6 +1295,17 @@ impl SandboxProvider for FirecrackerProvider {
         let limit = filter.limit.unwrap_or(u32::MAX) as usize;
 
         // Collect keys to avoid holding DashMap lock while calling try_wait
+        #[cfg(feature = "use-segregated-traits")]
+        let sandbox_ids: Vec<String> = {
+            self.state_machine
+                .list_active()
+                .into_iter()
+                .map(|id| id.to_string())
+                .take(limit)
+                .collect()
+        };
+
+        #[cfg(not(feature = "use-segregated-traits"))]
         let sandbox_ids: Vec<String> = self
             .vms
             .iter()
@@ -1278,6 +1413,24 @@ impl SandboxProvider for FirecrackerProvider {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "use-segregated-traits")]
+    #[cfg(feature = "use-segregated-traits")]
+    #[test]
+    fn test_new_validates_paths() {
+        use crate::provider::network::HostBackend;
+        let result = FirecrackerProvider::new(
+            PathBuf::from("/nonexistent/firecracker"),
+            PathBuf::from("/nonexistent/vmlinux"),
+            PathBuf::from("/nonexistent/rootfs"),
+            PathBuf::from("/tmp/bastion-test"),
+            PathBuf::from("/nonexistent/bastion-worker"),
+            "10.0.2.1:50052".to_string(),
+            HostBackend::new(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[cfg(not(feature = "use-segregated-traits"))]
     #[test]
     fn test_new_validates_paths() {
         let result = FirecrackerProvider::new(
