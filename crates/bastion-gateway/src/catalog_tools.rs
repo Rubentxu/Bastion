@@ -72,7 +72,9 @@ pub fn catalog_tools() -> ToolRouter<BastionGateway> {
 
 impl BastionGateway {
     /// List experience records by trace ID, sorted by started_at descending.
-    #[tool(description = "List experience records filtered by trace_id")]
+    ///
+    /// Experiences record tool invocations (sandbox_run, sandbox_prepare, etc.) with stdout/stderr and exit codes.
+    #[tool(description = "List experience records by trace_id, sorted by started_at descending. Experiences record tool invocations with stdout/stderr and exit codes.")]
     async fn experience_list(
         &self,
         Parameters(params): Parameters<ExperienceListParams>,
@@ -102,7 +104,9 @@ impl BastionGateway {
     }
 
     /// Get a single experience record by ID.
-    #[tool(description = "Get a single experience record by ID")]
+    ///
+    /// Returns the full experience record including all recorded tool invocations and their outputs.
+    #[tool(description = "Get a single experience record by ID. Returns full invocation details and outputs.")]
     async fn experience_get(&self, Parameters(params): Parameters<ExperienceGetParams>) -> String {
         let store = match &self.catalog_config.experience_store {
             Some(s) => s,
@@ -131,7 +135,9 @@ impl BastionGateway {
     }
 
     /// List all available assertions.
-    #[tool(description = "List all loaded assertion descriptors")]
+    ///
+    /// Assertions validate experience records against expected outcomes (e.g., exit_code=0, stdout contains pattern).
+    #[tool(description = "List all loaded assertion descriptors. Assertions validate experience records against expected outcomes (exit codes, stdout patterns, etc.).")]
     async fn assertion_list(&self) -> String {
         let registry = match &self.catalog_config.assertion_registry {
             Some(r) => r,
@@ -152,7 +158,9 @@ impl BastionGateway {
     }
 
     /// Run an assertion against an experience record.
-    #[tool(description = "Evaluate an assertion against an experience record")]
+    ///
+    /// Evaluates all checks in the assertion against the experience. Returns passed=true only if all checks pass.
+    #[tool(description = "Evaluate an assertion against an experience record. All checks must pass for passed=true. Returns per-check results.")]
     async fn assertion_run(&self, Parameters(params): Parameters<AssertionRunParams>) -> String {
         let store = match &self.catalog_config.experience_store {
             Some(s) => s,
@@ -227,7 +235,9 @@ impl BastionGateway {
     }
 
     /// Get an assertion descriptor without running it against an experience.
-    #[tool(description = "Get assertion descriptor without evaluating against an experience")]
+    ///
+    /// Use to inspect what an assertion checks without evaluating it.
+    #[tool(description = "Get assertion descriptor without evaluating it. Use to inspect what an assertion checks.")]
     async fn assertion_dry_run(
         &self,
         Parameters(params): Parameters<AssertionDryRunParams>,

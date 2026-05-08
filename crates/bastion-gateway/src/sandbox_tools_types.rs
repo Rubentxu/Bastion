@@ -24,12 +24,12 @@ pub enum SyncBackend {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[allow(dead_code)]
 pub struct SandboxCreateParams {
-    /// Template (base image) for the sandbox
+    /// Template (base image) for the sandbox, e.g. "debian:bookworm-slim". Use sandbox_list_templates to see available images.
     pub template: String,
-    /// Timeout in milliseconds
+    /// Timeout in milliseconds for sandbox creation (default: 3.6M ms = 1 hour). Creation fails if exceeded.
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
-    /// Provider to use: podman, firecracker, gvisor (default: podman)
+    /// Provider to use: podman, firecracker, gvisor (default: podman). Must support the template image.
     #[serde(default = "default_provider_name")]
     pub provider: String,
 }
@@ -44,14 +44,15 @@ fn default_provider_name() -> String {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxRunParams {
-    /// ID of the sandbox
+    /// ID of the sandbox to run the command in. Must be running (created + prepared if capability needed).
     pub sandbox_id: String,
-    /// Command to execute
+    /// Command to execute inside the sandbox (e.g. "mvn --version", "node index.js").
     pub command: String,
-    /// Optional environment reference from sandbox_prepare
+    /// Optional environment reference from sandbox_prepare. If omitted, auto-injects env from most recent sandbox_prepare for this sandbox_id.
+    /// Pass explicitly in concurrent workflows to avoid race conditions.
     #[serde(default)]
     pub env_ref: Option<String>,
-    /// Optional trace ID to correlate experiences across tools
+    /// Optional trace ID to correlate this command with other tools across the same workflow.
     #[serde(default)]
     pub trace_id: Option<String>,
 }
@@ -59,29 +60,36 @@ pub struct SandboxRunParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[allow(dead_code)]
 pub struct SandboxWriteParams {
+    /// ID of the sandbox to write the file into.
     pub sandbox_id: String,
+    /// Destination path inside the sandbox. Parent directories created automatically.
     pub path: String,
+    /// File content as a string. For binary content, prefer sandbox_sync (push) instead.
     pub content: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxReadParams {
+    /// ID of the sandbox to read from.
     pub sandbox_id: String,
+    /// Path of the file to read inside the sandbox.
     pub path: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxTerminateParams {
+    /// ID of the sandbox to terminate and destroy. Call when done to free resources.
     pub sandbox_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxCancelParams {
+    /// ID of the sandbox whose running command to cancel.
     pub sandbox_id: String,
-    /// Grace period in milliseconds before sending SIGKILL after SIGTERM. Default: 5000ms
+    /// Grace period in milliseconds before SIGKILL (after SIGTERM). Default: 5000ms. Increase for long cleanup scripts.
     #[serde(default = "default_grace_period_ms")]
     pub grace_period_ms: u64,
-    /// Optional trace ID to correlate experiences across tools
+    /// Optional trace ID to correlate this cancel with other tools across the same workflow.
     #[serde(default)]
     pub trace_id: Option<String>,
 }
@@ -92,58 +100,62 @@ fn default_grace_period_ms() -> u64 {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxInfoParams {
+    /// ID of the sandbox to query. Use sandbox_list to discover sandbox_ids.
     pub sandbox_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxListFilesParams {
+    /// ID of the sandbox to list files in.
     pub sandbox_id: String,
+    /// Directory path to list. Use "/" for root or "." for current working directory inside sandbox.
     pub path: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxRunStreamParams {
-    /// ID of the sandbox
+    /// ID of the sandbox to run the command in. Must be running.
     pub sandbox_id: String,
-    /// Command to execute
+    /// Command to execute inside the sandbox with streaming output.
     pub command: String,
-    /// Optional environment reference from sandbox_prepare
+    /// Optional environment reference from sandbox_prepare. Auto-injected if omitted. Pass explicitly in concurrent workflows.
     #[serde(default)]
     #[allow(dead_code)]
     pub env_ref: Option<String>,
-    /// Optional trace ID to correlate experiences across tools
+    /// Optional trace ID to correlate this command with other tools across the same workflow.
     #[serde(default)]
     pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RegisterArtifactParams {
+    /// Artifact name, e.g. "my-jdk-artifact".
     pub name: String,
+    /// Artifact version, e.g. "1.0.0".
     pub version: String,
+    /// SHA256 digest of the artifact for content-addressed retrieval.
     pub digest: String,
+    /// Capability this artifact provides, e.g. "jvm-build". Used by sandbox_prepare to find artifacts.
     pub capability: String,
+    /// Comma-separated list of tools provided, e.g. "mvn:3.9,javac:17". Version is optional.
     #[serde(default)]
     pub tools: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxPrepareParams {
+    /// ID of the sandbox to prepare. Sandbox must exist (created via sandbox_create).
     pub sandbox_id: String,
+    /// Capability to install, e.g. "jvm-build" (Java+Maven) or "node-build" (Node.js+npm).
     pub capability: String,
-    /// Timeout in ms for the entire prepare operation (default: 600s for network-heavy ops)
-    /// Reserved for future use — currently uses a fixed timeout
+    /// Timeout in ms for the entire prepare operation (default: 600s = 10min). Covers downloads and installs.
     #[serde(default = "default_prepare_timeout")]
     #[allow(dead_code)]
     pub timeout_ms: u64,
-    /// Toolchain strategy override (default: auto)
-    ///
-    /// - "auto": Let the resolver pick the best approach
-    /// - "system_package": Prefer system package managers (apt)
-    /// - "version_manager": Prefer version managers (asdf, sdkman)
-    /// - "content_addressed": Use pre-packaged artifacts from CA store
+    /// Toolchain strategy override (default: auto). Values: "auto" (resolver picks), "system_package" (apt), "version_manager" (asdf/sdkman), "content_addressed" (CA store).
     #[serde(default)]
     pub strategy: bastion_domain::template::ToolchainStrategy,
-    /// Optional trace ID to correlate experiences across tools
+    /// Optional trace ID to correlate this prepare with other tools across the same workflow.
     #[serde(default)]
     pub trace_id: Option<String>,
 }
@@ -154,31 +166,38 @@ fn default_prepare_timeout() -> u64 {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxSnapshotParams {
-    pub action: String, // "create", "restore", "list", "delete"
+    /// Action to perform: "create", "restore", "list", or "delete".
+    pub action: String,
+    /// Sandbox ID required for "create" action. Not needed for list/delete/restore.
     pub sandbox_id: Option<String>,
+    /// Snapshot name — required for "create" action.
     pub name: Option<String>,
+    /// Snapshot ID — required for "restore" and "delete" actions.
     pub snapshot_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SandboxSyncParams {
+    /// ID of the sandbox for file transfer.
     pub sandbox_id: String,
-    pub mode: String, // "push", "pull", "auto"
+    /// Sync direction: "push" (host→sandbox) or "pull" (sandbox→host).
+    pub mode: String,
+    /// Source path: local path for push, sandbox path for pull. Path must exist.
     pub source: String,
+    /// Target path: sandbox path for push, local path for pull. Parent dirs created automatically.
     pub target: String,
-    /// Exclude patterns for sync (reserved for future rsync --exclude support)
+    /// Exclude patterns for rsync sync (reserved for future rsync --exclude support).
     #[serde(default)]
     #[allow(dead_code)]
     pub exclude: Vec<String>,
-    /// Optional sync backend override: tar, rsync, podman-cp, auto
+    /// Sync backend override: "tar" (default for rootless podman), "rsync" (fastest, requires rsync in sandbox), "podman-cp" (simplest), "auto" (backend picks).
     #[serde(default)]
     pub backend: Option<String>,
-    /// Timeout in ms (default: 300s for large transfers)
-    /// Reserved for future use — currently uses backend-level defaults
+    /// Timeout in ms for sync operation (default: 300s = 5min). Increase for large transfers.
     #[serde(default = "default_sync_timeout")]
     #[allow(dead_code)]
     pub timeout_ms: u64,
-    /// Optional trace ID to correlate experiences across tools
+    /// Optional trace ID to correlate this sync with other tools across the same workflow.
     #[serde(default)]
     pub trace_id: Option<String>,
 }
