@@ -5,6 +5,9 @@ use std::sync::Arc;
 use rmcp::Peer;
 use rmcp::model::{ProgressNotificationParam, ProgressToken};
 
+use bastion_domain::sandbox::repository::SandboxRepository;
+use bastion_domain::shared::id::SandboxId;
+
 use crate::server::BastionGateway;
 
 /// Helper methods for BastionGateway sandbox tools.
@@ -22,6 +25,38 @@ impl BastionGateway {
             );
             self.provider.clone()
         })
+    }
+
+    /// Resolve the provider that owns a specific sandbox.
+    ///
+    /// Looks up the sandbox in the repository to find its provider_id,
+    /// then resolves the corresponding provider. Falls back to the default
+    /// provider if the sandbox cannot be found or its provider is unavailable.
+    pub(crate) async fn resolve_sandbox_provider(
+        &self,
+        sandbox_id: &bastion_domain::shared::id::SandboxId,
+    ) -> Arc<dyn bastion_domain::provider::SandboxProvider> {
+        match self.repository.find_by_id(sandbox_id).await {
+            Ok(Some(sandbox)) => {
+                let provider_name = sandbox.provider_id.to_string();
+                self.resolve_provider(&provider_name)
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    sandbox_id = %sandbox_id,
+                    "Sandbox not found in repository, falling back to default provider"
+                );
+                self.provider.clone()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    sandbox_id = %sandbox_id,
+                    error = %e,
+                    "Failed to lookup sandbox, falling back to default provider"
+                );
+                self.provider.clone()
+            }
+        }
     }
 
     /// Send a progress notification to the MCP client.

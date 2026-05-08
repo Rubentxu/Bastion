@@ -103,7 +103,7 @@ pub struct BastionGateway {
     pub(crate) provider: Arc<dyn SandboxProvider>,
     /// All registered providers (keyed by name: "podman", "firecracker", "gvisor")
     providers: Arc<std::collections::HashMap<String, Arc<dyn SandboxProvider>>>,
-    repository: Arc<dyn SandboxRepository>,
+    pub(crate) repository: Arc<dyn SandboxRepository>,
     secret_resolver: Arc<dyn SecretResolver>,
     /// Gateway operational config (pool, metrics, TLS)
     pub(crate) gateway_config: GatewayConfig,
@@ -213,7 +213,7 @@ impl BastionGateway {
     pub fn new(
         provider: Arc<dyn SandboxProvider>,
         providers: std::collections::HashMap<String, Arc<dyn SandboxProvider>>,
-        repository: Arc<dyn SandboxRepository>,
+    repository: Arc<dyn SandboxRepository>,
         secret_resolver: Arc<dyn SecretResolver>,
         gateway_config: GatewayConfig,
         capability_registry: CapabilityRegistry,

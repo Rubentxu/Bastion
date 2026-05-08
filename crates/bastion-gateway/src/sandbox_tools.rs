@@ -179,27 +179,32 @@ impl BastionGateway {
         let selected_provider = self.resolve_provider(&params.provider);
         tracing::info!(template = %params.template, provider = %params.provider, "Creating sandbox");
 
-        // Try pool checkout first if pool is available
-        if let Some(ref pool) = self.gateway_config.pool_manager {
-            match pool.checkout(&params.template, params.timeout_ms).await {
-                Ok(sandbox) => {
-                    tracing::debug!(
-                        sandbox_id = %sandbox.id,
-                        template = %params.template,
-                        "Sandbox created via pool checkout"
-                    );
-                    self.gateway_config.metrics.record_sandbox_created();
-                    return serde_json::json!({
-                        "sandbox_id": sandbox.id.to_string(),
-                        "status": sandbox.status.to_string(),
-                        "template": sandbox.template_id.to_string(),
-                        "from_pool": true
-                    })
-                    .to_string();
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Pool checkout failed, falling back to direct creation");
-                    // Fall through to direct creation
+        // Only use pool for the default podman provider — pool sandboxes are podman-based.
+        // For non-podman providers (local, gvisor, firecracker), go straight to direct creation.
+        let use_pool = params.provider == "podman";
+
+        if use_pool {
+            if let Some(ref pool) = self.gateway_config.pool_manager {
+                match pool.checkout(&params.template, params.timeout_ms).await {
+                    Ok(sandbox) => {
+                        tracing::debug!(
+                            sandbox_id = %sandbox.id,
+                            template = %params.template,
+                            "Sandbox created via pool checkout"
+                        );
+                        self.gateway_config.metrics.record_sandbox_created();
+                        return serde_json::json!({
+                            "sandbox_id": sandbox.id.to_string(),
+                            "status": sandbox.status.to_string(),
+                            "template": sandbox.template_id.to_string(),
+                            "from_pool": true
+                        })
+                        .to_string();
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Pool checkout failed, falling back to direct creation");
+                        // Fall through to direct creation
+                    }
                 }
             }
         }
@@ -241,7 +246,7 @@ impl BastionGateway {
     ///
     /// Auto-injects env from sandbox_prepare if env_ref is not explicitly provided. Pass env_ref explicitly in concurrent workflows to avoid race conditions.
     /// DO NOT manually install tools here — use sandbox_prepare with a capability like "jvm-build" or "node-build" instead.
-    #[tool(description = "Execute a command in a sandbox. Auto-injects env from sandbox_prepare via env_ref (pass explicitly in concurrent workflows). DO NOT manually install tools — use sandbox_prepare instead.")]
+    #[tool(description = "Execute a command in a sandbox. Auto-injects env from sandbox_prepare via env_ref (pass explicitly in concurrent workflows). DO NOT manually install tools — use sandbox_prepare instead. For asdf-vm commands, use bash -c wrapper: bash -c 'export ASDF_DIR=$HOME/.asdf && . $ASDF_DIR/asdf.sh && <your cmd>'.")]
     async fn sandbox_run(&self, Parameters(params): Parameters<SandboxRunParams>) -> String {
         // Check rate limit (per-client + global)
         if let Some(rate_limit_error) = self.check_per_client_rate_limit("mcp-client") {
@@ -308,8 +313,12 @@ impl BastionGateway {
         }
 
         let t0 = std::time::Instant::now();
+
+        // Resolve the correct provider for this sandbox (not necessarily the default)
+        let sandbox_provider = self.resolve_sandbox_provider(&sandbox_id).await;
+
         match use_case
-            .execute(&sandbox_id, &command_spec, self.provider.as_ref())
+            .execute(&sandbox_id, &command_spec, sandbox_provider.as_ref())
             .await
         {
             Ok(result) => {
@@ -447,13 +456,16 @@ impl BastionGateway {
         let use_case = RunCommandStreamUseCase::new(self.repository.clone());
         let start_time = std::time::Instant::now();
 
+        // Resolve the correct provider for this sandbox
+        let provider = self.resolve_sandbox_provider(&sandbox_id).await;
+
         // Register cancel token for this streaming command
         let cancel_flag = Arc::new(AtomicBool::new(false));
         self.cancel_tokens
             .insert(params.sandbox_id.clone(), cancel_flag.clone());
 
         match use_case
-            .execute(&sandbox_id, &command_spec, self.provider.as_ref())
+            .execute(&sandbox_id, &command_spec, provider.as_ref())
             .await
         {
             Ok(mut stream) => {
@@ -566,7 +578,7 @@ impl BastionGateway {
         tracing::info!(sandbox_id = %params.sandbox_id, path = %params.path, "Writing file");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
-
+        let provider = self.resolve_sandbox_provider(&sandbox_id).await;
         let use_case = WriteFileUseCase::new(self.repository.clone());
 
         match use_case
@@ -574,7 +586,7 @@ impl BastionGateway {
                 &sandbox_id,
                 &params.path,
                 params.content.as_bytes(),
-                self.provider.as_ref(),
+                provider.as_ref(),
             )
             .await
         {
@@ -591,11 +603,11 @@ impl BastionGateway {
         tracing::info!(sandbox_id = %params.sandbox_id, path = %params.path, "Reading file");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
-
+        let provider = self.resolve_sandbox_provider(&sandbox_id).await;
         let use_case = ReadFileUseCase::new(self.repository.clone());
 
         match use_case
-            .execute(&sandbox_id, &params.path, self.provider.as_ref())
+            .execute(&sandbox_id, &params.path, provider.as_ref())
             .await
         {
             Ok(content) => serde_json::json!({
@@ -619,11 +631,11 @@ impl BastionGateway {
         tracing::info!(sandbox_id = %params.sandbox_id, path = %params.path, "Listing files");
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
-
+        let provider = self.resolve_sandbox_provider(&sandbox_id).await;
         let use_case = ListFilesUseCase::new(self.repository.clone());
 
         match use_case
-            .execute(&sandbox_id, &params.path, self.provider.as_ref())
+            .execute(&sandbox_id, &params.path, provider.as_ref())
             .await
         {
             Ok(entries) => {
@@ -741,8 +753,9 @@ impl BastionGateway {
         }
 
         let use_case = TerminateSandboxUseCase::new(self.repository.clone());
+        let provider = self.resolve_sandbox_provider(&sandbox_id).await;
 
-        match use_case.execute(&sandbox_id, self.provider.as_ref()).await {
+        match use_case.execute(&sandbox_id, provider.as_ref()).await {
             Ok(()) => {
                 self.gateway_config.metrics.record_sandbox_terminated();
                 serde_json::json!({"status": "terminated"}).to_string()
@@ -776,9 +789,9 @@ impl BastionGateway {
             tracing::info!(sandbox_id = %params.sandbox_id, "Cancel flag set");
         }
 
-        // Also ask the provider to cancel the command (SIGTERM/SIGKILL)
-        match self
-            .provider
+        // Also ask the correct provider to cancel the command (SIGTERM/SIGKILL)
+        let cancel_provider = self.resolve_sandbox_provider(&sandbox_id).await;
+        match cancel_provider
             .cancel_command(&sandbox_id, params.grace_period_ms)
             .await
         {
@@ -1000,6 +1013,7 @@ impl BastionGateway {
     ) -> String {
         let sandbox_id = SandboxId::new(&params.sandbox_id);
         let capability = &params.capability;
+        let prepare_provider = self.resolve_sandbox_provider(&sandbox_id).await;
 
         // Create experience record for this prepare operation
         let mut experience =
@@ -1017,7 +1031,7 @@ impl BastionGateway {
         // If artifact found, use materializer
         if let Ok(artifact) = artifact {
             let materializer = PodmanOptimizedMaterializer::new(
-                self.provider.clone(),
+                prepare_provider.clone(),
                 self.artifact_store.clone(),
                 PathBuf::from("/tmp/bastion-cache"),
             );
@@ -1084,7 +1098,7 @@ impl BastionGateway {
                     );
                 }
 
-                match self.provider.run_command(&sandbox_id, &cmd).await {
+                match prepare_provider.run_command(&sandbox_id, &cmd).await {
                     Ok(result) => {
                         if result.exit_code != step.expected_exit_code {
                             return serde_json::json!({
@@ -1107,7 +1121,7 @@ impl BastionGateway {
             for verify in &plan.verification {
                 let cmd = CommandSpec::new(&verify.command).with_timeout(60000); // 60s timeout for verification
 
-                match self.provider.run_command(&sandbox_id, &cmd).await {
+                match prepare_provider.run_command(&sandbox_id, &cmd).await {
                     Ok(result) => {
                         if result.exit_code != verify.expected_exit_code {
                             return serde_json::json!({
@@ -1211,7 +1225,7 @@ impl BastionGateway {
                         );
                     }
 
-                    match self.provider.run_command(&sandbox_id, &cmd).await {
+                    match prepare_provider.run_command(&sandbox_id, &cmd).await {
                         Ok(result) => {
                             if result.exit_code != step.expected_exit_code {
                                 return serde_json::json!({
