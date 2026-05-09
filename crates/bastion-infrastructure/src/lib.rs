@@ -5,6 +5,7 @@
 pub mod catalog;
 pub mod config;
 pub mod enrichment;
+pub mod evaluation;
 pub mod grpc;
 pub mod metrics;
 pub mod persistence;

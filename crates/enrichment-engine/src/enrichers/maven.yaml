@@ -7,43 +7,65 @@ enricher:
   id: "maven"
   name: "Maven"
   version: "1.0"
+  # Schema version for migration support
+  schema_version: "1.0"
+  # Human-readable description
+  description: "Maven build tool enricher — extracts build status, test results, artifacts, and error diagnostics from Maven command output"
+  # Grouping category
+  category: "build"
+  # Alias for match_patterns[0] — simplified pattern for YAML
+  command_pattern: "^mvn\\s+(package|install|verify|test|compile|clean|deploy)"
   match_patterns:
     - "^mvn\\s+(package|install|verify|test|compile|clean|deploy)"
   template: "Build {{status}}. Artifacts: {{artifacts_count}} JAR(s). Tests: {{tests_run}} run, {{tests_failed}} failed. Coordinates: {{group_id}}:{{artifact_id}}:{{version}}"
   enabled: true
+  # Scopes where this enricher's advice applies
+  advice_scope: []
+  # Pre-condition checks before enricher activation
+  pre_checks: []
+  # Assertion IDs linked to this enricher
+  assertions: []
   extractors:
     - id: "build_status"
       type: "regex"
       pattern: "(?P<status>BUILD\\s+(SUCCESS|FAILURE))"
       fact_key: "build_status"
       priority: 1
+      # Optional: semantic type for the fact
+      fact_type: "status"
 
     - id: "maven_coords"
       type: "regex"
       pattern: "Building\\s+(?P<group_id>[\\w.]+):(?P<artifact_id>[\\w-]+):(?P<version>[\\w.]+)"
       fact_key: "maven_coords"
       priority: 2
+      fact_type: "coordinates"
 
     - id: "test_results"
       type: "regex"
       pattern: "Tests run:\\s*(?P<tests_run>\\d+),\\s*Failures:\\s*(?P<tests_failed>\\d+),\\s*Errors:\\s*(?P<tests_errors>\\d+),\\s*Skipped:\\s*(?P<tests_skipped>\\d+)"
       fact_key: "test_results"
       priority: 3
+      fact_type: "test_summary"
 
     - id: "jar_artifacts"
       type: "glob"
       pattern: "target/*.jar"
       fact_key: "jar_artifact"
       priority: 4
+      # Source provenance
+      source: "filesystem"
 
     - id: "war_artifacts"
       type: "glob"
       pattern: "target/*.war"
       fact_key: "war_artifact"
       priority: 5
+      source: "filesystem"
 
     - id: "error_diagnostics"
       type: "regex"
       pattern: "(?P<error_msg>(error|ERROR|compilation failure|COMPILATION ERROR):.*)"
       fact_key: "error_msg"
       priority: 6
+      fact_type: "error"

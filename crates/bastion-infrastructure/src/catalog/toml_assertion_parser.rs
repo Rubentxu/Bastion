@@ -34,7 +34,7 @@ pub struct TomlAssertion {
 }
 
 /// A single check parsed from TOML.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TomlCheck {
     ExitCode { expected: i32 },
@@ -50,6 +50,35 @@ fn default_category() -> String {
 }
 
 impl TomlCheck {
+    /// Convert to a CEL condition string for the CEL-lite rules engine.
+    ///
+    /// Returns `None` for checks that have no CEL equivalent (e.g., SandboxAlive).
+    pub fn to_cel_condition(&self) -> Option<String> {
+        match self {
+            TomlCheck::ExitCode { expected } => {
+                Some(format!("exit_code == {}", expected))
+            }
+            TomlCheck::StdoutContains { substring } => {
+                Some(format!("stdout_contains('{}')", Self::escape_cel_string(substring)))
+            }
+            TomlCheck::StderrContains { substring } => {
+                Some(format!("stderr_contains('{}')", Self::escape_cel_string(substring)))
+            }
+            TomlCheck::StdoutMatches { regex } => {
+                Some(format!("stdout_matches('{}')", Self::escape_cel_string(regex)))
+            }
+            TomlCheck::SandboxAlive => None, // Deferred — no CEL equivalent
+            TomlCheck::CommandDuration { max_ms } => {
+                Some(format!("duration_lt({})", max_ms))
+            }
+        }
+    }
+
+    /// Escape special characters in a CEL string literal.
+    fn escape_cel_string(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('\'', "\\'")
+    }
+
     fn into_assertion_check(self) -> AssertionCheck {
         match self {
             TomlCheck::ExitCode { expected } => AssertionCheck::ExitCode { expected },
@@ -58,6 +87,33 @@ impl TomlCheck {
             TomlCheck::StdoutMatches { regex } => AssertionCheck::StdoutMatches { regex },
             TomlCheck::SandboxAlive => AssertionCheck::SandboxAlive,
             TomlCheck::CommandDuration { max_ms } => AssertionCheck::CommandDuration { max_ms },
+        }
+    }
+}
+
+/// Convert TomlCheck to AssertionCheck for legacy evaluation.
+impl From<TomlCheck> for AssertionCheck {
+    fn from(toml: TomlCheck) -> Self {
+        toml.into_assertion_check()
+    }
+}
+
+/// Convert AssertionCheck to TomlCheck for shim testing.
+impl From<AssertionCheck> for TomlCheck {
+    fn from(assertion: AssertionCheck) -> Self {
+        match assertion {
+            AssertionCheck::ExitCode { expected } => TomlCheck::ExitCode { expected },
+            AssertionCheck::StdoutContains { substring } => {
+                TomlCheck::StdoutContains { substring }
+            }
+            AssertionCheck::StderrContains { substring } => {
+                TomlCheck::StderrContains { substring }
+            }
+            AssertionCheck::StdoutMatches { regex } => TomlCheck::StdoutMatches { regex },
+            AssertionCheck::SandboxAlive => TomlCheck::SandboxAlive,
+            AssertionCheck::CommandDuration { max_ms } => {
+                TomlCheck::CommandDuration { max_ms }
+            }
         }
     }
 }
@@ -352,5 +408,93 @@ substring = "done"
     fn test_not_found() {
         let registry = AssertionRegistry::new();
         assert!(registry.get("nonexistent").is_none());
+    }
+
+    // ─── to_cel_condition tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_toml_check_to_cel_exit_code() {
+        let check = TomlCheck::ExitCode { expected: 0 };
+        assert_eq!(check.to_cel_condition(), Some("exit_code == 0".to_string()));
+    }
+
+    #[test]
+    fn test_toml_check_to_cel_exit_code_nonzero() {
+        let check = TomlCheck::ExitCode { expected: 127 };
+        assert_eq!(check.to_cel_condition(), Some("exit_code == 127".to_string()));
+    }
+
+    #[test]
+    fn test_toml_check_to_cel_stdout_contains() {
+        let check = TomlCheck::StdoutContains {
+            substring: "BUILD SUCCESS".to_string(),
+        };
+        assert_eq!(
+            check.to_cel_condition(),
+            Some("stdout_contains('BUILD SUCCESS')".to_string())
+        );
+    }
+
+    #[test]
+    fn test_toml_check_to_cel_stderr_contains() {
+        let check = TomlCheck::StderrContains {
+            substring: "ERROR".to_string(),
+        };
+        assert_eq!(
+            check.to_cel_condition(),
+            Some("stderr_contains('ERROR')".to_string())
+        );
+    }
+
+    #[test]
+    fn test_toml_check_to_cel_stdout_matches() {
+        // The regex string "line \d+" (single backslash) gets escaped to "line \\d+"
+        let check = TomlCheck::StdoutMatches {
+            regex: "line \\d+".to_string(),
+        };
+        assert_eq!(
+            check.to_cel_condition(),
+            Some("stdout_matches('line \\\\d+')".to_string())
+        );
+    }
+
+    #[test]
+    fn test_toml_check_to_cel_command_duration() {
+        let check = TomlCheck::CommandDuration { max_ms: 5000 };
+        assert_eq!(
+            check.to_cel_condition(),
+            Some("duration_lt(5000)".to_string())
+        );
+    }
+
+    #[test]
+    fn test_toml_check_to_cel_sandbox_alive_skipped() {
+        // SandboxAlive has no CEL equivalent — returns None
+        let check = TomlCheck::SandboxAlive;
+        assert_eq!(check.to_cel_condition(), None);
+    }
+
+    #[test]
+    fn test_toml_check_to_cel_escapes_single_quotes() {
+        let check = TomlCheck::StdoutContains {
+            substring: "it's broken".to_string(),
+        };
+        // Single quotes should be escaped
+        assert_eq!(
+            check.to_cel_condition(),
+            Some(r"stdout_contains('it\'s broken')".to_string())
+        );
+    }
+
+    #[test]
+    fn test_toml_check_to_cel_escapes_backslashes() {
+        let check = TomlCheck::StdoutContains {
+            substring: r"C:\path".to_string(),
+        };
+        // Backslashes should be escaped
+        assert_eq!(
+            check.to_cel_condition(),
+            Some(r"stdout_contains('C:\\path')".to_string())
+        );
     }
 }

@@ -529,13 +529,19 @@ async fn main() -> Result<()> {
                 let importer =
                     bastion_infrastructure::enrichment::YamlCatalogImporter::new(&catalog_repo);
 
-                // Upsert built-in enrichers (Maven, etc.) first
-                let built_in = enrichment_engine::enrichers::all_enrichers();
-                for enricher in &built_in {
-                    if let Err(e) = catalog_repo.upsert_enricher(enricher).await {
-                        tracing::error!(enricher_id = %enricher.id, error = %e, "FATAL: Failed to upsert built-in enricher");
-                    } else {
-                        tracing::info!(enricher_id = %enricher.id, "Upserted built-in enricher");
+                // Load built-in enrichers from YAML catalog (maven.yaml) via YamlCatalogImporter
+                let enrichers_src_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("enrichment-engine")
+                    .join("src")
+                    .join("enrichers");
+                let maven_yaml_path = enrichers_src_dir.join("maven.yaml");
+                match importer.import_file(&maven_yaml_path).await {
+                    Ok(()) => {
+                        tracing::info!(path = %maven_yaml_path.display(), "Loaded built-in enricher from YAML catalog");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, path = %maven_yaml_path.display(), "Failed to load built-in enricher from YAML catalog — continuing startup in degraded mode");
                     }
                 }
 

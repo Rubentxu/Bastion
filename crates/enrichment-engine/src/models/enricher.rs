@@ -58,54 +58,142 @@ impl Default for CommandExtractorPolicy {
 
 /// Configuration for an individual extractor within an enricher.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ExtractorConfig {
-    /// Unique extractor identifier within the enricher.
-    pub id: String,
-    /// Extractor type: "regex", "glob", or "command".
-    pub extractor_type: String,
-    /// The pattern (regex or glob) to use.
-    pub pattern: String,
-    /// The fact key to emit.
-    pub fact_key: String,
-    /// Extraction priority (lower = higher priority).
-    #[serde(default)]
-    pub priority: i32,
-    /// Merge mode: "single" (dedupe by key, max confidence wins) or "multi" (preserve all facts).
-    #[serde(default = "default_merge_mode")]
-    pub merge_mode: String,
-    /// Optional policy for command extractors.
-    #[serde(default)]
-    pub command_extractor_policy: Option<CommandExtractorPolicy>,
-}
+ pub struct ExtractorConfig {
+     /// Unique extractor identifier within the enricher.
+     pub id: String,
+     /// Extractor type: "regex", "glob", or "command".
+     pub extractor_type: String,
+     /// The pattern (regex or glob) to use.
+     pub pattern: String,
+     /// The fact key to emit.
+     pub fact_key: String,
+     /// Extraction priority (lower = higher priority).
+     #[serde(default)]
+     pub priority: i32,
+     /// Merge mode: "single" (dedupe by key, max confidence wins) or "multi" (preserve all facts).
+     #[serde(default = "default_merge_mode")]
+     pub merge_mode: String,
+     /// Optional policy for command extractors.
+     #[serde(default)]
+     pub command_extractor_policy: Option<CommandExtractorPolicy>,
+     /// Static facts map (key → value) for static extractors.
+     #[serde(default)]
+     pub static_value: Option<std::collections::HashMap<String, String>>,
+     /// Override the output fact key.
+     #[serde(default)]
+     pub output_key: Option<String>,
+     /// Expected value shape (scalar, list, map).
+     #[serde(default)]
+     pub shape: Option<String>,
+     /// Semantic type (e.g. "version", "count", "status").
+     #[serde(default)]
+     pub fact_type: Option<String>,
+     /// Default confidence for facts from this extractor.
+     #[serde(default)]
+     pub confidence: Option<f32>,
+     /// Provenance label (e.g. "stdout", "filesystem").
+     #[serde(default)]
+     pub source: Option<String>,
+     /// When true, replaces `merge_mode: "single"` semantics.
+     #[serde(default)]
+     pub single: bool,
+ }
 
-fn default_merge_mode() -> String {
-    "single".to_string()
-}
+ fn default_merge_mode() -> String {
+      "single".to_string()
+  }
+
+ impl Default for ExtractorConfig {
+      fn default() -> Self {
+          Self {
+              id: String::new(),
+              extractor_type: String::new(),
+              pattern: String::new(),
+              fact_key: String::new(),
+              priority: 0,
+              merge_mode: default_merge_mode(),
+              command_extractor_policy: None,
+              static_value: None,
+              output_key: None,
+              shape: None,
+              fact_type: None,
+              confidence: None,
+              source: None,
+              single: false,
+          }
+      }
+  }
 
 /// Descriptor for an enricher — loaded from the catalog.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EnricherDescriptor {
-    /// Unique enricher identifier.
-    pub id: String,
-    /// Human-readable name.
-    pub name: String,
-    /// Semantic version.
-    pub version: String,
-    /// Regex patterns that activate this enricher.
-    pub match_patterns: Vec<String>,
-    /// Output template with `{{key}}` interpolation.
-    pub template: String,
-    /// Whether this enricher is enabled.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    /// Extractors to run when this enricher is activated.
-    #[serde(default)]
-    pub extractors: Vec<ExtractorConfig>,
-}
+ pub struct EnricherDescriptor {
+     /// Unique enricher identifier.
+     pub id: String,
+     /// Human-readable name.
+     pub name: String,
+     /// Semantic version.
+     pub version: String,
+     /// Regex patterns that activate this enricher.
+     pub match_patterns: Vec<String>,
+     /// Output template with `{{key}}` interpolation.
+     pub template: String,
+     /// Whether this enricher is enabled.
+     #[serde(default = "default_enabled")]
+     pub enabled: bool,
+     /// Extractors to run when this enricher is activated.
+     #[serde(default)]
+     pub extractors: Vec<ExtractorConfig>,
+     /// Catalog schema version for migration support.
+     #[serde(default = "default_schema_version")]
+     pub schema_version: String,
+     /// Human-readable description of the enricher.
+     #[serde(default)]
+     pub description: Option<String>,
+     /// Grouping category (e.g. "build", "test", "ci").
+     #[serde(default)]
+     pub category: Option<String>,
+     /// Alias for `match_patterns[0]` for simpler YAML.
+     #[serde(default)]
+     pub command_pattern: Option<String>,
+     /// Scopes where advice applies.
+     #[serde(default)]
+     pub advice_scope: Vec<String>,
+     /// Pre-condition checks before enricher activation.
+     #[serde(default)]
+     pub pre_checks: Vec<String>,
+     /// Assertion ids linked to this enricher.
+     #[serde(default)]
+     pub assertions: Vec<String>,
+ }
 
-fn default_enabled() -> bool {
-    true
-}
+ fn default_enabled() -> bool {
+     true
+ }
+
+  fn default_schema_version() -> String {
+      "1.0".to_string()
+  }
+
+ impl Default for EnricherDescriptor {
+      fn default() -> Self {
+          Self {
+              id: String::new(),
+              name: String::new(),
+              version: String::new(),
+              match_patterns: Vec::new(),
+              template: String::new(),
+              enabled: default_enabled(),
+              extractors: Vec::new(),
+              schema_version: default_schema_version(),
+              description: None,
+              category: None,
+              command_pattern: None,
+              advice_scope: Vec::new(),
+              pre_checks: Vec::new(),
+              assertions: Vec::new(),
+          }
+      }
+  }
 
 #[cfg(test)]
 mod tests {

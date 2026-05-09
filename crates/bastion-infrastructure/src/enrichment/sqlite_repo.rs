@@ -42,7 +42,14 @@ impl SqliteCatalogRepository {
                 version TEXT NOT NULL,
                 match_patterns_json TEXT NOT NULL,
                 template TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1
+                enabled INTEGER NOT NULL DEFAULT 1,
+                schema_version TEXT NOT NULL DEFAULT '1.0',
+                description TEXT,
+                category TEXT,
+                command_pattern TEXT,
+                advice_scope_json TEXT NOT NULL DEFAULT '[]',
+                pre_checks_json TEXT NOT NULL DEFAULT '[]',
+                assertions_json TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE TABLE IF NOT EXISTS extractors (
@@ -53,6 +60,12 @@ impl SqliteCatalogRepository {
                 fact_key TEXT NOT NULL,
                 priority INTEGER NOT NULL DEFAULT 0,
                 merge_mode TEXT NOT NULL DEFAULT 'single',
+                output_key TEXT,
+                shape TEXT,
+                fact_type TEXT,
+                confidence REAL,
+                source TEXT,
+                single INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (enricher_id, id),
                 FOREIGN KEY (enricher_id) REFERENCES enrichers(id) ON DELETE CASCADE
             );
@@ -93,10 +106,42 @@ impl SqliteCatalogRepository {
             .expect("Failed to add merge_mode column to extractors table");
         }
 
+        // Migration: add Phase 1 columns to enrichers table (if not exist)
+        Self::add_column_if_not_exists(&conn, "enrichers", "schema_version", "TEXT NOT NULL DEFAULT '1.0'");
+        Self::add_column_if_not_exists(&conn, "enrichers", "description", "TEXT");
+        Self::add_column_if_not_exists(&conn, "enrichers", "category", "TEXT");
+        Self::add_column_if_not_exists(&conn, "enrichers", "command_pattern", "TEXT");
+        Self::add_column_if_not_exists(&conn, "enrichers", "advice_scope_json", "TEXT NOT NULL DEFAULT '[]'");
+        Self::add_column_if_not_exists(&conn, "enrichers", "pre_checks_json", "TEXT NOT NULL DEFAULT '[]'");
+        Self::add_column_if_not_exists(&conn, "enrichers", "assertions_json", "TEXT NOT NULL DEFAULT '[]'");
+
+        // Migration: add Phase 1 columns to extractors table (if not exist)
+        Self::add_column_if_not_exists(&conn, "extractors", "output_key", "TEXT");
+        Self::add_column_if_not_exists(&conn, "extractors", "shape", "TEXT");
+        Self::add_column_if_not_exists(&conn, "extractors", "fact_type", "TEXT");
+        Self::add_column_if_not_exists(&conn, "extractors", "confidence", "REAL");
+        Self::add_column_if_not_exists(&conn, "extractors", "source", "TEXT");
+        Self::add_column_if_not_exists(&conn, "extractors", "single", "INTEGER NOT NULL DEFAULT 0");
+
         Ok(Self {
             conn: Mutex::new(conn),
             // db_path: db_path.to_path_buf(),
         })
+    }
+
+    /// Helper to add a column to a table if it doesn't exist.
+    fn add_column_if_not_exists(conn: &rusqlite::Connection, table: &str, column: &str, type_and_default: &str) {
+        let query = format!(
+            "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = '{}'",
+            table, column
+        );
+        let has_column: bool = conn
+            .query_row(&query, [], |row| Ok(row.get::<_, i32>(0)? > 0))
+            .unwrap_or(false);
+        if !has_column {
+            let alter = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, type_and_default);
+            conn.execute(&alter, []).unwrap_or_else(|_| panic!("Failed to add column {} to table {}", column, table));
+        }
     }
 
     /// Insert or replace an enricher and its extractors.
@@ -108,17 +153,30 @@ impl SqliteCatalogRepository {
 
         let patterns_json =
             serde_json::to_string(&enricher.match_patterns).unwrap_or_else(|_| "[]".to_string());
+        let advice_scope_json =
+            serde_json::to_string(&enricher.advice_scope).unwrap_or_else(|_| "[]".to_string());
+        let pre_checks_json =
+            serde_json::to_string(&enricher.pre_checks).unwrap_or_else(|_| "[]".to_string());
+        let assertions_json =
+            serde_json::to_string(&enricher.assertions).unwrap_or_else(|_| "[]".to_string());
 
         tx.execute(
-            r#"INSERT OR REPLACE INTO enrichers (id, name, version, match_patterns_json, template, enabled)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+            r#"INSERT OR REPLACE INTO enrichers (id, name, version, match_patterns_json, template, enabled, schema_version, description, category, command_pattern, advice_scope_json, pre_checks_json, assertions_json)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#,
             params![
                 enricher.id,
                 enricher.name,
                 enricher.version,
                 patterns_json,
                 enricher.template,
-                enricher.enabled as i32
+                enricher.enabled as i32,
+                enricher.schema_version,
+                enricher.description,
+                enricher.category,
+                enricher.command_pattern,
+                advice_scope_json,
+                pre_checks_json,
+                assertions_json
             ],
         )
         .map_err(|e| DomainError::Internal(format!("Insert enricher failed: {}", e)))?;
@@ -132,8 +190,8 @@ impl SqliteCatalogRepository {
 
         for ext in &enricher.extractors {
             tx.execute(
-                r#"INSERT OR REPLACE INTO extractors (id, enricher_id, type, pattern, fact_key, priority, merge_mode)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                r#"INSERT OR REPLACE INTO extractors (id, enricher_id, type, pattern, fact_key, priority, merge_mode, output_key, shape, fact_type, confidence, source, single)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#,
                 params![
                     ext.id,
                     enricher.id,
@@ -141,7 +199,13 @@ impl SqliteCatalogRepository {
                     ext.pattern,
                     ext.fact_key,
                     ext.priority,
-                    ext.merge_mode
+                    ext.merge_mode,
+                    ext.output_key,
+                    ext.shape,
+                    ext.fact_type,
+                    ext.confidence,
+                    ext.source,
+                    ext.single as i32
                 ],
             )
             .map_err(|e| DomainError::Internal(format!("Insert extractor failed: {}", e)))?;
@@ -205,7 +269,10 @@ impl CatalogRepository for SqliteCatalogRepository {
         let mut stmt = match conn.prepare(
             r#"
             SELECT e.id, e.name, e.version, e.match_patterns_json, e.template, e.enabled,
-                   ext.id, ext.type, ext.pattern, ext.fact_key, ext.priority, ext.merge_mode
+                   e.schema_version, e.description, e.category, e.command_pattern,
+                   e.advice_scope_json, e.pre_checks_json, e.assertions_json,
+                   ext.id, ext.type, ext.pattern, ext.fact_key, ext.priority, ext.merge_mode,
+                   ext.output_key, ext.shape, ext.fact_type, ext.confidence, ext.source, ext.single
             FROM enrichers e
             LEFT JOIN extractors ext ON ext.enricher_id = e.id
             WHERE e.enabled = 1
@@ -217,18 +284,33 @@ impl CatalogRepository for SqliteCatalogRepository {
 
         let rows = match stmt.query_map([], |row| {
             Ok((
+                // enricher fields (0-12)
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, i32>(5)?,
-                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(6)?,
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<i32>>(10)?,
-                row.get::<_, Option<String>>(11)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, String>(12)?,
+                // extractor fields (13-25)
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<String>>(16)?,
+                row.get::<_, Option<i32>>(17)?,
+                row.get::<_, Option<String>>(18)?,
+                row.get::<_, Option<String>>(19)?,
+                row.get::<_, Option<String>>(20)?,
+                row.get::<_, Option<String>>(21)?,
+                row.get::<_, Option<f32>>(22)?,
+                row.get::<_, Option<String>>(23)?,
+                row.get::<_, Option<i32>>(24)?,
             ))
         }) {
             Ok(r) => r,
@@ -236,73 +318,123 @@ impl CatalogRepository for SqliteCatalogRepository {
         };
 
         // Group by enricher
-        let mut enricher_map: std::collections::HashMap<
-            String,
-            (String, String, String, Vec<String>, String, bool),
-        > = std::collections::HashMap::new();
-        let mut extractor_map: std::collections::HashMap<String, Vec<ExtractorConfig>> =
+        #[derive(Default)]
+        struct EnricherData {
+            name: String,
+            version: String,
+            template: String,
+            patterns: Vec<String>,
+            schema_version: String,
+            description: Option<String>,
+            category: Option<String>,
+            command_pattern: Option<String>,
+            advice_scope: Vec<String>,
+            pre_checks: Vec<String>,
+            assertions: Vec<String>,
+            enabled: bool,
+            extractors: Vec<ExtractorConfig>,
+        }
+        let mut enricher_map: std::collections::HashMap<String, EnricherData> =
             std::collections::HashMap::new();
 
         for row in rows.flatten() {
             let (
+                // enricher fields
                 id,
                 name,
                 version,
                 patterns_json,
                 template,
                 enabled,
+                schema_version,
+                description,
+                category,
+                command_pattern,
+                advice_scope_json,
+                pre_checks_json,
+                assertions_json,
+                // extractor fields
                 ext_id,
                 ext_type,
                 ext_pattern,
                 ext_fact_key,
                 ext_priority,
                 ext_merge_mode,
+                ext_output_key,
+                ext_shape,
+                ext_fact_type,
+                ext_confidence,
+                ext_source,
+                ext_single,
             ) = row;
 
             let patterns: Vec<String> = serde_json::from_str(&patterns_json).unwrap_or_default();
+            let advice_scope: Vec<String> = serde_json::from_str(&advice_scope_json).unwrap_or_default();
+            let pre_checks: Vec<String> = serde_json::from_str(&pre_checks_json).unwrap_or_default();
+            let assertions: Vec<String> = serde_json::from_str(&assertions_json).unwrap_or_default();
 
-            enricher_map.insert(
-                id.clone(),
-                (name, version, template, patterns, id.clone(), enabled != 0),
-            );
+            enricher_map.entry(id.clone()).or_default().name = name;
+            enricher_map.entry(id.clone()).or_default().version = version;
+            enricher_map.entry(id.clone()).or_default().template = template;
+            enricher_map.entry(id.clone()).or_default().patterns = patterns;
+            enricher_map.entry(id.clone()).or_default().schema_version = schema_version;
+            enricher_map.entry(id.clone()).or_default().description = description;
+            enricher_map.entry(id.clone()).or_default().category = category;
+            enricher_map.entry(id.clone()).or_default().command_pattern = command_pattern;
+            enricher_map.entry(id.clone()).or_default().advice_scope = advice_scope;
+            enricher_map.entry(id.clone()).or_default().pre_checks = pre_checks;
+            enricher_map.entry(id.clone()).or_default().assertions = assertions;
+            enricher_map.entry(id.clone()).or_default().enabled = enabled != 0;
+
             if let (Some(eid), Some(etype), Some(epattern), Some(efact_key), Some(epriority)) =
                 (ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority)
             {
-                extractor_map.entry(id).or_default().push(ExtractorConfig {
+                enricher_map.entry(id).or_default().extractors.push(ExtractorConfig {
                     id: eid,
                     extractor_type: etype,
                     pattern: epattern,
                     fact_key: efact_key,
                     priority: epriority,
                     merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
+                    output_key: ext_output_key,
+                    shape: ext_shape,
+                    fact_type: ext_fact_type,
+                    confidence: ext_confidence,
+                    source: ext_source,
+                    single: ext_single.unwrap_or(0) != 0,
                     command_extractor_policy: None,
+                    ..Default::default()
                 });
             }
         }
 
         enricher_map
             .into_iter()
-            .filter(|(_, (_, _, _, patterns, _, _))| {
-                patterns.iter().any(|p| {
+            .filter(|(_, data)| {
+                data.patterns.iter().any(|p| {
                     regex::Regex::new(p)
                         .map(|re: regex::Regex| re.is_match(&command))
                         .unwrap_or(false)
                 })
             })
-            .map(
-                |(id, (name, version, template, match_patterns, _, enabled))| {
-                    let extractors = extractor_map.remove(&id).unwrap_or_default();
-                    EnricherDescriptor {
-                        id,
-                        name,
-                        version,
-                        match_patterns,
-                        template,
-                        enabled,
-                        extractors,
-                    }
-                },
-            )
+            .map(|(id, data)| {
+                EnricherDescriptor {
+                    id,
+                    name: data.name,
+                    version: data.version,
+                    match_patterns: data.patterns,
+                    template: data.template,
+                    enabled: data.enabled,
+                    extractors: data.extractors,
+                    schema_version: data.schema_version,
+                    description: data.description,
+                    category: data.category,
+                    command_pattern: data.command_pattern,
+                    advice_scope: data.advice_scope,
+                    pre_checks: data.pre_checks,
+                    assertions: data.assertions,
+                }
+            })
             .collect()
     }
 
@@ -312,7 +444,10 @@ impl CatalogRepository for SqliteCatalogRepository {
         let mut stmt = match conn.prepare(
             r#"
             SELECT e.id, e.name, e.version, e.match_patterns_json, e.template, e.enabled,
-                   ext.id, ext.type, ext.pattern, ext.fact_key, ext.priority, ext.merge_mode
+                   e.schema_version, e.description, e.category, e.command_pattern,
+                   e.advice_scope_json, e.pre_checks_json, e.assertions_json,
+                   ext.id, ext.type, ext.pattern, ext.fact_key, ext.priority, ext.merge_mode,
+                   ext.output_key, ext.shape, ext.fact_type, ext.confidence, ext.source, ext.single
             FROM enrichers e
             LEFT JOIN extractors ext ON ext.enricher_id = e.id
             "#,
@@ -323,18 +458,33 @@ impl CatalogRepository for SqliteCatalogRepository {
 
         let rows = match stmt.query_map([], |row| {
             Ok((
+                // enricher fields (0-12)
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, i32>(5)?,
-                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(6)?,
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<i32>>(10)?,
-                row.get::<_, Option<String>>(11)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, String>(12)?,
+                // extractor fields (13-25)
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<String>>(16)?,
+                row.get::<_, Option<i32>>(17)?,
+                row.get::<_, Option<String>>(18)?,
+                row.get::<_, Option<String>>(19)?,
+                row.get::<_, Option<String>>(20)?,
+                row.get::<_, Option<String>>(21)?,
+                row.get::<_, Option<f32>>(22)?,
+                row.get::<_, Option<String>>(23)?,
+                row.get::<_, Option<i32>>(24)?,
             ))
         }) {
             Ok(r) => r,
@@ -342,66 +492,116 @@ impl CatalogRepository for SqliteCatalogRepository {
         };
 
         // Group by enricher
-        let mut enricher_map: std::collections::HashMap<
-            String,
-            (String, String, String, Vec<String>, String, bool),
-        > = std::collections::HashMap::new();
-        let mut extractor_map: std::collections::HashMap<String, Vec<ExtractorConfig>> =
+        #[derive(Default)]
+        struct EnricherData {
+            name: String,
+            version: String,
+            template: String,
+            patterns: Vec<String>,
+            schema_version: String,
+            description: Option<String>,
+            category: Option<String>,
+            command_pattern: Option<String>,
+            advice_scope: Vec<String>,
+            pre_checks: Vec<String>,
+            assertions: Vec<String>,
+            enabled: bool,
+            extractors: Vec<ExtractorConfig>,
+        }
+        let mut enricher_map: std::collections::HashMap<String, EnricherData> =
             std::collections::HashMap::new();
 
         for row in rows.flatten() {
             let (
+                // enricher fields
                 id,
                 name,
                 version,
                 patterns_json,
                 template,
                 enabled,
+                schema_version,
+                description,
+                category,
+                command_pattern,
+                advice_scope_json,
+                pre_checks_json,
+                assertions_json,
+                // extractor fields
                 ext_id,
                 ext_type,
                 ext_pattern,
                 ext_fact_key,
                 ext_priority,
                 ext_merge_mode,
+                ext_output_key,
+                ext_shape,
+                ext_fact_type,
+                ext_confidence,
+                ext_source,
+                ext_single,
             ) = row;
 
             let patterns: Vec<String> = serde_json::from_str(&patterns_json).unwrap_or_default();
+            let advice_scope: Vec<String> = serde_json::from_str(&advice_scope_json).unwrap_or_default();
+            let pre_checks: Vec<String> = serde_json::from_str(&pre_checks_json).unwrap_or_default();
+            let assertions: Vec<String> = serde_json::from_str(&assertions_json).unwrap_or_default();
 
-            enricher_map.insert(
-                id.clone(),
-                (name, version, template, patterns, id.clone(), enabled != 0),
-            );
+            enricher_map.entry(id.clone()).or_default().name = name;
+            enricher_map.entry(id.clone()).or_default().version = version;
+            enricher_map.entry(id.clone()).or_default().template = template;
+            enricher_map.entry(id.clone()).or_default().patterns = patterns;
+            enricher_map.entry(id.clone()).or_default().schema_version = schema_version;
+            enricher_map.entry(id.clone()).or_default().description = description;
+            enricher_map.entry(id.clone()).or_default().category = category;
+            enricher_map.entry(id.clone()).or_default().command_pattern = command_pattern;
+            enricher_map.entry(id.clone()).or_default().advice_scope = advice_scope;
+            enricher_map.entry(id.clone()).or_default().pre_checks = pre_checks;
+            enricher_map.entry(id.clone()).or_default().assertions = assertions;
+            enricher_map.entry(id.clone()).or_default().enabled = enabled != 0;
+
             if let (Some(eid), Some(etype), Some(epattern), Some(efact_key), Some(epriority)) =
                 (ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority)
             {
-                extractor_map.entry(id).or_default().push(ExtractorConfig {
+                enricher_map.entry(id).or_default().extractors.push(ExtractorConfig {
                     id: eid,
                     extractor_type: etype,
                     pattern: epattern,
                     fact_key: efact_key,
                     priority: epriority,
                     merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
+                    output_key: ext_output_key,
+                    shape: ext_shape,
+                    fact_type: ext_fact_type,
+                    confidence: ext_confidence,
+                    source: ext_source,
+                    single: ext_single.unwrap_or(0) != 0,
                     command_extractor_policy: None,
+                    ..Default::default()
                 });
             }
         }
 
         enricher_map
             .into_iter()
-            .map(
-                |(id, (name, version, template, match_patterns, _, enabled))| {
-                    let extractors = extractor_map.remove(&id).unwrap_or_default();
-                    EnricherDescriptor {
-                        id,
-                        name,
-                        version,
-                        match_patterns,
-                        template,
-                        enabled,
-                        extractors,
-                    }
-                },
-            )
+            .map(|(id, data)| {
+                EnricherDescriptor {
+                    id,
+                    name: data.name,
+                    version: data.version,
+                    match_patterns: data.patterns,
+                    template: data.template,
+                    enabled: data.enabled,
+                    extractors: data.extractors,
+                    schema_version: data.schema_version,
+                    description: data.description,
+                    category: data.category,
+                    command_pattern: data.command_pattern,
+                    advice_scope: data.advice_scope,
+                    pre_checks: data.pre_checks,
+                    assertions: data.assertions,
+                }
+            })
             .collect()
     }
 }
@@ -564,7 +764,10 @@ impl<'a> YamlCatalogImporter<'a> {
         Ok(count)
     }
 
-    async fn import_file(&self, path: &Path) -> Result<(), DomainError> {
+    /// Import a single `.yaml` or `.toml` enricher descriptor file.
+    ///
+    /// This is useful for loading built-in enrichers like maven.yaml at startup.
+    pub async fn import_file(&self, path: &Path) -> Result<(), DomainError> {
         let content = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| DomainError::Internal(format!("Failed to read file: {}", e)))?;
@@ -641,6 +844,21 @@ impl<'a> YamlCatalogImporter<'a> {
             extractors: Vec<YamlExtractor>,
             #[serde(default)]
             rules: Vec<YamlRule>,
+            // Phase 1: new EnricherDescriptor fields
+            #[serde(default = "default_schema_version")]
+            schema_version: String,
+            #[serde(default)]
+            description: Option<String>,
+            #[serde(default)]
+            category: Option<String>,
+            #[serde(default)]
+            command_pattern: Option<String>,
+            #[serde(default)]
+            advice_scope: Vec<String>,
+            #[serde(default)]
+            pre_checks: Vec<String>,
+            #[serde(default)]
+            assertions: Vec<String>,
         }
         #[derive(serde::Deserialize)]
         struct YamlExtractor {
@@ -653,6 +871,19 @@ impl<'a> YamlCatalogImporter<'a> {
             priority: i32,
             #[serde(default = "default_merge_mode")]
             merge_mode: String,
+            // Phase 1: new ExtractorConfig fields
+            #[serde(default)]
+            output_key: Option<String>,
+            #[serde(default)]
+            shape: Option<String>,
+            #[serde(default)]
+            fact_type: Option<String>,
+            #[serde(default)]
+            confidence: Option<f32>,
+            #[serde(default)]
+            source: Option<String>,
+            #[serde(default)]
+            single: bool,
         }
         #[derive(serde::Deserialize)]
         struct YamlRule {
@@ -683,17 +914,44 @@ impl<'a> YamlCatalogImporter<'a> {
         fn default_merge_mode() -> String {
             "single".to_string()
         }
+        fn default_schema_version() -> String {
+            "1.0".to_string()
+        }
 
         let yaml: YamlEnricher =
             serde_yaml::from_str(content).map_err(|e| format!("YAML parse error: {}", e))?;
+
+        // Resolve command_pattern alias: prepend to match_patterns if not already present
+        let mut match_patterns = yaml.enricher.match_patterns;
+        if let Some(ref cmd_pat) = yaml.enricher.command_pattern
+            && !match_patterns.contains(cmd_pat)
+        {
+            match_patterns.insert(0, cmd_pat.clone());
+        }
+
+        // Determine effective merge_mode: single=true forces "single"
+        let effective_merge_mode = |single: bool, merge_mode: &str| -> String {
+            if single {
+                "single".to_string()
+            } else {
+                merge_mode.to_string()
+            }
+        };
 
         let enricher = EnricherDescriptor {
             id: yaml.enricher.id.clone(),
             name: yaml.enricher.name,
             version: yaml.enricher.version,
-            match_patterns: yaml.enricher.match_patterns,
+            match_patterns,
             template: yaml.enricher.template,
             enabled: yaml.enricher.enabled,
+            schema_version: yaml.enricher.schema_version,
+            description: yaml.enricher.description,
+            category: yaml.enricher.category,
+            command_pattern: yaml.enricher.command_pattern,
+            advice_scope: yaml.enricher.advice_scope,
+            pre_checks: yaml.enricher.pre_checks,
+            assertions: yaml.enricher.assertions,
             extractors: yaml
                 .enricher
                 .extractors
@@ -704,8 +962,15 @@ impl<'a> YamlCatalogImporter<'a> {
                     pattern: e.pattern,
                     fact_key: e.fact_key,
                     priority: e.priority,
-                    merge_mode: e.merge_mode,
+                    merge_mode: effective_merge_mode(e.single, &e.merge_mode),
+                    output_key: e.output_key,
+                    shape: e.shape,
+                    fact_type: e.fact_type,
+                    confidence: e.confidence,
+                    source: e.source,
+                    single: e.single,
                     command_extractor_policy: None,
+                    static_value: None,
                 })
                 .collect(),
         };
@@ -760,6 +1025,21 @@ impl<'a> YamlCatalogImporter<'a> {
             extractors: Vec<TomlExtractor>,
             #[serde(default)]
             rules: Vec<TomlRule>,
+            // Phase 1: new EnricherDescriptor fields
+            #[serde(default = "default_schema_version")]
+            schema_version: String,
+            #[serde(default)]
+            description: Option<String>,
+            #[serde(default)]
+            category: Option<String>,
+            #[serde(default)]
+            command_pattern: Option<String>,
+            #[serde(default)]
+            advice_scope: Vec<String>,
+            #[serde(default)]
+            pre_checks: Vec<String>,
+            #[serde(default)]
+            assertions: Vec<String>,
         }
         #[derive(serde::Deserialize)]
         struct TomlExtractor {
@@ -772,6 +1052,19 @@ impl<'a> YamlCatalogImporter<'a> {
             priority: i32,
             #[serde(default = "default_merge_mode")]
             merge_mode: String,
+            // Phase 1: new ExtractorConfig fields
+            #[serde(default)]
+            output_key: Option<String>,
+            #[serde(default)]
+            shape: Option<String>,
+            #[serde(default)]
+            fact_type: Option<String>,
+            #[serde(default)]
+            confidence: Option<f32>,
+            #[serde(default)]
+            source: Option<String>,
+            #[serde(default)]
+            single: bool,
         }
         #[derive(serde::Deserialize)]
         struct TomlRule {
@@ -802,17 +1095,44 @@ impl<'a> YamlCatalogImporter<'a> {
         fn default_merge_mode() -> String {
             "single".to_string()
         }
+        fn default_schema_version() -> String {
+            "1.0".to_string()
+        }
 
         let toml: TomlEnricher =
             toml::from_str(content).map_err(|e| format!("TOML parse error: {}", e))?;
+
+        // Resolve command_pattern alias: prepend to match_patterns if not already present
+        let mut match_patterns = toml.enricher.match_patterns;
+        if let Some(ref cmd_pat) = toml.enricher.command_pattern
+            && !match_patterns.contains(cmd_pat)
+        {
+            match_patterns.insert(0, cmd_pat.clone());
+        }
+
+        // Determine effective merge_mode: single=true forces "single"
+        let effective_merge_mode = |single: bool, merge_mode: &str| -> String {
+            if single {
+                "single".to_string()
+            } else {
+                merge_mode.to_string()
+            }
+        };
 
         let enricher = EnricherDescriptor {
             id: toml.enricher.id.clone(),
             name: toml.enricher.name,
             version: toml.enricher.version,
-            match_patterns: toml.enricher.match_patterns,
+            match_patterns,
             template: toml.enricher.template,
             enabled: toml.enricher.enabled,
+            schema_version: toml.enricher.schema_version,
+            description: toml.enricher.description,
+            category: toml.enricher.category,
+            command_pattern: toml.enricher.command_pattern,
+            advice_scope: toml.enricher.advice_scope,
+            pre_checks: toml.enricher.pre_checks,
+            assertions: toml.enricher.assertions,
             extractors: toml
                 .enricher
                 .extractors
@@ -823,8 +1143,15 @@ impl<'a> YamlCatalogImporter<'a> {
                     pattern: e.pattern,
                     fact_key: e.fact_key,
                     priority: e.priority,
-                    merge_mode: e.merge_mode,
+                    merge_mode: effective_merge_mode(e.single, &e.merge_mode),
+                    output_key: e.output_key,
+                    shape: e.shape,
+                    fact_type: e.fact_type,
+                    confidence: e.confidence,
+                    source: e.source,
+                    single: e.single,
                     command_extractor_policy: None,
+                    static_value: None,
                 })
                 .collect(),
         };
@@ -909,7 +1236,9 @@ mod tests {
                 priority: 1,
                 merge_mode: "single".to_string(),
                 command_extractor_policy: None,
+                ..Default::default()
             }],
+            ..Default::default()
         };
         repo.upsert_enricher(&enricher).await.unwrap();
 
@@ -1005,7 +1334,9 @@ enricher:
                 priority: 1,
                 merge_mode: "single".to_string(),
                 command_extractor_policy: None,
+                ..Default::default()
             }],
+            ..Default::default()
         };
 
         // Gradle enricher also with extractor id "build_status"
@@ -1024,7 +1355,9 @@ enricher:
                 priority: 1,
                 merge_mode: "single".to_string(),
                 command_extractor_policy: None,
+                ..Default::default()
             }],
+            ..Default::default()
         };
 
         repo.upsert_enricher(&maven_enricher).await.unwrap();
@@ -1119,7 +1452,9 @@ enricher:
                 priority: 1,
                 merge_mode: "single".to_string(),
                 command_extractor_policy: None,
+                ..Default::default()
             }],
+            ..Default::default()
         };
         repo.upsert_enricher(&valid_enricher).await.unwrap();
 
@@ -1127,6 +1462,358 @@ enricher:
         let all_enrichers = repo.list_all().await;
         assert_eq!(all_enrichers.len(), 1);
         assert_eq!(all_enrichers[0].id, "maven");
+    }
+
+    // ─── Phase 2: YAML Parser Field Mapping Tests ──────────────────────────────────
+
+    /// Test that parse_yaml maps all 7 new EnricherDescriptor fields correctly.
+    #[tokio::test]
+    async fn test_parse_yaml_maps_all_enricher_phase1_fields() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+        let importer = YamlCatalogImporter::new(&repo);
+
+        let yaml_content = r#"
+enricher:
+  id: gradle
+  name: Gradle Enricher
+  version: "2.0"
+  schema_version: "2.0"
+  description: Analyzes Gradle build output
+  category: build
+  command_pattern: "^gradle\\s+"
+  advice_scope:
+    - build
+    - test
+  pre_checks:
+    - check_gradle_exists
+  assertions:
+    - assert_build_success
+  match_patterns:
+    - "^gradle\\s+build"
+    - "^gradle\\s+test"
+  template: Build {{status}}
+  enabled: true
+  extractors:
+    - id: version
+      type: regex
+      pattern: "Gradle\\s+(\\S+)"
+      fact_key: gradle_version
+      priority: 1
+      output_key: version
+      shape: scalar
+      fact_type: version
+      confidence: 0.95
+      source: stdout
+      single: false
+"#;
+
+        let file_path = tmp.path().join("gradle.yaml");
+        std::fs::write(&file_path, yaml_content).unwrap();
+
+        importer.import_file(&file_path).await.unwrap();
+
+        let enrichers = repo.find_enrichers("gradle build").await;
+
+        assert_eq!(enrichers.len(), 1);
+        let e = &enrichers[0];
+        assert_eq!(e.id, "gradle");
+        assert_eq!(e.schema_version, "2.0");
+        assert_eq!(e.description.as_deref(), Some("Analyzes Gradle build output"));
+        assert_eq!(e.category.as_deref(), Some("build"));
+        assert_eq!(e.command_pattern.as_deref(), Some("^gradle\\s+"));
+        assert_eq!(e.advice_scope, vec!["build", "test"]);
+        assert_eq!(e.pre_checks, vec!["check_gradle_exists"]);
+        assert_eq!(e.assertions, vec!["assert_build_success"]);
+        assert_eq!(
+            e.match_patterns,
+            vec!["^gradle\\s+", "^gradle\\s+build", "^gradle\\s+test"]
+        );
+
+        // Extractor new fields
+        assert_eq!(e.extractors.len(), 1);
+        let ext = &e.extractors[0];
+        assert_eq!(ext.id, "version");
+        assert_eq!(ext.output_key.as_deref(), Some("version"));
+        assert_eq!(ext.shape.as_deref(), Some("scalar"));
+        assert_eq!(ext.fact_type.as_deref(), Some("version"));
+        assert_eq!(ext.confidence, Some(0.95));
+        assert_eq!(ext.source.as_deref(), Some("stdout"));
+        assert_eq!(ext.single, false);
+    }
+
+    /// Test backward compatibility: YAML without Phase 1 fields applies defaults.
+    #[tokio::test]
+    async fn test_parse_yaml_backward_compatible_without_phase1_fields() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+        let importer = YamlCatalogImporter::new(&repo);
+
+        // Old YAML with only original fields (no Phase 1 additions)
+        let yaml_content = r#"
+enricher:
+  id: maven
+  name: Maven
+  version: "1.0"
+  match_patterns:
+    - "^mvn\\s+package"
+  template: Build
+  enabled: true
+  extractors:
+    - id: status
+      type: regex
+      pattern: SUCCESS
+      fact_key: status
+      priority: 1
+"#;
+
+        let file_path = tmp.path().join("maven.yaml");
+        std::fs::write(&file_path, yaml_content).unwrap();
+
+        importer.import_file(&file_path).await.unwrap();
+
+        let enrichers = repo.find_enrichers("mvn package").await;
+
+        assert_eq!(enrichers.len(), 1);
+        let e = &enrichers[0];
+        assert_eq!(e.id, "maven");
+        // New enricher fields get defaults
+        assert_eq!(e.schema_version, "1.0"); // default
+        assert_eq!(e.description, None); // default
+        assert_eq!(e.category, None); // default
+        assert_eq!(e.command_pattern, None); // default
+        assert!(e.advice_scope.is_empty()); // default
+        assert!(e.pre_checks.is_empty()); // default
+        assert!(e.assertions.is_empty()); // default
+
+        // Extractor new fields get defaults
+        let ext = &e.extractors[0];
+        assert_eq!(ext.output_key, None); // default
+        assert_eq!(ext.shape, None); // default
+        assert_eq!(ext.fact_type, None); // default
+        assert_eq!(ext.confidence, None); // default
+        assert_eq!(ext.source, None); // default
+        assert_eq!(ext.single, false); // default
+    }
+
+    /// Test command_pattern alias: empty match_patterns → gets command_pattern.
+    #[tokio::test]
+    async fn test_parse_yaml_command_pattern_alias_empty_match_patterns() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+        let importer = YamlCatalogImporter::new(&repo);
+
+        let yaml_content = r#"
+enricher:
+  id: gradle
+  name: Gradle
+  version: "1.0"
+  command_pattern: "^gradle\\s+build"
+  match_patterns: []
+  template: Build
+  enabled: true
+  extractors: []
+"#;
+
+        let file_path = tmp.path().join("gradle.yaml");
+        std::fs::write(&file_path, yaml_content).unwrap();
+
+        importer.import_file(&file_path).await.unwrap();
+
+        let enrichers = repo.find_enrichers("gradle build").await;
+
+        assert_eq!(enrichers.len(), 1);
+        // command_pattern is prepended to match_patterns
+        assert_eq!(
+            enrichers[0].match_patterns,
+            vec!["^gradle\\s+build"]
+        );
+    }
+
+    /// Test command_pattern alias: existing match_patterns → prepended if not duplicate.
+    #[tokio::test]
+    async fn test_parse_yaml_command_pattern_alias_prepends_when_not_duplicate() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+        let importer = YamlCatalogImporter::new(&repo);
+
+        let yaml_content = r#"
+enricher:
+  id: gradle
+  name: Gradle
+  version: "1.0"
+  command_pattern: "^gradle\\s+build"
+  match_patterns:
+    - "^gradle\\s+test"
+  template: Build
+  enabled: true
+  extractors: []
+"#;
+
+        let file_path = tmp.path().join("gradle.yaml");
+        std::fs::write(&file_path, yaml_content).unwrap();
+
+        importer.import_file(&file_path).await.unwrap();
+
+        let enrichers = repo.find_enrichers("gradle build").await;
+
+        assert_eq!(enrichers.len(), 1);
+        // command_pattern prepended, existing patterns preserved
+        assert_eq!(
+            enrichers[0].match_patterns,
+            vec!["^gradle\\s+build", "^gradle\\s+test"]
+        );
+    }
+
+    /// Test command_pattern alias: already in match_patterns → no duplicate.
+    #[tokio::test]
+    async fn test_parse_yaml_command_pattern_alias_no_duplicate_when_present() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+        let importer = YamlCatalogImporter::new(&repo);
+
+        let yaml_content = r#"
+enricher:
+  id: gradle
+  name: Gradle
+  version: "1.0"
+  command_pattern: "^gradle\\s+build"
+  match_patterns:
+    - "^gradle\\s+build"
+    - "^gradle\\s+test"
+  template: Build
+  enabled: true
+  extractors: []
+"#;
+
+        let file_path = tmp.path().join("gradle.yaml");
+        std::fs::write(&file_path, yaml_content).unwrap();
+
+        importer.import_file(&file_path).await.unwrap();
+
+        let enrichers = repo.find_enrichers("gradle build").await;
+
+        assert_eq!(enrichers.len(), 1);
+        // No duplicate added since command_pattern is already in match_patterns
+        assert_eq!(
+            enrichers[0].match_patterns,
+            vec!["^gradle\\s+build", "^gradle\\s+test"]
+        );
+    }
+
+    /// Test single: true forces merge_mode to "single" regardless of explicit setting.
+    #[tokio::test]
+    async fn test_parse_yaml_single_true_overrides_merge_mode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+        let importer = YamlCatalogImporter::new(&repo);
+
+        let yaml_content = r#"
+enricher:
+  id: test
+  name: Test
+  version: "1.0"
+  match_patterns:
+    - "^test\\s+"
+  template: Test
+  enabled: true
+  extractors:
+    - id: result
+      type: regex
+      pattern: "PASS"
+      fact_key: test_result
+      priority: 1
+      merge_mode: multi
+      single: true
+"#;
+
+        let file_path = tmp.path().join("test.yaml");
+        std::fs::write(&file_path, yaml_content).unwrap();
+
+        importer.import_file(&file_path).await.unwrap();
+
+        let enrichers = repo.find_enrichers("test run").await;
+
+        assert_eq!(enrichers.len(), 1);
+        let ext = &enrichers[0].extractors[0];
+        // single=true means we force merge_mode to "single"
+        assert_eq!(ext.single, true);
+        assert_eq!(ext.merge_mode, "single"); // overridden by single=true
+    }
+
+    /// Test that parse_toml maps all Phase 1 fields correctly (mirrors YAML).
+    #[tokio::test]
+    async fn test_parse_toml_maps_all_phase1_fields() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let repo = SqliteCatalogRepository::new(&db_path).unwrap();
+        let importer = YamlCatalogImporter::new(&repo);
+
+        let toml_content = r#"
+[enricher]
+id = "gradle"
+name = "Gradle Enricher"
+version = "2.0"
+schema_version = "2.0"
+description = "Analyzes Gradle build output"
+category = "build"
+command_pattern = "^gradle\\s+"
+advice_scope = ["build", "test"]
+pre_checks = ["check_gradle_exists"]
+assertions = ["assert_build_success"]
+match_patterns = ["^gradle\\s+build", "^gradle\\s+test"]
+template = "Build {{status}}"
+enabled = true
+
+[[enricher.extractors]]
+id = "version"
+type = "regex"
+pattern = "Gradle\\s+(\\S+)"
+fact_key = "gradle_version"
+priority = 1
+output_key = "version"
+shape = "scalar"
+fact_type = "version"
+confidence = 0.95
+source = "stdout"
+single = false
+"#;
+
+        let file_path = tmp.path().join("gradle.toml");
+        std::fs::write(&file_path, toml_content).unwrap();
+
+        importer.import_file(&file_path).await.unwrap();
+
+        let enrichers = repo.find_enrichers("gradle build").await;
+
+        assert_eq!(enrichers.len(), 1);
+        let e = &enrichers[0];
+        assert_eq!(e.id, "gradle");
+        assert_eq!(e.schema_version, "2.0");
+        assert_eq!(e.description.as_deref(), Some("Analyzes Gradle build output"));
+        assert_eq!(e.category.as_deref(), Some("build"));
+        assert_eq!(e.command_pattern.as_deref(), Some("^gradle\\s+"));
+        assert_eq!(e.advice_scope, vec!["build", "test"]);
+        assert_eq!(e.pre_checks, vec!["check_gradle_exists"]);
+        assert_eq!(e.assertions, vec!["assert_build_success"]);
+        assert_eq!(
+            e.match_patterns,
+            vec!["^gradle\\s+", "^gradle\\s+build", "^gradle\\s+test"]
+        );
+
+        let ext = &e.extractors[0];
+        assert_eq!(ext.output_key.as_deref(), Some("version"));
+        assert_eq!(ext.shape.as_deref(), Some("scalar"));
+        assert_eq!(ext.fact_type.as_deref(), Some("version"));
+        assert_eq!(ext.confidence, Some(0.95));
+        assert_eq!(ext.source.as_deref(), Some("stdout"));
+        assert_eq!(ext.single, false);
     }
 
     // ─── Phase 8: Maven Built-in Rules Tests ────────────────────────────────────
@@ -1298,6 +1985,7 @@ enricher:
             template: "Build".to_string(),
             enabled: true,
             extractors: vec![],
+            ..Default::default()
         };
         repo.upsert_enricher(&enricher).await.unwrap();
 
@@ -1332,6 +2020,7 @@ enricher:
             template: "Build".to_string(),
             enabled: true,
             extractors: vec![],
+            ..Default::default()
         };
         repo.upsert_enricher(&enricher).await.unwrap();
 

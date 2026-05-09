@@ -93,6 +93,7 @@ mod tests {
             template: String::new(),
             enabled: true,
             extractors: Vec::new(),
+            ..Default::default()
         }
     }
 

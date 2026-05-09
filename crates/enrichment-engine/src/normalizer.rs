@@ -154,6 +154,7 @@ mod tests {
             priority: 1,
             merge_mode: "multi".to_string(),
             command_extractor_policy: None,
+            ..Default::default()
         };
 
         let mut config_map: HashMap<String, &ExtractorConfig> = HashMap::new();

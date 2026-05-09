@@ -74,7 +74,7 @@ fn default_severity() -> AdviceSeverity {
 }
 
 /// A single trigger parsed from TOML.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TomlTrigger {
     /// Triggered when an assertion fails.
@@ -99,6 +99,33 @@ pub enum TomlTrigger {
 }
 
 impl TomlTrigger {
+    /// Convert to a CEL condition string for the CEL-lite rules engine.
+    ///
+    /// Returns `None` for triggers that have no direct CEL equivalent.
+    pub fn to_cel_condition(&self) -> Option<String> {
+        match self {
+            TomlTrigger::AssertionFailed { assertion_id } => {
+                // fact('assertion:<id>') == "failed"
+                Some(format!("fact('assertion:{}') == 'failed'", assertion_id))
+            }
+            TomlTrigger::DoctorFailed { doctor_id } => {
+                // fact('doctor:<id>') == "failed"
+                Some(format!("fact('doctor:{}') == 'failed'", doctor_id))
+            }
+            TomlTrigger::ExperiencePattern {
+                tool_name,
+                status,
+                threshold,
+            } => {
+                // count_fact('experience:<tool_name>:<status>', '>=', <threshold>)
+                Some(format!(
+                    "count_fact('experience:{}:{}', '>=', {})",
+                    tool_name, status, threshold
+                ))
+            }
+        }
+    }
+
     fn into_trigger(self) -> AdviceTrigger {
         match self {
             TomlTrigger::AssertionFailed { assertion_id } => {
@@ -115,6 +142,13 @@ impl TomlTrigger {
                 threshold,
             },
         }
+    }
+}
+
+/// Convert TomlTrigger to AdviceTrigger for legacy evaluation.
+impl From<TomlTrigger> for AdviceTrigger {
+    fn from(toml: TomlTrigger) -> Self {
+        toml.into_trigger()
     }
 }
 
@@ -711,5 +745,42 @@ message = "Message {}"
         let store2 = AdviceConfigStore::new(config_path);
         let cfg = store2.get_config();
         assert!(cfg.disabled.is_empty());
+    }
+
+    // ─── to_cel_condition tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_toml_trigger_to_cel_assertion_failed() {
+        let trigger = TomlTrigger::AssertionFailed {
+            assertion_id: "maven.build.success".to_string(),
+        };
+        assert_eq!(
+            trigger.to_cel_condition(),
+            Some("fact('assertion:maven.build.success') == 'failed'".to_string())
+        );
+    }
+
+    #[test]
+    fn test_toml_trigger_to_cel_doctor_failed() {
+        let trigger = TomlTrigger::DoctorFailed {
+            doctor_id: "sandbox.alive".to_string(),
+        };
+        assert_eq!(
+            trigger.to_cel_condition(),
+            Some("fact('doctor:sandbox.alive') == 'failed'".to_string())
+        );
+    }
+
+    #[test]
+    fn test_toml_trigger_to_cel_experience_pattern() {
+        let trigger = TomlTrigger::ExperiencePattern {
+            tool_name: "cargo".to_string(),
+            status: "FAIL".to_string(),
+            threshold: 3,
+        };
+        assert_eq!(
+            trigger.to_cel_condition(),
+            Some("count_fact('experience:cargo:FAIL', '>=', 3)".to_string())
+        );
     }
 }

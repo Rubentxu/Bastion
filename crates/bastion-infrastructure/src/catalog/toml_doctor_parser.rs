@@ -39,7 +39,7 @@ fn default_severity() -> Severity {
 }
 
 /// A single check parsed from TOML.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TomlDoctorCheck {
     /// Check if a sandbox is alive via provider.
@@ -62,6 +62,23 @@ pub enum TomlDoctorCheck {
 }
 
 impl TomlDoctorCheck {
+    /// Convert to a CEL condition string for the CEL-lite rules engine.
+    ///
+    /// Returns `None` for checks that have no CEL equivalent (Aliveness, Resources).
+    pub fn to_cel_condition(&self) -> Option<String> {
+        match self {
+            TomlDoctorCheck::Aliveness { .. } => None, // Deferred — infrastructure check
+            TomlDoctorCheck::Resources { .. } => None,  // Deferred — infrastructure check
+            TomlDoctorCheck::AssertionDriven { assertion_id } => {
+                // fact('assertion:<id>') == "passed"
+                Some(format!(
+                    "fact('assertion:{}') == 'passed'",
+                    assertion_id
+                ))
+            }
+        }
+    }
+
     fn into_doctor_check(self) -> DoctorCheck {
         match self {
             TomlDoctorCheck::Aliveness { sandbox_id } => DoctorCheck::Aliveness { sandbox_id },
@@ -76,6 +93,13 @@ impl TomlDoctorCheck {
                 DoctorCheck::AssertionDriven { assertion_id }
             }
         }
+    }
+}
+
+/// Convert TomlDoctorCheck to DoctorCheck for legacy evaluation.
+impl From<TomlDoctorCheck> for DoctorCheck {
+    fn from(toml: TomlDoctorCheck) -> Self {
+        toml.into_doctor_check()
     }
 }
 
@@ -454,5 +478,35 @@ max_total = 50
 
         let doctors = registry.list();
         assert_eq!(doctors.len(), 2);
+    }
+
+    // ─── to_cel_condition tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_toml_doctor_check_to_cel_assertion_driven() {
+        let check = TomlDoctorCheck::AssertionDriven {
+            assertion_id: "maven.build.success".to_string(),
+        };
+        assert_eq!(
+            check.to_cel_condition(),
+            Some("fact('assertion:maven.build.success') == 'passed'".to_string())
+        );
+    }
+
+    #[test]
+    fn test_toml_doctor_check_to_cel_aliveness_skipped() {
+        // Aliveness has no CEL equivalent — returns None
+        let check = TomlDoctorCheck::Aliveness { sandbox_id: None };
+        assert_eq!(check.to_cel_condition(), None);
+    }
+
+    #[test]
+    fn test_toml_doctor_check_to_cel_resources_skipped() {
+        // Resources has no CEL equivalent — returns None
+        let check = TomlDoctorCheck::Resources {
+            max_total: Some(10),
+            max_idle_per_template: None,
+        };
+        assert_eq!(check.to_cel_condition(), None);
     }
 }

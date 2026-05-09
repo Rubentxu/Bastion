@@ -44,6 +44,14 @@ pub enum Expr {
     AllFact(String, CompOp, String),
     /// `count_fact('key', 'op', N)` — true if count of facts with key satisfies op N.
     CountFact(String, CompOp, i32),
+    /// `stderr_contains('str')` — true if stderr contains substring.
+    StderrContains(String),
+    /// `stderr_matches('regex')` — true if stderr matches regex pattern.
+    StderrMatches(String),
+    /// `duration_lt(ms)` — true if duration in milliseconds is less than threshold.
+    DurationLt(i32),
+    /// `duration_gt(ms)` — true if duration in milliseconds is greater than threshold.
+    DurationGt(i32),
 }
 
 /// Comparison operator for `fact(...)` predicates.
@@ -126,6 +134,8 @@ impl<'a> EvalContext<'a> {
             Expr::Field("exit_code") => self.result.exit_code != 0,
             Expr::Field("timed_out") => self.result.timed_out,
             Expr::Field("stdout") => !self.result.stdout.is_empty(),
+            Expr::Field("stderr") => !self.result.stderr.is_empty(),
+            Expr::Field("duration_ms") => self.result.duration_ms as i32 != 0,
             Expr::Field(other) => {
                 tracing::warn!(field = other, "Unknown field access");
                 false
@@ -156,6 +166,25 @@ impl<'a> EvalContext<'a> {
             Expr::AnyFact(key, op, value) => self.eval_any_fact(key, op, value),
             Expr::AllFact(key, op, value) => self.eval_all_fact(key, op, value),
             Expr::CountFact(key, op, n) => self.eval_count_fact(key, op, *n),
+
+            Expr::StderrContains(sub) => self.result.stderr.contains(sub.as_str()),
+            Expr::StderrMatches(pattern) => {
+                match regex::Regex::new(pattern.as_str()) {
+                    Ok(re) => re.is_match(&self.result.stderr),
+                    Err(_) => {
+                        tracing::warn!(pattern = %pattern, "Invalid regex in stderr_matches");
+                        false // Fail-closed: invalid regex → false
+                    }
+                }
+            }
+            Expr::DurationLt(threshold) => {
+                let duration_i32: i32 = self.result.duration_ms as i32;
+                duration_i32 < *threshold
+            }
+            Expr::DurationGt(threshold) => {
+                let duration_i32: i32 = self.result.duration_ms as i32;
+                duration_i32 > *threshold
+            }
         }
     }
 
@@ -305,6 +334,8 @@ impl<'a> EvalContext<'a> {
             Expr::Field("exit_code") => self.result.exit_code.to_string(),
             Expr::Field("timed_out") => self.result.timed_out.to_string(),
             Expr::Field("stdout") => self.result.stdout.clone(),
+            Expr::Field("stderr") => self.result.stderr.clone(),
+            Expr::Field("duration_ms") => self.result.duration_ms.to_string(),
             _ => String::new(),
         }
     }
@@ -314,6 +345,7 @@ impl<'a> EvalContext<'a> {
             Expr::Int(n) => *n,
             Expr::Str(s) => s.parse().unwrap_or(0),
             Expr::Field("exit_code") => self.result.exit_code,
+            Expr::Field("duration_ms") => self.result.duration_ms as i32,
             _ => 0,
         }
     }
@@ -463,6 +495,10 @@ impl<'a> Parser<'a> {
             TokenKind::AllFact => {
                 self.advance();
                 self.parse_ident_or_call("all_fact".to_string())
+            }
+            TokenKind::DurationGt => {
+                self.advance();
+                self.parse_ident_or_call("duration_gt".to_string())
             }
             TokenKind::LParen => {
                 self.advance();
@@ -645,6 +681,81 @@ impl<'a> Parser<'a> {
                     };
                     Ok(Expr::CountFact(key, op, n))
                 }
+                "duration_gt" => {
+                    // duration_gt(threshold_ms)
+                    if args.len() != 1 {
+                        return Err(ParseError::Invalid(format!(
+                            "duration_gt takes 1 argument, got {}",
+                            args.len()
+                        )));
+                    }
+                    let n = if let Expr::Int(n) = &args[0] {
+                        *n
+                    } else {
+                        return Err(ParseError::Invalid(
+                            "duration_gt argument must be an integer".to_string(),
+                        ));
+                    };
+                    Ok(Expr::DurationGt(n))
+                }
+                "stderr_contains" => {
+                    // stderr_contains(substring)
+                    if args.len() != 1 {
+                        return Err(ParseError::Invalid(format!(
+                            "stderr_contains takes 1 argument, got {}",
+                            args.len()
+                        )));
+                    }
+                    let s = if let Expr::Str(s) = &args[0] {
+                        s.clone()
+                    } else {
+                        return Err(ParseError::Invalid(
+                            "stderr_contains argument must be a string literal".to_string(),
+                        ));
+                    };
+                    Ok(Expr::StderrContains(s))
+                }
+                "stderr_matches" => {
+                    // stderr_matches(regex) — compiled at parse time (fail-closed on invalid)
+                    if args.len() != 1 {
+                        return Err(ParseError::Invalid(format!(
+                            "stderr_matches takes 1 argument, got {}",
+                            args.len()
+                        )));
+                    }
+                    let pattern = if let Expr::Str(s) = &args[0] {
+                        s.clone()
+                    } else {
+                        return Err(ParseError::Invalid(
+                            "stderr_matches argument must be a string literal".to_string(),
+                        ));
+                    };
+                    // Validate regex at parse time — fail-closed
+                    match regex::Regex::new(&pattern) {
+                        Ok(_) => Ok(Expr::StderrMatches(pattern)),
+                        Err(e) => Err(ParseError::Invalid(format!(
+                            "Invalid regex in stderr_matches: {}",
+                            e
+                        ))),
+                    }
+                }
+                "duration_lt" => {
+                    // duration_lt(threshold_ms)
+                    if args.len() != 1 {
+                        return Err(ParseError::Invalid(format!(
+                            "duration_lt takes 1 argument, got {}",
+                            args.len()
+                        )));
+                    }
+                    let n = if let Expr::Int(n) = &args[0] {
+                        *n
+                    } else {
+                        return Err(ParseError::Invalid(
+                            "duration_lt argument must be an integer".to_string(),
+                        ));
+                    };
+                    Ok(Expr::DurationLt(n))
+                }
                 _ => Err(ParseError::Invalid(format!("Unknown function: {}", name))),
             }
         } else {
@@ -653,6 +764,8 @@ impl<'a> Parser<'a> {
                 "exit_code" => Ok(Expr::Field("exit_code")),
                 "timed_out" => Ok(Expr::Field("timed_out")),
                 "stdout" => Ok(Expr::Field("stdout")),
+                "stderr" => Ok(Expr::Field("stderr")),
+                "duration_ms" => Ok(Expr::Field("duration_ms")),
                 _ => Ok(Expr::Str(name)),
             }
         }
@@ -1099,9 +1212,9 @@ mod tests {
     // ─── count_fact tests ───────────────────────────────────────────────────────
 
     #[test]
-    fn parse_count_fact() {
-        let expr = Parser::parse("count_fact('error', '>=', 5)").unwrap();
-        assert!(matches!(expr, Expr::CountFact(_, _, _)));
+    fn parse_duration_gt() {
+        let expr = Parser::parse("duration_gt(5000)").unwrap();
+        assert!(matches!(expr, Expr::DurationGt(n) if n == 5000));
     }
 
     #[test]
@@ -1194,6 +1307,251 @@ mod tests {
         let facts = vec![fact("warning", "warn1"), fact("warning", "warn2")];
         let ctx = EvalContext::new(&invocation, &result, &facts);
         let expr = Parser::parse("count_fact('warning', '<', 5)").unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    // ─── stderr_contains tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_stderr_contains() {
+        let expr = Parser::parse(r#"stderr_contains('ERROR')"#).unwrap();
+        assert!(matches!(expr, Expr::StderrContains(s) if s == "ERROR"));
+    }
+
+    #[test]
+    fn eval_stderr_contains_true_when_present() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: "ERROR: compilation failed".to_string(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"stderr_contains('ERROR')"#).unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_stderr_contains_false_when_absent() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: "BUILD OK".to_string(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"stderr_contains('ERROR')"#).unwrap();
+        assert!(!ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_stderr_contains_false_when_empty() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"stderr_contains('ERROR')"#).unwrap();
+        assert!(!ctx.evaluate(&expr)); // Fail-closed: empty → false
+    }
+
+    // ─── stderr_matches tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn parse_stderr_matches() {
+        let expr = Parser::parse(r#"stderr_matches('line \d+')"#).unwrap();
+        assert!(matches!(expr, Expr::StderrMatches(s) if s == "line \\d+"));
+    }
+
+    #[test]
+    fn eval_stderr_matches_true_on_match() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: "Error at line 42".to_string(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"stderr_matches('line \d+')"#).unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_stderr_matches_false_on_no_match() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: "BUILD OK".to_string(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse(r#"stderr_matches('ERROR')"#).unwrap();
+        assert!(!ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn parse_stderr_matches_invalid_regex_returns_error() {
+        // Invalid regex — bracket not closed
+        let result = Parser::parse(r#"stderr_matches('[')"#);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Invalid regex"));
+    }
+
+    // ─── duration_lt tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_duration_lt() {
+        let expr = Parser::parse("duration_lt(5000)").unwrap();
+        assert!(matches!(expr, Expr::DurationLt(n) if n == 5000));
+    }
+
+    #[test]
+    fn eval_duration_lt_true_when_under_threshold() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 5000,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse("duration_lt(10000)").unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_duration_lt_false_when_over_threshold() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 15000,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse("duration_lt(10000)").unwrap();
+        assert!(!ctx.evaluate(&expr));
+    }
+
+    // ─── duration_gt tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn eval_duration_gt_true_when_over_threshold() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 15000,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse("duration_gt(10000)").unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_duration_gt_false_when_under_threshold() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 5000,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse("duration_gt(10000)").unwrap();
+        assert!(!ctx.evaluate(&expr));
+    }
+
+    // ─── stderr field access tests ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_stderr_field() {
+        let expr = Parser::parse("stderr").unwrap();
+        assert!(matches!(expr, Expr::Field("stderr")));
+    }
+
+    #[test]
+    fn eval_stderr_field_truthy_when_non_empty() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: "ERROR message".to_string(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        // In bool context, non-empty string is truthy
+        let expr = Parser::parse("stderr").unwrap();
+        assert!(ctx.evaluate(&expr));
+    }
+
+    #[test]
+    fn eval_stderr_field_falsy_when_empty() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 0,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        let expr = Parser::parse("stderr").unwrap();
+        assert!(!ctx.evaluate(&expr)); // Empty → falsy
+    }
+
+    // ─── duration_ms field access tests ───────────────────────────────────────
+
+    #[test]
+    fn parse_duration_ms_field() {
+        let expr = Parser::parse("duration_ms").unwrap();
+        assert!(matches!(expr, Expr::Field("duration_ms")));
+    }
+
+    #[test]
+    fn eval_duration_ms_field_greater_than() {
+        let invocation = OperationInvocation::from_command("cargo build");
+        let result = OperationResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 5000,
+            timed_out: false,
+        };
+        let facts = vec![];
+        let ctx = EvalContext::new(&invocation, &result, &facts);
+        // duration_ms > 3000
+        let expr = Parser::parse("duration_ms > 3000").unwrap();
         assert!(ctx.evaluate(&expr));
     }
 

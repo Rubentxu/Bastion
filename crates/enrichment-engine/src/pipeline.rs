@@ -513,6 +513,7 @@ mod tests {
                     priority: 1,
                     merge_mode: "single".to_string(),
                     command_extractor_policy: None,
+                    ..Default::default()
                 },
                 ExtractorConfig {
                     id: "test_results".to_string(),
@@ -522,8 +523,10 @@ mod tests {
                     priority: 2,
                     merge_mode: "single".to_string(),
                     command_extractor_policy: None,
+                    ..Default::default()
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -858,6 +861,7 @@ mod tests {
                     priority: 1,
                     merge_mode: "single".to_string(),
                     command_extractor_policy: None,
+                    ..Default::default()
                 },
                 ExtractorConfig {
                     id: "bad_extractor".to_string(),
@@ -868,8 +872,10 @@ mod tests {
                     priority: 2,
                     merge_mode: "single".to_string(),
                     command_extractor_policy: None,
+                    ..Default::default()
                 },
             ],
+            ..Default::default()
         };
 
         let catalog = Arc::new(FakeCatalog {

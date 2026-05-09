@@ -58,6 +58,8 @@ pub enum TokenKind {
     AllFact,
     /// `count_fact` predicate keyword.
     CountFact,
+    /// `duration_gt` predicate keyword.
+    DurationGt,
 }
 
 /// CEL-lite expression lexer.
@@ -249,6 +251,7 @@ impl<'a> Lexer<'a> {
             "any_fact" => TokenKind::AnyFact,
             "all_fact" => TokenKind::AllFact,
             "count_fact" => TokenKind::CountFact,
+            "duration_gt" => TokenKind::DurationGt,
             _ => TokenKind::Ident(text.to_string()),
         }
     }
