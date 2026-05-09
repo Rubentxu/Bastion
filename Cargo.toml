@@ -8,6 +8,7 @@ members = [
     "crates/bastion-worker",
     "crates/bastion-bootstrap",
     "crates/enrichment-engine",
+    "crates/bastion-test-harness",
 ]
 
 [workspace.package]
@@ -23,6 +24,7 @@ description = "MCP Gateway for AI agent sandbox orchestration"
 bastion-domain = { path = "crates/bastion-domain" }
 bastion-application = { path = "crates/bastion-application" }
 bastion-infrastructure = { path = "crates/bastion-infrastructure" }
+bastion-test-harness = { path = "crates/bastion-test-harness" }
 enrichment-engine = { path = "crates/enrichment-engine" }
 
 # ── Async runtime ────────────────────────────────────────────

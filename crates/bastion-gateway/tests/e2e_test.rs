@@ -6,7 +6,29 @@
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[cfg(feature = "test-metrics")]
+use bastion_test_harness::MetricsCollector;
+
+// ============================================================================
+// Metrics helper
+// ============================================================================
+
+/// Creates a per-test MetricsCollector with a temp database.
+/// When `test-metrics` feature is disabled, this is a no-op.
+#[cfg(feature = "test-metrics")]
+fn make_metrics_collector(test_name: &str) -> MetricsCollector {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join(format!("{}.db", test_name.replace("::", "_")));
+    MetricsCollector::new(&db_path).expect("Failed to create metrics collector")
+}
+
+/// Records a test result via metrics collector (no-op when feature disabled).
+#[cfg(feature = "test-metrics")]
+fn record_test(metrics: &MetricsCollector, name: &str, elapsed: Duration, status: &str) {
+    metrics.record_test(name, elapsed, status).ok();
+}
 
 /// Spawn the gateway and return stdin/stdout handles.
 fn spawn_gateway() -> (std::process::Child, impl Write, impl BufRead) {
@@ -116,6 +138,8 @@ fn send_notification(stdin: &mut impl Write, method: &str, params: Value) {
 
 #[test]
 fn test_gateway_e2e_lifecycle() {
+    let start = Instant::now();
+
     // Requires Podman daemon running
     let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
     if !socket.exists() {
@@ -293,10 +317,14 @@ fn test_gateway_e2e_lifecycle() {
     // Cleanup
     let _ = child.kill();
     println!("✓ E2E test passed!");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_gateway_e2e_lifecycle"), "test_gateway_e2e_lifecycle", start.elapsed(), "pass");
 }
 
 #[test]
 fn test_gateway_health_only() {
+    let start = Instant::now();
     let (mut child, mut stdin, mut reader) = spawn_gateway();
     std::thread::sleep(Duration::from_millis(500));
 
@@ -336,6 +364,9 @@ fn test_gateway_health_only() {
 
     let _ = child.kill();
     println!("✓ Health test passed!");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_gateway_health_only"), "test_gateway_health_only", start.elapsed(), "pass");
 }
 
 // ============================================================================
@@ -490,6 +521,7 @@ fn run_command(
 
 #[test]
 fn test_gateway_pool_lifecycle() {
+    let start = Instant::now();
     // Requires Podman daemon running
     let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
     if !socket.exists() {
@@ -604,10 +636,14 @@ fn test_gateway_pool_lifecycle() {
 
     let _ = child.kill();
     println!("✓ Pool lifecycle test passed!");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_gateway_pool_lifecycle"), "test_gateway_pool_lifecycle", start.elapsed(), "pass");
 }
 
 #[test]
 fn test_gateway_list_and_info() {
+    let start = Instant::now();
     // Requires Podman daemon running
     let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
     if !socket.exists() {
@@ -698,10 +734,14 @@ fn test_gateway_list_and_info() {
 
     let _ = child.kill();
     println!("✓ List and info test passed!");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_gateway_list_and_info"), "test_gateway_list_and_info", start.elapsed(), "pass");
 }
 
 #[test]
 fn test_gateway_pool_recovery() {
+    let start = Instant::now();
     // Requires Podman daemon running
     let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
     if !socket.exists() {
@@ -819,10 +859,14 @@ fn test_gateway_pool_recovery() {
     let _ = terminate_sandbox(&sandbox2_id, &mut stdin2, &mut reader2);
     let _ = child2.kill();
     println!("✓ Pool recovery test passed!");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_gateway_pool_recovery"), "test_gateway_pool_recovery", start.elapsed(), "pass");
 }
 
 #[test]
 fn test_gateway_error_handling() {
+    let start = Instant::now();
     // Requires Podman daemon running
     let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
     if !socket.exists() {
@@ -919,4 +963,7 @@ fn test_gateway_error_handling() {
 
     let _ = child.kill();
     println!("✓ Error handling test passed!");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_gateway_error_handling"), "test_gateway_error_handling", start.elapsed(), "pass");
 }

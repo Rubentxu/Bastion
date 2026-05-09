@@ -10,6 +10,7 @@ default = []
 file-watcher = ["notify"]
 wasm-sandbox = ["dep:wasmtime", "dep:wasmtime-wasi"]
 use-segregated-traits = ["bastion-domain/use-segregated-traits"]
+test-metrics = ["bastion-test-harness/test-metrics"]
 
 [dependencies]
 bastion-domain = { workspace = true }
@@ -54,3 +55,4 @@ tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+bastion-test-harness = { workspace = true, features = ["test-metrics"] }

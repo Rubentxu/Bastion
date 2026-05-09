@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+test-metrics = ["bastion-test-harness/test-metrics"]
+
 [[bin]]
 name = "bastion-gateway"
 path = "src/main.rs"
@@ -55,3 +59,4 @@ tonic-prost-build = { workspace = true }
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tempfile = "3"
+bastion-test-harness = { path = "../bastion-test-harness", features = ["test-metrics"] }

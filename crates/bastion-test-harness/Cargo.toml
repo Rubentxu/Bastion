@@ -1,0 +1,36 @@
+[package]
+name = "bastion-test-harness"
+description = "Test harness for Bastion integration tests — process spawning, metrics, and auto-cleanup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+test-metrics = ["dep:rusqlite", "dep:serde", "dep:serde_json", "dep:chrono", "dep:tokio", "dep:portpicker", "dep:tempfile", "dep:rand", "dep:tracing"]
+
+[dependencies]
+# Only present when test-metrics feature is enabled
+rusqlite = { version = "0.35", features = ["bundled"], optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "sync", "time", "process"], optional = true }
+portpicker = { version = "0.1", optional = true }
+tempfile = { version = "3", optional = true }
+regex = { version = "1", optional = true }
+rand = { version = "0.8", optional = true }
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "sync", "time", "process"] }
+rand = "0.8"
+rusqlite = { version = "0.35", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
+portpicker = "0.1"
+tempfile = "3"
+regex = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

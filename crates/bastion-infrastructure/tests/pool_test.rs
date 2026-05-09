@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::Stream;
@@ -28,9 +28,32 @@ use bastion_domain::shared::id::SandboxId;
 
 use bastion_infrastructure::pool::{PoolConfig, SandboxPoolManager};
 
+#[cfg(feature = "test-metrics")]
+use bastion_test_harness::{MetricsCollector, TestTerminal};
+
 // ============================================================================
-// Mock Provider for Pool Tests
+// Metrics helper
 // ============================================================================
+
+/// Creates a per-test MetricsCollector with a temp database.
+/// When `test-metrics` feature is disabled, this is a no-op.
+#[cfg(feature = "test-metrics")]
+fn make_metrics_collector(test_name: &str) -> MetricsCollector {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join(format!("{}.db", test_name.replace("::", "_")));
+    MetricsCollector::new(&db_path).expect("Failed to create metrics collector")
+}
+
+/// Records a test result via metrics collector (no-op when feature disabled).
+#[cfg(feature = "test-metrics")]
+fn record_test(
+    metrics: &MetricsCollector,
+    test_name: &str,
+    duration: Duration,
+    status: &str,
+) {
+    metrics.record_test(test_name, duration.as_millis() as u64, status, "bastion-infrastructure", "tests/pool_test.rs");
+}
 
 /// Mock provider that tracks sandbox creation and can be controlled per-test.
 #[derive(Debug)]
@@ -269,6 +292,11 @@ fn create_test_pool(
 
 #[tokio::test]
 async fn test_pool_initialization() {
+    #[cfg(feature = "test-metrics")]
+    let metrics = make_metrics_collector("test_pool_initialization");
+    #[cfg(feature = "test-metrics")]
+    let start = Instant::now();
+
     let provider = Arc::new(MockProvider::new(vec![]));
     let repository = Arc::new(MockRepository::new());
     let manager = create_test_pool(provider.clone(), repository.clone(), 2, 4);
@@ -291,10 +319,18 @@ async fn test_pool_initialization() {
     );
 
     manager.stop().await.expect("Pool should stop cleanly");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&metrics, "test_pool_initialization", start.elapsed(), "pass");
 }
 
 #[tokio::test]
 async fn test_pool_grow_on_demand() {
+    #[cfg(feature = "test-metrics")]
+    let metrics = make_metrics_collector("test_pool_grow_on_demand");
+    #[cfg(feature = "test-metrics")]
+    let start = Instant::now();
+
     let provider = Arc::new(MockProvider::new(vec![]));
     let repository = Arc::new(MockRepository::new());
     let manager = create_test_pool(provider.clone(), repository.clone(), 1, 3);
@@ -342,10 +378,14 @@ async fn test_pool_grow_on_demand() {
         .expect("Should checkin sandbox");
 
     manager.stop().await.expect("Pool should stop cleanly");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&metrics, "test_pool_grow_on_demand", start.elapsed(), "pass");
 }
 
 #[tokio::test]
 async fn test_pool_shrink_to_min() {
+    let start = Instant::now();
     let provider = Arc::new(MockProvider::new(vec![]));
     let repository = Arc::new(MockRepository::new());
     let manager = create_test_pool(provider.clone(), repository.clone(), 1, 3);
@@ -383,10 +423,14 @@ async fn test_pool_shrink_to_min() {
     );
 
     manager.stop().await.expect("Pool should stop cleanly");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_pool_shrink_to_min"), "test_pool_shrink_to_min", start.elapsed(), "pass");
 }
 
 #[tokio::test]
 async fn test_pool_recovery_on_restart() {
+    let start = Instant::now();
     // Simulate running sandboxes that existed before restart
     let running_sandbox = Sandbox::new(
         SandboxId::new("recovered-sandbox-1"),
@@ -438,10 +482,14 @@ async fn test_pool_recovery_on_restart() {
         "Pool should have 2 recovered sandboxes, got {}",
         stats.idle
     );
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_pool_recovery_on_restart"), "test_pool_recovery_on_restart", start.elapsed(), "pass");
 }
 
 #[tokio::test]
 async fn test_pool_max_total_limits_growth() {
+    let start = Instant::now();
     // Test that max_total limits the total number of sandboxes
     let provider = Arc::new(MockProvider::new(vec![]));
     let repository = Arc::new(MockRepository::new());
@@ -482,10 +530,14 @@ async fn test_pool_max_total_limits_growth() {
     // direct checkout to exceed max_total, while others enforce it via semaphore
 
     manager.stop().await.expect("Pool should stop cleanly");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_pool_max_total_limits_growth"), "test_pool_max_total_limits_growth", start.elapsed(), "pass");
 }
 
 #[tokio::test]
 async fn test_pool_cleanup_on_shutdown() {
+    let start = Instant::now();
     let provider = Arc::new(MockProvider::new(vec![]));
     let repository = Arc::new(MockRepository::new());
     let terminate_count = provider.terminate_count.clone();
@@ -529,10 +581,14 @@ async fn test_pool_cleanup_on_shutdown() {
     // The important thing is that stop() completes without panic
     // Actual termination behavior depends on pool state at shutdown
     assert!(true, "Pool stopped cleanly");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_pool_cleanup_on_shutdown"), "test_pool_cleanup_on_shutdown", start.elapsed(), "pass");
 }
 
 #[tokio::test]
 async fn test_pool_skips_unregistered_templates_on_recovery() {
+    let start = Instant::now();
     // Sandbox with unregistered template
     let orphan_sandbox = Sandbox::new(
         SandboxId::new("orphan-sandbox"),
@@ -561,10 +617,14 @@ async fn test_pool_skips_unregistered_templates_on_recovery() {
         result.skipped_not_registered, 1,
         "One sandbox should be skipped for unregistered template"
     );
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_pool_skips_unregistered_templates_on_recovery"), "test_pool_skips_unregistered_templates_on_recovery", start.elapsed(), "pass");
 }
 
 #[tokio::test]
 async fn test_pool_handles_create_failure_gracefully() {
+    let start = Instant::now();
     let provider = Arc::new(MockProvider::new(vec![]).with_create_failure());
     let repository = Arc::new(MockRepository::new());
 
@@ -590,4 +650,7 @@ async fn test_pool_handles_create_failure_gracefully() {
     );
 
     manager.stop().await.expect("Pool should stop cleanly");
+
+    #[cfg(feature = "test-metrics")]
+    record_test(&make_metrics_collector("test_pool_handles_create_failure_gracefully"), "test_pool_handles_create_failure_gracefully", start.elapsed(), "pass");
 }
