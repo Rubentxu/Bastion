@@ -47,7 +47,7 @@ notify = { version = "8", optional = true }
 
 # WASM sandbox provider (optional)
 wasmtime = { version = "29", optional = true }
-wasmtime-wasi = { version = "29", optional = true }
+wasmtime-wasi = { version = "44", optional = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
