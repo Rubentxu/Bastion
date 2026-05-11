@@ -16,6 +16,8 @@ use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
+use bastion_domain::provider::executor::{CommandStream, TaskExecutor};
+use bastion_domain::provider::lifecycle::SandboxLifecycle;
 use bastion_domain::provider::port::SandboxProvider;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::repository::SandboxRepository;
@@ -86,8 +88,10 @@ impl MockProvider {
     }
 }
 
+// ── SandboxLifecycle ─────────────────────────────────────────────
+
 #[async_trait]
-impl SandboxProvider for MockProvider {
+impl SandboxLifecycle for MockProvider {
     async fn create(
         &self,
         id: &SandboxId,
@@ -123,6 +127,43 @@ impl SandboxProvider for MockProvider {
         Ok(self.running_sandboxes.iter().any(|s| s.id == *id))
     }
 
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::default()
+    }
+
+    fn name(&self) -> &str {
+        "mock"
+    }
+
+    async fn list_sandboxes(&self, filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
+        if filter.status == Some(SandboxStatus::Running) {
+            Ok(self.running_sandboxes.clone())
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
+        self.running_sandboxes
+            .iter()
+            .find(|s| s.id == *id)
+            .cloned()
+            .ok_or_else(|| DomainError::NotFound(id.to_string()))
+    }
+
+    async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+        Err(DomainError::UnsupportedOperation("snapshots".to_string()))
+    }
+}
+
+// ── TaskExecutor ─────────────────────────────────────────────────
+
+#[async_trait]
+impl TaskExecutor for MockProvider {
     async fn run_command(
         &self,
         _id: &SandboxId,
@@ -161,46 +202,6 @@ impl SandboxProvider for MockProvider {
 
     async fn list_files(&self, _id: &SandboxId, _dir: &str) -> Result<Vec<FileEntry>, DomainError> {
         Ok(vec![])
-    }
-
-    async fn create_snapshot(
-        &self,
-        _id: &SandboxId,
-        _name: &str,
-    ) -> Result<SnapshotInfo, DomainError> {
-        Err(DomainError::UnsupportedOperation("snapshots".to_string()))
-    }
-
-    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
-        Err(DomainError::UnsupportedOperation("snapshots".to_string()))
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::default()
-    }
-
-    fn name(&self) -> &str {
-        "mock"
-    }
-
-    async fn list_sandboxes(&self, filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
-        if filter.status == Some(SandboxStatus::Running) {
-            Ok(self.running_sandboxes.clone())
-        } else {
-            Ok(vec![])
-        }
-    }
-
-    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
-        self.running_sandboxes
-            .iter()
-            .find(|s| s.id == *id)
-            .cloned()
-            .ok_or_else(|| DomainError::NotFound(id.to_string()))
-    }
-
-    async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
-        Ok(())
     }
 }
 

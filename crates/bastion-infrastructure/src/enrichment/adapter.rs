@@ -588,7 +588,8 @@ mod tests {
     use bastion_domain::execution::command::CommandSpec;
     use bastion_domain::file_ops::FileEntry;
     use bastion_domain::provider::capabilities::ProviderCapabilities;
-    use bastion_domain::provider::port::CommandStream;
+    use bastion_domain::provider::executor::{CommandStream, TaskExecutor};
+    use bastion_domain::provider::lifecycle::SandboxLifecycle;
     use bastion_domain::provider::port::SandboxProvider;
     use bastion_domain::sandbox::entity::Sandbox;
     use bastion_domain::sandbox::snapshot::SnapshotInfo;
@@ -671,8 +672,10 @@ mod tests {
         }
     }
 
+    // ── SandboxLifecycle ─────────────────────────────────────────────
+
     #[async_trait]
-    impl SandboxProvider for FakeProvider {
+    impl SandboxLifecycle for FakeProvider {
         async fn create(
             &self,
             _id: &SandboxId,
@@ -690,6 +693,40 @@ mod tests {
         async fn is_alive(&self, _id: &SandboxId) -> Result<bool, DomainError> {
             Ok(true)
         }
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
+        fn name(&self) -> &str {
+            "fake"
+        }
+        async fn list_sandboxes(
+            &self,
+            _filter: &SandboxFilter,
+        ) -> Result<Vec<Sandbox>, DomainError> {
+            Ok(vec![])
+        }
+        async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
+            unimplemented!()
+        }
+        async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn create_snapshot(
+            &self,
+            _id: &SandboxId,
+            _name: &str,
+        ) -> Result<SnapshotInfo, DomainError> {
+            unimplemented!()
+        }
+        async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+            unimplemented!()
+        }
+    }
+
+    // ── TaskExecutor ─────────────────────────────────────────────────
+
+    #[async_trait]
+    impl TaskExecutor for FakeProvider {
         async fn run_command(
             &self,
             _id: &SandboxId,
@@ -721,34 +758,6 @@ mod tests {
             _dir: &str,
         ) -> Result<Vec<FileEntry>, DomainError> {
             Ok(vec![])
-        }
-        async fn create_snapshot(
-            &self,
-            _id: &SandboxId,
-            _name: &str,
-        ) -> Result<SnapshotInfo, DomainError> {
-            unimplemented!()
-        }
-        async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
-            unimplemented!()
-        }
-        fn capabilities(&self) -> ProviderCapabilities {
-            ProviderCapabilities::default()
-        }
-        fn name(&self) -> &str {
-            "fake"
-        }
-        async fn list_sandboxes(
-            &self,
-            _filter: &SandboxFilter,
-        ) -> Result<Vec<Sandbox>, DomainError> {
-            Ok(vec![])
-        }
-        async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
-            unimplemented!()
-        }
-        async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
-            Ok(())
         }
     }
 

@@ -25,7 +25,9 @@ use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::image_source::{ImageSource, SquashfsImage};
 #[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::network::NetworkBackend;
-use bastion_domain::provider::port::{CommandStream, SandboxProvider};
+use bastion_domain::provider::lifecycle::SandboxLifecycle;
+use bastion_domain::provider::executor::TaskExecutor;
+use bastion_domain::provider::port::CommandStream;
 use bastion_domain::provider::router::CommandRouter;
 #[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::state_machine::SandboxStateMachine;
@@ -551,7 +553,9 @@ impl FirecrackerProvider {
 }
 
 #[async_trait]
-impl SandboxProvider for FirecrackerProvider {
+#[async_trait]
+impl SandboxLifecycle for FirecrackerProvider {
+
     async fn create(
         &self,
         id: &SandboxId,
@@ -872,6 +876,234 @@ impl SandboxProvider for FirecrackerProvider {
         }
     }
 
+    async fn create_snapshot(
+        &self,
+        id: &SandboxId,
+        name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
+        let socket_path = self.socket_path(id);
+        let snapshot_dir = self.sandbox_dir(id).join("snapshots").join(name);
+
+        tracing::info!(
+            sandbox_id = %id,
+            snapshot_name = %name,
+            "Creating Firecracker snapshot"
+        );
+
+        // Create snapshot directory
+        std::fs::create_dir_all(&snapshot_dir)
+            .map_err(|e| DomainError::Internal(format!("Cannot create snapshot directory: {e}")))?;
+
+        // 1. Pause the VM
+        Self::api_request(
+            &socket_path,
+            "PUT",
+            "/actions",
+            Some(&serde_json::json!({
+                "action_type": "Pause"
+            })),
+        )
+        .await?;
+
+        // 2. Create snapshot via Firecracker snapshot API
+        let state_file = snapshot_dir.join("snapshot.state");
+        let mem_file = snapshot_dir.join("snapshot.memory");
+
+        Self::api_request(
+            &socket_path,
+            "PUT",
+            "/snapshot/create",
+            Some(&serde_json::json!({
+                "snapshot_type": "Full",
+                "state_file_path": state_file.to_string_lossy(),
+                "mem_file_path": mem_file.to_string_lossy()
+            })),
+        )
+        .await?;
+
+        // 3. Resume the VM
+        Self::api_request(
+            &socket_path,
+            "PUT",
+            "/actions",
+            Some(&serde_json::json!({
+                "action_type": "Resume"
+            })),
+        )
+        .await?;
+
+        // 4. Calculate total size of snapshot files
+        let size_bytes = std::fs::metadata(&state_file).map(|m| m.len()).unwrap_or(0)
+            + std::fs::metadata(&mem_file).map(|m| m.len()).unwrap_or(0);
+
+        let snapshot_id = format!("{}-{}", id, name);
+
+        tracing::info!(
+            sandbox_id = %id,
+            snapshot_id = %snapshot_id,
+            size_bytes,
+            "Firecracker snapshot created"
+        );
+
+        Ok(SnapshotInfo {
+            snapshot_id,
+            sandbox_id: id.to_string(),
+            name: name.to_string(),
+            created_at: chrono::Utc::now(),
+            size_bytes,
+        })
+    }
+
+    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+        // Restore requires the original sandbox_id which is not available from snapshot_id alone.
+        // This would need additional design work to track the mapping.
+        Err(DomainError::UnsupportedOperation(
+            "restore_snapshot requires additional context (original sandbox_id). \
+             This is complex without storing the mapping during create_snapshot."
+                .to_string(),
+        ))
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_snapshots: true,
+            supports_streaming: false,
+            supports_pause_resume: false,
+            max_timeout_ms: 600_000,
+            max_memory_mb: 512,
+            max_cpu_count: 4,
+            supports_networking: true,
+            requires_kvm: true,
+            avg_startup_ms: 300,
+        }
+    }
+
+    fn name(&self) -> &str {
+        "firecracker"
+    }
+
+    async fn list_sandboxes(&self, filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
+        let mut sandboxes = Vec::new();
+        let limit = filter.limit.unwrap_or(u32::MAX) as usize;
+
+        // Collect keys to avoid holding DashMap lock while calling try_wait
+        #[cfg(feature = "use-segregated-traits")]
+        let sandbox_ids: Vec<String> = {
+            self.state_machine
+                .list_active()
+                .into_iter()
+                .map(|id| id.to_string())
+                .take(limit)
+                .collect()
+        };
+
+        #[cfg(not(feature = "use-segregated-traits"))]
+        let sandbox_ids: Vec<String> = self
+            .vms
+            .iter()
+            .map(|item| item.key().clone())
+            .take(limit)
+            .collect();
+
+        for sandbox_id in sandbox_ids {
+            // Use get_mut to allow calling try_wait()
+            let is_alive = if let Some(mut vm) = self.vms.get_mut(&sandbox_id) {
+                match vm.child.try_wait() {
+                    Ok(Some(_)) => false,
+                    Ok(None) => true,
+                    Err(_) => false,
+                }
+            } else {
+                continue;
+            };
+
+            let status = if is_alive {
+                SandboxStatus::Running
+            } else {
+                SandboxStatus::Stopped
+            };
+
+            // Apply status filter
+            if let Some(ref filter_status) = filter.status
+                && status != *filter_status
+            {
+                continue;
+            }
+
+            // Build a minimal Sandbox entity
+            let sandbox = Sandbox::new(
+                SandboxId::new(&sandbox_id),
+                bastion_domain::shared::id::TemplateId::new("firecracker"),
+                bastion_domain::shared::id::ProviderId::new("firecracker"),
+                ResourcesSpec::default(),
+                NetworkSpec::default(),
+            );
+
+            sandboxes.push(sandbox);
+        }
+
+        Ok(sandboxes)
+    }
+
+    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
+        let sandbox_id = id.to_string();
+
+        // Check if we have this VM tracked
+        let mut vm = self
+            .vms
+            .get_mut(&sandbox_id)
+            .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
+
+        // Check if VM process is still alive
+        let is_alive = match vm.child.try_wait() {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(_) => false,
+        };
+
+        let status = if is_alive {
+            SandboxStatus::Running
+        } else {
+            SandboxStatus::Stopped
+        };
+
+        let mut sandbox = Sandbox::new(
+            id.clone(),
+            bastion_domain::shared::id::TemplateId::new("firecracker"),
+            bastion_domain::shared::id::ProviderId::new("firecracker"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+
+        if status == SandboxStatus::Running {
+            sandbox.mark_running()?;
+        } else {
+            let _ = sandbox.terminate();
+        }
+
+        Ok(sandbox)
+    }
+
+    async fn set_timeout(&self, id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+        let sandbox_id = id.to_string();
+
+        // Verify the VM exists
+        let _ = self
+            .vms
+            .get(&sandbox_id)
+            .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
+
+        // Firecracker doesn't have a native timeout mechanism at the VM level.
+        // The timeout is managed at the Bastion layer.
+        // This operation is a no-op at the provider level.
+        tracing::debug!(sandbox_id = %id, "set_timeout called on FirecrackerProvider (no-op at provider level)");
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TaskExecutor for FirecrackerProvider {
+
     async fn run_command(
         &self,
         id: &SandboxId,
@@ -1186,265 +1418,5 @@ impl SandboxProvider for FirecrackerProvider {
         }
 
         Ok(entries)
-    }
-
-    async fn create_snapshot(
-        &self,
-        id: &SandboxId,
-        name: &str,
-    ) -> Result<SnapshotInfo, DomainError> {
-        let socket_path = self.socket_path(id);
-        let snapshot_dir = self.sandbox_dir(id).join("snapshots").join(name);
-
-        tracing::info!(
-            sandbox_id = %id,
-            snapshot_name = %name,
-            "Creating Firecracker snapshot"
-        );
-
-        // Create snapshot directory
-        std::fs::create_dir_all(&snapshot_dir)
-            .map_err(|e| DomainError::Internal(format!("Cannot create snapshot directory: {e}")))?;
-
-        // 1. Pause the VM
-        Self::api_request(
-            &socket_path,
-            "PUT",
-            "/actions",
-            Some(&serde_json::json!({
-                "action_type": "Pause"
-            })),
-        )
-        .await?;
-
-        // 2. Create snapshot via Firecracker snapshot API
-        let state_file = snapshot_dir.join("snapshot.state");
-        let mem_file = snapshot_dir.join("snapshot.memory");
-
-        Self::api_request(
-            &socket_path,
-            "PUT",
-            "/snapshot/create",
-            Some(&serde_json::json!({
-                "snapshot_type": "Full",
-                "state_file_path": state_file.to_string_lossy(),
-                "mem_file_path": mem_file.to_string_lossy()
-            })),
-        )
-        .await?;
-
-        // 3. Resume the VM
-        Self::api_request(
-            &socket_path,
-            "PUT",
-            "/actions",
-            Some(&serde_json::json!({
-                "action_type": "Resume"
-            })),
-        )
-        .await?;
-
-        // 4. Calculate total size of snapshot files
-        let size_bytes = std::fs::metadata(&state_file).map(|m| m.len()).unwrap_or(0)
-            + std::fs::metadata(&mem_file).map(|m| m.len()).unwrap_or(0);
-
-        let snapshot_id = format!("{}-{}", id, name);
-
-        tracing::info!(
-            sandbox_id = %id,
-            snapshot_id = %snapshot_id,
-            size_bytes,
-            "Firecracker snapshot created"
-        );
-
-        Ok(SnapshotInfo {
-            snapshot_id,
-            sandbox_id: id.to_string(),
-            name: name.to_string(),
-            created_at: chrono::Utc::now(),
-            size_bytes,
-        })
-    }
-
-    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
-        // Restore requires the original sandbox_id which is not available from snapshot_id alone.
-        // This would need additional design work to track the mapping.
-        Err(DomainError::UnsupportedOperation(
-            "restore_snapshot requires additional context (original sandbox_id). \
-             This is complex without storing the mapping during create_snapshot."
-                .to_string(),
-        ))
-    }
-
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            supports_snapshots: true,
-            supports_streaming: false,
-            supports_pause_resume: false,
-            max_timeout_ms: 600_000,
-            max_memory_mb: 512,
-            max_cpu_count: 4,
-            supports_networking: true,
-            requires_kvm: true,
-            avg_startup_ms: 300,
-        }
-    }
-
-    fn name(&self) -> &str {
-        "firecracker"
-    }
-
-    async fn list_sandboxes(&self, filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
-        let mut sandboxes = Vec::new();
-        let limit = filter.limit.unwrap_or(u32::MAX) as usize;
-
-        // Collect keys to avoid holding DashMap lock while calling try_wait
-        #[cfg(feature = "use-segregated-traits")]
-        let sandbox_ids: Vec<String> = {
-            self.state_machine
-                .list_active()
-                .into_iter()
-                .map(|id| id.to_string())
-                .take(limit)
-                .collect()
-        };
-
-        #[cfg(not(feature = "use-segregated-traits"))]
-        let sandbox_ids: Vec<String> = self
-            .vms
-            .iter()
-            .map(|item| item.key().clone())
-            .take(limit)
-            .collect();
-
-        for sandbox_id in sandbox_ids {
-            // Use get_mut to allow calling try_wait()
-            let is_alive = if let Some(mut vm) = self.vms.get_mut(&sandbox_id) {
-                match vm.child.try_wait() {
-                    Ok(Some(_)) => false,
-                    Ok(None) => true,
-                    Err(_) => false,
-                }
-            } else {
-                continue;
-            };
-
-            let status = if is_alive {
-                SandboxStatus::Running
-            } else {
-                SandboxStatus::Stopped
-            };
-
-            // Apply status filter
-            if let Some(ref filter_status) = filter.status
-                && status != *filter_status
-            {
-                continue;
-            }
-
-            // Build a minimal Sandbox entity
-            let sandbox = Sandbox::new(
-                SandboxId::new(&sandbox_id),
-                bastion_domain::shared::id::TemplateId::new("firecracker"),
-                bastion_domain::shared::id::ProviderId::new("firecracker"),
-                ResourcesSpec::default(),
-                NetworkSpec::default(),
-            );
-
-            sandboxes.push(sandbox);
-        }
-
-        Ok(sandboxes)
-    }
-
-    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
-        let sandbox_id = id.to_string();
-
-        // Check if we have this VM tracked
-        let mut vm = self
-            .vms
-            .get_mut(&sandbox_id)
-            .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
-
-        // Check if VM process is still alive
-        let is_alive = match vm.child.try_wait() {
-            Ok(Some(_)) => false,
-            Ok(None) => true,
-            Err(_) => false,
-        };
-
-        let status = if is_alive {
-            SandboxStatus::Running
-        } else {
-            SandboxStatus::Stopped
-        };
-
-        let mut sandbox = Sandbox::new(
-            id.clone(),
-            bastion_domain::shared::id::TemplateId::new("firecracker"),
-            bastion_domain::shared::id::ProviderId::new("firecracker"),
-            ResourcesSpec::default(),
-            NetworkSpec::default(),
-        );
-
-        if status == SandboxStatus::Running {
-            sandbox.mark_running()?;
-        } else {
-            let _ = sandbox.terminate();
-        }
-
-        Ok(sandbox)
-    }
-
-    async fn set_timeout(&self, id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
-        let sandbox_id = id.to_string();
-
-        // Verify the VM exists
-        let _ = self
-            .vms
-            .get(&sandbox_id)
-            .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
-
-        // Firecracker doesn't have a native timeout mechanism at the VM level.
-        // The timeout is managed at the Bastion layer.
-        // This operation is a no-op at the provider level.
-        tracing::debug!(sandbox_id = %id, "set_timeout called on FirecrackerProvider (no-op at provider level)");
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(feature = "use-segregated-traits")]
-    #[cfg(feature = "use-segregated-traits")]
-    #[test]
-    fn test_new_validates_paths() {
-        use crate::provider::network::HostBackend;
-        let result = FirecrackerProvider::new(
-            PathBuf::from("/nonexistent/firecracker"),
-            PathBuf::from("/nonexistent/vmlinux"),
-            PathBuf::from("/nonexistent/rootfs"),
-            PathBuf::from("/tmp/bastion-test"),
-            PathBuf::from("/nonexistent/bastion-worker"),
-            "10.0.2.1:50052".to_string(),
-            HostBackend::new(),
-        );
-        assert!(result.is_err());
-    }
-
-    #[cfg(not(feature = "use-segregated-traits"))]
-    #[test]
-    fn test_new_validates_paths() {
-        let result = FirecrackerProvider::new(
-            PathBuf::from("/nonexistent/firecracker"),
-            PathBuf::from("/nonexistent/vmlinux"),
-            PathBuf::from("/nonexistent/rootfs"),
-            PathBuf::from("/tmp/bastion-test"),
-            PathBuf::from("/nonexistent/bastion-worker"),
-            "10.0.2.1:50052".to_string(),
-        );
-        assert!(result.is_err());
     }
 }

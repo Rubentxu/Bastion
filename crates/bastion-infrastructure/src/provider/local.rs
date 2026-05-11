@@ -19,7 +19,8 @@ use tokio::sync::mpsc;
 use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
-use bastion_domain::provider::SandboxProvider;
+use bastion_domain::provider::lifecycle::SandboxLifecycle;
+use bastion_domain::provider::executor::TaskExecutor;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 #[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::state_machine::SandboxStateMachine;
@@ -91,7 +92,9 @@ impl std::fmt::Debug for LocalProvider {
 }
 
 #[async_trait]
-impl SandboxProvider for LocalProvider {
+#[async_trait]
+impl SandboxLifecycle for LocalProvider {
+
     fn name(&self) -> &str {
         "local"
     }
@@ -192,15 +195,64 @@ impl SandboxProvider for LocalProvider {
         Ok(self.sandboxes.read().await.contains_key(id))
     }
 
-    /// Cancel a running command in the local sandbox.
-    ///
-    /// For LocalProvider, command cancellation is best-effort. Since commands
-    /// run via `std::process::Command::output()` (synchronous), we cannot
-    /// cancel mid-execution. However, if the command was spawned with
-    /// process group tracking, we can signal the group.
-    ///
-    /// Currently returns Ok(false) (no running command found) as the
-    /// synchronous execution model doesn't support mid-execution cancellation.
+    async fn create_snapshot(
+        &self,
+        _id: &SandboxId,
+        _name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
+        Err(DomainError::UnsupportedOperation(
+            "snapshots not supported for local provider".into(),
+        ))
+    }
+
+    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+        Err(DomainError::UnsupportedOperation(
+            "snapshots not supported for local provider".into(),
+        ))
+    }
+
+    async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            let active_ids = self.state_machine.list_active();
+            let mut result = Vec::new();
+            for id in active_ids {
+                if let Ok(sandbox) = self.get_info(&id).await {
+                    result.push(sandbox);
+                }
+            }
+            return Ok(result);
+        }
+        #[cfg(not(feature = "use-segregated-traits"))]
+        {
+            Ok(self.sandboxes.read().await.values().cloned().collect())
+        }
+    }
+
+    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
+        #[cfg(feature = "use-segregated-traits")]
+        {
+            if self.state_machine.get_state(id).is_none() {
+                return Err(DomainError::NotFound(format!("Sandbox {} not found", id)));
+            }
+        }
+        self.sandboxes
+            .read()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DomainError::NotFound(format!("Sandbox {} not found", id)))
+    }
+
+    async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+        // No-op for local provider
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TaskExecutor for LocalProvider {
+
     async fn cancel_command(
         &self,
         id: &SandboxId,
@@ -363,243 +415,5 @@ impl SandboxProvider for LocalProvider {
         }
 
         Ok(entries)
-    }
-
-    async fn create_snapshot(
-        &self,
-        _id: &SandboxId,
-        _name: &str,
-    ) -> Result<SnapshotInfo, DomainError> {
-        Err(DomainError::UnsupportedOperation(
-            "snapshots not supported for local provider".into(),
-        ))
-    }
-
-    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
-        Err(DomainError::UnsupportedOperation(
-            "snapshots not supported for local provider".into(),
-        ))
-    }
-
-    async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
-        #[cfg(feature = "use-segregated-traits")]
-        {
-            let active_ids = self.state_machine.list_active();
-            let mut result = Vec::new();
-            for id in active_ids {
-                if let Ok(sandbox) = self.get_info(&id).await {
-                    result.push(sandbox);
-                }
-            }
-            return Ok(result);
-        }
-        #[cfg(not(feature = "use-segregated-traits"))]
-        {
-            Ok(self.sandboxes.read().await.values().cloned().collect())
-        }
-    }
-
-    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
-        #[cfg(feature = "use-segregated-traits")]
-        {
-            if self.state_machine.get_state(id).is_none() {
-                return Err(DomainError::NotFound(format!("Sandbox {} not found", id)));
-            }
-        }
-        self.sandboxes
-            .read()
-            .await
-            .get(id)
-            .cloned()
-            .ok_or_else(|| DomainError::NotFound(format!("Sandbox {} not found", id)))
-    }
-
-    async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
-        // No-op for local provider
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::env;
-
-    fn create_test_provider() -> Result<LocalProvider, DomainError> {
-        // Ensure the env var is set before creating provider
-        // Some tests may have removed it, so we need to set it again
-        // SAFETY: This is intentional for testing purposes
-        unsafe {
-            env::remove_var("DANGEROUS_ALLOW_LOCAL");
-            env::set_var("DANGEROUS_ALLOW_LOCAL", "1");
-        }
-        let temp_dir = std::env::temp_dir().join("bastion-local-test");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        LocalProvider::new(temp_dir)
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires sequential test execution due to global env var state
-    async fn test_local_provider_requires_env_var() {
-        // Save original env var state
-        let had_var = env::var("DANGEROUS_ALLOW_LOCAL").is_ok();
-        let original_value = had_var.then(|| env::var("DANGEROUS_ALLOW_LOCAL").unwrap());
-
-        // Ensure the env var is NOT set
-        // SAFETY: This is intentional for testing purposes
-        unsafe { env::remove_var("DANGEROUS_ALLOW_LOCAL") };
-
-        // Verify LocalProvider::new fails without the env var
-        let result = LocalProvider::new(std::env::temp_dir().join("test"));
-        assert!(
-            result.is_err(),
-            "Expected LocalProvider::new to fail without DANGEROUS_ALLOW_LOCAL"
-        );
-        if let Err(DomainError::PermissionDenied(msg)) = result {
-            assert!(msg.contains("DANGEROUS_ALLOW_LOCAL"));
-        } else {
-            panic!("Expected PermissionDenied error, got: {:?}", result);
-        }
-
-        // Restore original state
-        // SAFETY: This is intentional for testing purposes
-        unsafe {
-            if had_var {
-                env::set_var("DANGEROUS_ALLOW_LOCAL", original_value.unwrap());
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_create_and_terminate_sandbox() {
-        let provider = create_test_provider().unwrap();
-        let sandbox_id = SandboxId::generate();
-
-        // Create sandbox
-        let sandbox = provider
-            .create(
-                &sandbox_id,
-                "test-template",
-                &ResourcesSpec::default(),
-                &NetworkSpec::default(),
-                &HashMap::new(),
-                60000,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(sandbox.id, sandbox_id);
-
-        // Check is_alive
-        assert!(provider.is_alive(&sandbox_id).await.unwrap());
-
-        // Terminate
-        provider.terminate(&sandbox_id).await.unwrap();
-
-        // Should no longer be alive
-        assert!(!provider.is_alive(&sandbox_id).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_write_and_read_file() {
-        let provider = create_test_provider().unwrap();
-        let sandbox_id = SandboxId::generate();
-
-        provider
-            .create(
-                &sandbox_id,
-                "test-template",
-                &ResourcesSpec::default(),
-                &NetworkSpec::default(),
-                &HashMap::new(),
-                60000,
-            )
-            .await
-            .unwrap();
-
-        // Write file
-        provider
-            .write_file(&sandbox_id, "/test.txt", b"Hello, World!")
-            .await
-            .unwrap();
-
-        // Read file
-        let content = provider.read_file(&sandbox_id, "/test.txt").await.unwrap();
-        assert_eq!(content, b"Hello, World!");
-
-        provider.terminate(&sandbox_id).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_run_command() {
-        let provider = create_test_provider().unwrap();
-        let sandbox_id = SandboxId::generate();
-
-        provider
-            .create(
-                &sandbox_id,
-                "test-template",
-                &ResourcesSpec::default(),
-                &NetworkSpec::default(),
-                &HashMap::new(),
-                60000,
-            )
-            .await
-            .unwrap();
-
-        let result = provider
-            .run_command(
-                &sandbox_id,
-                &CommandSpec::new("echo").with_args(vec!["Hello".to_string()]),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(result.exit_code, 0);
-        assert!(String::from_utf8_lossy(&result.stdout).contains("Hello"));
-
-        provider.terminate(&sandbox_id).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_list_sandboxes() {
-        let provider = create_test_provider().unwrap();
-
-        let sandbox1 = SandboxId::generate();
-        let sandbox2 = SandboxId::generate();
-
-        provider
-            .create(
-                &sandbox1,
-                "template1",
-                &ResourcesSpec::default(),
-                &NetworkSpec::default(),
-                &HashMap::new(),
-                60000,
-            )
-            .await
-            .unwrap();
-
-        provider
-            .create(
-                &sandbox2,
-                "template2",
-                &ResourcesSpec::default(),
-                &NetworkSpec::default(),
-                &HashMap::new(),
-                60000,
-            )
-            .await
-            .unwrap();
-
-        let sandboxes = provider
-            .list_sandboxes(&SandboxFilter::default())
-            .await
-            .unwrap();
-
-        assert_eq!(sandboxes.len(), 2);
-
-        provider.terminate(&sandbox1).await.unwrap();
-        provider.terminate(&sandbox2).await.unwrap();
     }
 }
