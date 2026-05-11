@@ -58,7 +58,10 @@ impl FakeClock {
 
     /// Advance the clock by the given duration.
     pub fn advance(&self, d: std::time::Duration) {
-        *self.offset.lock().expect("FakeClock advance: lock poisoned") += d;
+        *self
+            .offset
+            .lock()
+            .expect("FakeClock advance: lock poisoned") += d;
     }
 }
 
@@ -146,7 +149,10 @@ impl EnrichmentMetrics {
     /// Record a successful enrichment run.
     pub fn record_success(&self) {
         self.total_success.fetch_add(1, Ordering::Relaxed);
-        let mut timestamps = self.run_timestamps.lock().expect("metrics timestamps: lock poisoned");
+        let mut timestamps = self
+            .run_timestamps
+            .lock()
+            .expect("metrics timestamps: lock poisoned");
         timestamps.push_back(self.clock.now());
         // Prune old entries
         Self::prune_old(&mut timestamps, self.clock.now());
@@ -193,7 +199,10 @@ impl EnrichmentMetrics {
     /// Note: This acquires a Mutex briefly. For high-frequency recording,
     /// consider batching latencies or using a lock-free structure.
     pub fn record_latency(&self, elapsed_ms: u64) {
-        let mut latencies = self.latencies.lock().expect("metrics latencies: lock poisoned");
+        let mut latencies = self
+            .latencies
+            .lock()
+            .expect("metrics latencies: lock poisoned");
         latencies.push(elapsed_ms);
     }
 

@@ -749,7 +749,8 @@ impl BastionGateway {
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
 
         // Helper to remove sandbox from HeartbeatBridge tracking
-        let remove_from_heartbeat = |metrics_hub: &Option<Arc<tokio::sync::Mutex<MetricsHub>>>, sid: &str| {
+        let remove_from_heartbeat = |metrics_hub: &Option<Arc<tokio::sync::Mutex<MetricsHub>>>,
+                                     sid: &str| {
             if let Some(hub) = metrics_hub {
                 let guard = match hub.try_lock() {
                     Ok(g) => g,

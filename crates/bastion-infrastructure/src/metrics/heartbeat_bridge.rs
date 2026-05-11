@@ -141,7 +141,10 @@ impl HeartbeatBridge {
     ///
     /// Returns the number of pruned entries.
     pub fn prune_stale(&self) -> usize {
-        let threshold = *self.stale_threshold_secs.read().expect("heartbeat bridge: lock poisoned");
+        let threshold = *self
+            .stale_threshold_secs
+            .read()
+            .expect("heartbeat bridge: lock poisoned");
         let now_epoch = chrono::Utc::now().timestamp();
         let cutoff = now_epoch - threshold as i64;
 
@@ -161,13 +164,19 @@ impl HeartbeatBridge {
 
     /// Set the stale threshold in seconds.
     pub fn set_stale_threshold(&self, secs: u64) {
-        *self.stale_threshold_secs.write().expect("heartbeat bridge: lock poisoned") = secs;
+        *self
+            .stale_threshold_secs
+            .write()
+            .expect("heartbeat bridge: lock poisoned") = secs;
     }
 
     /// Get the current stale threshold in seconds.
     #[allow(dead_code)]
     pub fn stale_threshold(&self) -> u64 {
-        *self.stale_threshold_secs.read().expect("heartbeat bridge: lock poisoned")
+        *self
+            .stale_threshold_secs
+            .read()
+            .expect("heartbeat bridge: lock poisoned")
     }
 
     /// Get the count of tracked sandboxes.

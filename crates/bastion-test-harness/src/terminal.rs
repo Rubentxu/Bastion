@@ -106,7 +106,8 @@ impl GatewayHandle {
             "params": params,
         });
 
-        let mut line = serde_json::to_string(&request).expect("terminal: failed to serialize JSON-RPC request");
+        let mut line = serde_json::to_string(&request)
+            .expect("terminal: failed to serialize JSON-RPC request");
         line.push('\n');
         self.stdin.write_all(line.as_bytes())?;
         self.stdin.flush()?;
@@ -266,7 +267,11 @@ impl TestTerminal {
         cmd.arg("--image").arg("debian:bookworm-slim");
 
         // Set up the worker binary path
-        let worker_binary = config.binary_path.parent().expect("terminal: binary path should have parent").join("bastion-worker");
+        let worker_binary = config
+            .binary_path
+            .parent()
+            .expect("terminal: binary path should have parent")
+            .join("bastion-worker");
         if worker_binary.exists() {
             cmd.arg("--worker-binary").arg(&worker_binary);
         }
@@ -290,8 +295,14 @@ impl TestTerminal {
             .stderr(Stdio::null())
             .spawn()?;
 
-        let stdin = child.stdin.take().expect("terminal: child process stdin should be available");
-        let stdout = child.stdout.take().expect("terminal: child process stdout should be available");
+        let stdin = child
+            .stdin
+            .take()
+            .expect("terminal: child process stdin should be available");
+        let stdout = child
+            .stdout
+            .take()
+            .expect("terminal: child process stdout should be available");
 
         Ok(GatewayHandle {
             child,
@@ -321,8 +332,14 @@ impl TestTerminal {
             .stderr(Stdio::null())
             .spawn()?;
 
-        let stdin = child.stdin.take().expect("terminal: child process stdin should be available");
-        let stdout = child.stdout.take().expect("terminal: child process stdout should be available");
+        let stdin = child
+            .stdin
+            .take()
+            .expect("terminal: child process stdin should be available");
+        let stdout = child
+            .stdout
+            .take()
+            .expect("terminal: child process stdout should be available");
 
         Ok(GatewayHandle {
             child,

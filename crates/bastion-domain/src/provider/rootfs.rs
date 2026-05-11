@@ -3,16 +3,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "use-segregated-traits")]
 use crate::shared::DomainError;
-#[cfg(feature = "use-segregated-traits")]
 use crate::shared::id::SandboxId;
 
 /// Trait for managing OCI bundle root filesystems.
 ///
 /// Provides operations for preparing sandboxes: copying rootfs images,
 /// injecting worker binaries, and generating OCI runtime configuration.
-#[cfg(feature = "use-segregated-traits")]
 #[async_trait::async_trait]
 pub trait RootfsManager: Send + Sync + std::fmt::Debug {
     /// Prepare an OCI bundle for a sandbox.

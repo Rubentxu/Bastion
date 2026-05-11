@@ -1,23 +1,15 @@
 //! Sandbox state machine — manages sandbox state transitions.
 
-#[cfg(feature = "use-segregated-traits")]
 use dashmap::DashMap;
-#[cfg(feature = "use-segregated-traits")]
 use std::collections::HashMap;
-#[cfg(feature = "use-segregated-traits")]
 use std::sync::Arc;
-#[cfg(feature = "use-segregated-traits")]
 use std::time::Instant;
 
-#[cfg(feature = "use-segregated-traits")]
 use crate::sandbox::value_objects::SandboxStatus;
-#[cfg(feature = "use-segregated-traits")]
 use crate::shared::DomainError;
-#[cfg(feature = "use-segregated-traits")]
 use crate::shared::id::SandboxId;
 
 /// State entry stored in the FSM.
-#[cfg(feature = "use-segregated-traits")]
 pub struct StateEntry {
     /// Current status of the sandbox.
     pub status: SandboxStatus,
@@ -27,7 +19,6 @@ pub struct StateEntry {
     pub registered_at: Instant,
 }
 
-#[cfg(feature = "use-segregated-traits")]
 impl std::fmt::Debug for StateEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateEntry")
@@ -58,13 +49,11 @@ impl std::fmt::Debug for StateEntry {
 /// - `Stopped → *` (already terminated)
 /// - `Failed → *` (already failed)
 /// - `Pending → Paused` (not yet running)
-#[cfg(feature = "use-segregated-traits")]
 #[derive(Debug, Default)]
 pub struct SandboxStateMachine {
     states: Arc<DashMap<SandboxId, StateEntry>>,
 }
 
-#[cfg(feature = "use-segregated-traits")]
 impl SandboxStateMachine {
     /// Create a new empty state machine.
     pub fn new() -> Self {

@@ -1,6 +1,5 @@
 //! Compatibility shim — blanket impl of SandboxProvider for segregated traits.
 
-#[cfg(feature = "use-segregated-traits")]
 mod shim {
     use async_trait::async_trait;
     use futures::Stream;

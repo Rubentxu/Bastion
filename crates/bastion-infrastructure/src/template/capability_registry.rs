@@ -68,7 +68,10 @@ impl CapabilityRegistry {
                 Ok(config) => {
                     let name = config.name.clone();
                     tracing::info!(name = %name, path = %path.display(), "Loaded capability config");
-                    self.capabilities.write().expect("capability registry: lock poisoned").insert(name, config);
+                    self.capabilities
+                        .write()
+                        .expect("capability registry: lock poisoned")
+                        .insert(name, config);
                     loaded += 1;
                 }
                 Err(e) => {
@@ -93,7 +96,10 @@ impl CapabilityRegistry {
     /// Returns `None` if the capability is not found.
     /// The strategy is used to filter/select the appropriate toolchain.
     pub fn resolve(&self, capability: &str, strategy: ToolchainStrategy) -> Option<ToolchainPlan> {
-        let capabilities = self.capabilities.read().expect("capability registry: lock poisoned");
+        let capabilities = self
+            .capabilities
+            .read()
+            .expect("capability registry: lock poisoned");
 
         if let Some(config) = capabilities.get(capability) {
             // Filter toolchains by strategy, then sort by priority
@@ -126,17 +132,29 @@ impl CapabilityRegistry {
 
     /// Check if a capability exists.
     pub fn contains(&self, capability: &str) -> bool {
-        self.capabilities.read().expect("capability registry: lock poisoned").contains_key(capability)
+        self.capabilities
+            .read()
+            .expect("capability registry: lock poisoned")
+            .contains_key(capability)
     }
 
     /// List all registered capability names.
     pub fn list_capabilities(&self) -> Vec<String> {
-        self.capabilities.read().expect("capability registry: lock poisoned").keys().cloned().collect()
+        self.capabilities
+            .read()
+            .expect("capability registry: lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// Get the raw config for a capability (for inspection).
     pub fn get_config(&self, capability: &str) -> Option<CapabilityConfig> {
-        self.capabilities.read().expect("capability registry: lock poisoned").get(capability).cloned()
+        self.capabilities
+            .read()
+            .expect("capability registry: lock poisoned")
+            .get(capability)
+            .cloned()
     }
 
     /// Reload all capabilities from disk.
@@ -144,7 +162,11 @@ impl CapabilityRegistry {
     pub fn reload(&self) -> Result<usize, CapabilityRegistryError> {
         // Get the current capabilities to find their source paths
         // For simplicity, just re-process the in-memory configs
-        let count = self.capabilities.read().expect("capability registry: lock poisoned").len();
+        let count = self
+            .capabilities
+            .read()
+            .expect("capability registry: lock poisoned")
+            .len();
         Ok(count)
     }
 

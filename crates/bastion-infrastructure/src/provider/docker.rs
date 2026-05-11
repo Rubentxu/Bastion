@@ -24,8 +24,8 @@ use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
-use bastion_domain::provider::lifecycle::SandboxLifecycle;
 use bastion_domain::provider::executor::TaskExecutor;
+use bastion_domain::provider::lifecycle::SandboxLifecycle;
 use bastion_domain::provider::port::CommandStream;
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
@@ -221,7 +221,6 @@ impl DockerProvider {
 #[async_trait]
 #[async_trait]
 impl SandboxLifecycle for DockerProvider {
-
     async fn create(
         &self,
         id: &SandboxId,
@@ -568,7 +567,6 @@ impl SandboxLifecycle for DockerProvider {
 
 #[async_trait]
 impl TaskExecutor for DockerProvider {
-
     async fn run_command(
         &self,
         id: &SandboxId,
@@ -878,7 +876,6 @@ impl TaskExecutor for DockerProvider {
         Ok(())
     }
 }
-
 
 /// Parse `ls -la` output into FileEntry structs
 pub(crate) fn parse_ls_output(output: &str) -> Vec<FileEntry> {

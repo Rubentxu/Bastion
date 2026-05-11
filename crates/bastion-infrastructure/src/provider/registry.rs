@@ -11,7 +11,6 @@ use std::sync::{Arc, RwLock};
 
 use crate::provider::config::ProviderConfig;
 use crate::provider::factory::ProviderFactory;
-#[cfg(feature = "use-segregated-traits")]
 use crate::provider::network::TapBackend;
 use bastion_domain::provider::SandboxProvider;
 
@@ -62,7 +61,10 @@ impl ProviderRegistry {
 
     /// Register a provider by name.
     pub fn register(&self, name: &str, provider: Arc<dyn SandboxProvider>) {
-        self.factory.write().expect("provider registry: lock poisoned").register(name, provider);
+        self.factory
+            .write()
+            .expect("provider registry: lock poisoned")
+            .register(name, provider);
     }
 
     /// Load all provider TOMLs from a directory.
@@ -88,7 +90,10 @@ impl ProviderRegistry {
                 Ok(config) => {
                     let name = config.name.clone();
                     tracing::info!(name = %name, path = %path.display(), "Loaded provider config");
-                    self.configs.write().expect("provider registry: lock poisoned").insert(name, config);
+                    self.configs
+                        .write()
+                        .expect("provider registry: lock poisoned")
+                        .insert(name, config);
                     loaded += 1;
                 }
                 Err(e) => {
@@ -113,13 +118,20 @@ impl ProviderRegistry {
 
     /// Register all loaded configs into the factory.
     fn register_configs(&self) -> Result<(), RegistryError> {
-        let configs = self.configs.read().expect("provider registry: lock poisoned").clone();
+        let configs = self
+            .configs
+            .read()
+            .expect("provider registry: lock poisoned")
+            .clone();
 
         for (name, config) in &configs {
             // Try to instantiate the provider based on kind
             match self.instantiate_provider(config) {
                 Ok(provider) => {
-                    self.factory.write().expect("provider registry: lock poisoned").register(name, provider);
+                    self.factory
+                        .write()
+                        .expect("provider registry: lock poisoned")
+                        .register(name, provider);
                     tracing::debug!(name = %name, "Registered provider from TOML");
                 }
                 Err(e) => {
@@ -174,7 +186,6 @@ impl ProviderRegistry {
                     .unwrap_or_else(|| PathBuf::from("target/release/bastion-worker"));
                 let gateway_addr = "127.0.0.1:50052".to_string();
 
-                #[cfg(feature = "use-segregated-traits")]
                 let gvisor = crate::provider::GVisorProvider::new(
                     runsc_binary,
                     &image,
@@ -182,16 +193,6 @@ impl ProviderRegistry {
                     worker_binary,
                     gateway_addr,
                     crate::provider::DefaultRootfsManager::new(),
-                )
-                .map_err(|e| RegistryError::Watcher(e.to_string()))?;
-
-                #[cfg(not(feature = "use-segregated-traits"))]
-                let gvisor = crate::provider::GVisorProvider::new(
-                    runsc_binary,
-                    &image,
-                    rootfs_dir,
-                    worker_binary,
-                    gateway_addr,
                 )
                 .map_err(|e| RegistryError::Watcher(e.to_string()))?;
 
@@ -223,7 +224,6 @@ impl ProviderRegistry {
                     .unwrap_or_else(|| PathBuf::from("target/release/bastion-worker"));
                 let gateway_addr = "127.0.0.1:50052".to_string();
 
-                #[cfg(feature = "use-segregated-traits")]
                 let firecracker = crate::provider::FirecrackerProvider::new(
                     firecracker_binary,
                     kernel_path,
@@ -232,17 +232,6 @@ impl ProviderRegistry {
                     worker_binary,
                     gateway_addr,
                     TapBackend::new("10.0.2.1".to_string(), 24),
-                )
-                .map_err(|e| RegistryError::Watcher(e.to_string()))?;
-
-                #[cfg(not(feature = "use-segregated-traits"))]
-                let firecracker = crate::provider::FirecrackerProvider::new(
-                    firecracker_binary,
-                    kernel_path,
-                    rootfs_path,
-                    vm_dir,
-                    worker_binary,
-                    gateway_addr,
                 )
                 .map_err(|e| RegistryError::Watcher(e.to_string()))?;
 
@@ -279,34 +268,55 @@ impl ProviderRegistry {
 
     /// Get a provider by name.
     pub fn get(&self, name: &str) -> Option<Arc<dyn SandboxProvider>> {
-        self.factory.read().expect("provider registry: lock poisoned").get(name).cloned()
+        self.factory
+            .read()
+            .expect("provider registry: lock poisoned")
+            .get(name)
+            .cloned()
     }
 
     /// Get the default provider.
     pub fn default(&self) -> Arc<dyn SandboxProvider> {
-        self.factory.read().expect("provider registry: lock poisoned").default().clone()
+        self.factory
+            .read()
+            .expect("provider registry: lock poisoned")
+            .default()
+            .clone()
     }
 
     /// List all registered providers.
     pub fn list_providers(&self) -> Vec<crate::provider::factory::ProviderInfo> {
-        self.factory.read().expect("provider registry: lock poisoned").list_providers()
+        self.factory
+            .read()
+            .expect("provider registry: lock poisoned")
+            .list_providers()
     }
 
     /// Check if a provider exists.
     pub fn contains(&self, name: &str) -> bool {
-        self.factory.read().expect("provider registry: lock poisoned").contains(name)
+        self.factory
+            .read()
+            .expect("provider registry: lock poisoned")
+            .contains(name)
     }
 
     /// Get the name of the default provider.
     pub fn default_name(&self) -> String {
-        self.factory.read().expect("provider registry: lock poisoned").default_name().to_string()
+        self.factory
+            .read()
+            .expect("provider registry: lock poisoned")
+            .default_name()
+            .to_string()
     }
 
     /// Extract the underlying providers map (consumes the registry).
     pub fn into_providers(self) -> HashMap<String, Arc<dyn SandboxProvider>> {
         // Try to unwrap the Arc, then get the inner RwLock, then get the factory
         match Arc::try_unwrap(self.factory) {
-            Ok(rw_lock) => rw_lock.into_inner().expect("provider registry: lock poisoned").into_providers(),
+            Ok(rw_lock) => rw_lock
+                .into_inner()
+                .expect("provider registry: lock poisoned")
+                .into_providers(),
             Err(_) => panic!("ProviderRegistry::into_providers called while still in use"),
         }
     }
@@ -317,7 +327,11 @@ impl ProviderRegistry {
         // For simplicity, just re-register from in-memory configs
         // A full implementation would track file paths
         self.register_configs()?;
-        Ok(self.configs.read().expect("provider registry: lock poisoned").len())
+        Ok(self
+            .configs
+            .read()
+            .expect("provider registry: lock poisoned")
+            .len())
     }
 
     /// Start a file watcher on the provider config directory.

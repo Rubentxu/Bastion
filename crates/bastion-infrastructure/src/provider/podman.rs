@@ -26,8 +26,8 @@ use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
-use bastion_domain::provider::lifecycle::SandboxLifecycle;
 use bastion_domain::provider::executor::TaskExecutor;
+use bastion_domain::provider::lifecycle::SandboxLifecycle;
 use bastion_domain::provider::port::CommandStream;
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
@@ -223,7 +223,6 @@ impl PodmanProvider {
 #[async_trait]
 #[async_trait]
 impl SandboxLifecycle for PodmanProvider {
-
     async fn create(
         &self,
         id: &SandboxId,
@@ -570,7 +569,6 @@ impl SandboxLifecycle for PodmanProvider {
 
 #[async_trait]
 impl TaskExecutor for PodmanProvider {
-
     async fn run_command(
         &self,
         id: &SandboxId,

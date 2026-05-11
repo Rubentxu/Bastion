@@ -207,8 +207,7 @@ pub struct RegistryService {
     /// Heartbeat bridge for per-sandbox resource usage tracking.
     /// Uses RwLock for interior mutability since RegistryService is Clone and may be
     /// used behind Arc. Set via set_heartbeat_bridge() after MetricsHub initialization.
-    heartbeat_bridge:
-        Arc<std::sync::RwLock<Option<Arc<HeartbeatBridge>>>>,
+    heartbeat_bridge: Arc<std::sync::RwLock<Option<Arc<HeartbeatBridge>>>>,
 }
 
 impl RegistryService {
@@ -232,7 +231,10 @@ impl RegistryService {
 
     /// Set the heartbeat bridge for per-sandbox resource tracking.
     /// This is called after MetricsHub is initialized in main.rs.
-    pub fn set_heartbeat_bridge(self: &Arc<Self>, heartbeat_bridge: Arc<bastion_infrastructure::metrics::HeartbeatBridge>) {
+    pub fn set_heartbeat_bridge(
+        self: &Arc<Self>,
+        heartbeat_bridge: Arc<bastion_infrastructure::metrics::HeartbeatBridge>,
+    ) {
         if let Ok(mut guard) = self.heartbeat_bridge.write() {
             *guard = Some(heartbeat_bridge);
         }
@@ -1051,10 +1053,8 @@ impl WorkerRegistry for RegistryService {
                         // Update HeartbeatBridge if this is a PongResponse with HealthReport
                         if let Some(worker_message::Payload::Pong(pong)) = &msg.payload {
                             if let Some(ref health) = pong.health {
-                                registry_for_hb.update_heartbeat_bridge(
-                                    &ready_sandbox_id_clone,
-                                    health,
-                                );
+                                registry_for_hb
+                                    .update_heartbeat_bridge(&ready_sandbox_id_clone, health);
                             }
                         }
                     }

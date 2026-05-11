@@ -19,10 +19,9 @@ use tokio::sync::mpsc;
 use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
-use bastion_domain::provider::lifecycle::SandboxLifecycle;
-use bastion_domain::provider::executor::TaskExecutor;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
-#[cfg(feature = "use-segregated-traits")]
+use bastion_domain::provider::executor::TaskExecutor;
+use bastion_domain::provider::lifecycle::SandboxLifecycle;
 use bastion_domain::provider::state_machine::SandboxStateMachine;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
@@ -49,7 +48,6 @@ pub struct LocalProvider {
     /// Whether to clean up workspaces on terminate
     cleanup: bool,
     /// State machine for sandbox lifecycle (when use-segregated-traits is enabled)
-    #[cfg(feature = "use-segregated-traits")]
     state_machine: Arc<SandboxStateMachine>,
 }
 
@@ -71,7 +69,6 @@ impl LocalProvider {
             sandboxes: Arc::new(RwLock::new(HashMap::new())),
             base_dir,
             cleanup: true,
-            #[cfg(feature = "use-segregated-traits")]
             state_machine: Arc::new(SandboxStateMachine::new()),
         })
     }
@@ -94,7 +91,6 @@ impl std::fmt::Debug for LocalProvider {
 #[async_trait]
 #[async_trait]
 impl SandboxLifecycle for LocalProvider {
-
     fn name(&self) -> &str {
         "local"
     }
@@ -150,7 +146,6 @@ impl SandboxLifecycle for LocalProvider {
             .insert(id.clone(), sandbox.clone());
 
         // Register with state machine when feature is enabled
-        #[cfg(feature = "use-segregated-traits")]
         {
             self.state_machine.register(id.clone())?;
             self.state_machine.transition(
@@ -176,7 +171,6 @@ impl SandboxLifecycle for LocalProvider {
         self.sandboxes.write().await.remove(id);
 
         // Remove from state machine when feature is enabled
-        #[cfg(feature = "use-segregated-traits")]
         {
             self.state_machine.remove(id);
         }
@@ -186,7 +180,6 @@ impl SandboxLifecycle for LocalProvider {
     }
 
     async fn is_alive(&self, id: &SandboxId) -> Result<bool, DomainError> {
-        #[cfg(feature = "use-segregated-traits")]
         {
             if let Some(status) = self.state_machine.get_state(id) {
                 return Ok(status == bastion_domain::sandbox::value_objects::SandboxStatus::Running);
@@ -212,7 +205,6 @@ impl SandboxLifecycle for LocalProvider {
     }
 
     async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
-        #[cfg(feature = "use-segregated-traits")]
         {
             let active_ids = self.state_machine.list_active();
             let mut result = Vec::new();
@@ -223,14 +215,9 @@ impl SandboxLifecycle for LocalProvider {
             }
             return Ok(result);
         }
-        #[cfg(not(feature = "use-segregated-traits"))]
-        {
-            Ok(self.sandboxes.read().await.values().cloned().collect())
-        }
     }
 
     async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
-        #[cfg(feature = "use-segregated-traits")]
         {
             if self.state_machine.get_state(id).is_none() {
                 return Err(DomainError::NotFound(format!("Sandbox {} not found", id)));
@@ -252,7 +239,6 @@ impl SandboxLifecycle for LocalProvider {
 
 #[async_trait]
 impl TaskExecutor for LocalProvider {
-
     async fn cancel_command(
         &self,
         id: &SandboxId,

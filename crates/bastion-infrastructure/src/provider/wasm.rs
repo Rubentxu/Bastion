@@ -22,11 +22,18 @@ use tokio::sync::RwLock;
 #[cfg(feature = "wasm-sandbox")]
 use tokio::sync::mpsc;
 
-use bastion_domain::execution::command::{CommandResult, CommandSpec};
-use bastion_domain::execution::stream::CommandChunk;
-use bastion_domain::file_ops::FileEntry;
-use bastion_domain::provider::SandboxProvider;
-use bastion_domain::provider::capabilities::ProviderCapabilities;
+ use bastion_domain::execution::command::{CommandResult, CommandSpec};
+ use bastion_domain::execution::stream::CommandChunk;
+ use bastion_domain::file_ops::FileEntry;
+ use bastion_domain::provider::capabilities::ProviderCapabilities;
+#[cfg(feature = "wasm-sandbox")]
+use bastion_domain::provider::executor::TaskExecutor;
+#[cfg(not(feature = "wasm-sandbox"))]
+use bastion_domain::provider::executor::TaskExecutor;
+#[cfg(feature = "wasm-sandbox")]
+use bastion_domain::provider::lifecycle::SandboxLifecycle;
+#[cfg(not(feature = "wasm-sandbox"))]
+use bastion_domain::provider::lifecycle::SandboxLifecycle;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
@@ -54,9 +61,6 @@ pub struct WasmSandboxProvider {
     vfs: Arc<RwLock<HashMap<SandboxId, HashMap<String, Vec<u8>>>>>,
     /// Sandbox entities
     sandboxes: Arc<RwLock<HashMap<SandboxId, Sandbox>>>,
-    /// State machine for sandbox lifecycle (when use-segregated-traits is enabled)
-    #[cfg(feature = "use-segregated-traits")]
-    state_machine: Arc<SandboxStateMachine>,
 }
 
 #[cfg(feature = "wasm-sandbox")]
@@ -66,8 +70,6 @@ impl WasmSandboxProvider {
         Self {
             vfs: Arc::new(RwLock::new(HashMap::new())),
             sandboxes: Arc::new(RwLock::new(HashMap::new())),
-            #[cfg(feature = "use-segregated-traits")]
-            state_machine: Arc::new(SandboxStateMachine::new()),
         }
     }
 
@@ -98,7 +100,7 @@ impl std::fmt::Debug for WasmSandboxProvider {
 
 #[cfg(feature = "wasm-sandbox")]
 #[async_trait]
-impl SandboxProvider for WasmSandboxProvider {
+impl SandboxLifecycle for WasmSandboxProvider {
     fn name(&self) -> &str {
         "wasm"
     }
@@ -143,16 +145,6 @@ impl SandboxProvider for WasmSandboxProvider {
             .await
             .insert(id.clone(), sandbox.clone());
 
-        // Register with state machine when feature is enabled
-        #[cfg(feature = "use-segregated-traits")]
-        {
-            self.state_machine.register(id.clone())?;
-            self.state_machine.transition(
-                id,
-                bastion_domain::sandbox::value_objects::SandboxStatus::Running,
-            )?;
-        }
-
         tracing::info!(sandbox_id = %id, "WasmSandboxProvider: created sandbox");
         Ok(sandbox)
     }
@@ -161,26 +153,52 @@ impl SandboxProvider for WasmSandboxProvider {
         self.vfs.write().await.remove(id);
         self.sandboxes.write().await.remove(id);
 
-        // Remove from state machine when feature is enabled
-        #[cfg(feature = "use-segregated-traits")]
-        {
-            self.state_machine.remove(id);
-        }
-
         tracing::info!(sandbox_id = %id, "WasmSandboxProvider: terminated sandbox");
         Ok(())
     }
 
     async fn is_alive(&self, id: &SandboxId) -> Result<bool, DomainError> {
-        #[cfg(feature = "use-segregated-traits")]
-        {
-            if let Some(status) = self.state_machine.get_state(id) {
-                return Ok(status == bastion_domain::sandbox::value_objects::SandboxStatus::Running);
-            }
-        }
         Ok(self.sandboxes.read().await.contains_key(id))
     }
 
+    async fn create_snapshot(
+        &self,
+        _id: &SandboxId,
+        _name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
+        Err(DomainError::UnsupportedOperation(
+            "snapshots not supported for wasm provider".into(),
+        ))
+    }
+
+    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+        Err(DomainError::UnsupportedOperation(
+            "snapshots not supported for wasm provider".into(),
+        ))
+    }
+
+    async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
+        Ok(self.sandboxes.read().await.values().cloned().collect())
+    }
+
+    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
+        self.sandboxes
+            .read()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DomainError::NotFound(format!("Sandbox {} not found", id)))
+    }
+
+    async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+        // No-op for wasm provider
+        Ok(())
+    }
+}
+
+#[cfg(feature = "wasm-sandbox")]
+#[async_trait]
+impl TaskExecutor for WasmSandboxProvider {
     async fn run_command(
         &self,
         id: &SandboxId,
@@ -219,7 +237,7 @@ impl SandboxProvider for WasmSandboxProvider {
         id: &SandboxId,
         command: &CommandSpec,
     ) -> Result<WasmCommandStream, DomainError> {
-        let result = self.run_command(id, command).await?;
+        let result = TaskExecutor::run_command(self, id, command).await?;
 
         let (tx, rx) = mpsc::channel::<Result<CommandChunk, DomainError>>(4);
 
@@ -303,62 +321,6 @@ impl SandboxProvider for WasmSandboxProvider {
 
         Ok(entries)
     }
-
-    async fn create_snapshot(
-        &self,
-        _id: &SandboxId,
-        _name: &str,
-    ) -> Result<SnapshotInfo, DomainError> {
-        Err(DomainError::UnsupportedOperation(
-            "snapshots not supported for wasm provider".into(),
-        ))
-    }
-
-    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
-        Err(DomainError::UnsupportedOperation(
-            "snapshots not supported for wasm provider".into(),
-        ))
-    }
-
-    async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
-        #[cfg(feature = "use-segregated-traits")]
-        {
-            // When FSM is enabled, use list_active and get sandbox info
-            let active_ids = self.state_machine.list_active();
-            let mut result = Vec::new();
-            for id in active_ids {
-                if let Ok(sandbox) = self.get_info(&id).await {
-                    result.push(sandbox);
-                }
-            }
-            return Ok(result);
-        }
-        #[cfg(not(feature = "use-segregated-traits"))]
-        {
-            Ok(self.sandboxes.read().await.values().cloned().collect())
-        }
-    }
-
-    async fn get_info(&self, id: &SandboxId) -> Result<Sandbox, DomainError> {
-        #[cfg(feature = "use-segregated-traits")]
-        {
-            // First check if sandbox is in FSM
-            if self.state_machine.get_state(id).is_none() {
-                return Err(DomainError::NotFound(format!("Sandbox {} not found", id)));
-            }
-        }
-        self.sandboxes
-            .read()
-            .await
-            .get(id)
-            .cloned()
-            .ok_or_else(|| DomainError::NotFound(format!("Sandbox {} not found", id)))
-    }
-
-    async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
-        // No-op for wasm provider
-        Ok(())
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -403,7 +365,7 @@ impl WasmSandboxProviderStub {
 
 #[cfg(not(feature = "wasm-sandbox"))]
 #[async_trait::async_trait]
-impl SandboxProvider for WasmSandboxProviderStub {
+impl SandboxLifecycle for WasmSandboxProviderStub {
     fn name(&self) -> &str {
         "wasm"
     }
@@ -432,6 +394,34 @@ impl SandboxProvider for WasmSandboxProviderStub {
         Err(Self::feature_error())
     }
 
+    async fn create_snapshot(
+        &self,
+        _id: &SandboxId,
+        _name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
+        Err(Self::feature_error())
+    }
+
+    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
+        Err(Self::feature_error())
+    }
+
+    async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
+        Err(Self::feature_error())
+    }
+
+    async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
+        Err(Self::feature_error())
+    }
+
+    async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
+        Err(Self::feature_error())
+    }
+}
+
+#[cfg(not(feature = "wasm-sandbox"))]
+#[async_trait::async_trait]
+impl TaskExecutor for WasmSandboxProviderStub {
     async fn run_command(
         &self,
         _id: &SandboxId,
@@ -463,30 +453,6 @@ impl SandboxProvider for WasmSandboxProviderStub {
     }
 
     async fn list_files(&self, _id: &SandboxId, _dir: &str) -> Result<Vec<FileEntry>, DomainError> {
-        Err(Self::feature_error())
-    }
-
-    async fn create_snapshot(
-        &self,
-        _id: &SandboxId,
-        _name: &str,
-    ) -> Result<SnapshotInfo, DomainError> {
-        Err(Self::feature_error())
-    }
-
-    async fn restore_snapshot(&self, _snapshot_id: &str) -> Result<Sandbox, DomainError> {
-        Err(Self::feature_error())
-    }
-
-    async fn list_sandboxes(&self, _filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
-        Err(Self::feature_error())
-    }
-
-    async fn get_info(&self, _id: &SandboxId) -> Result<Sandbox, DomainError> {
-        Err(Self::feature_error())
-    }
-
-    async fn set_timeout(&self, _id: &SandboxId, _timeout_ms: u64) -> Result<(), DomainError> {
         Err(Self::feature_error())
     }
 }

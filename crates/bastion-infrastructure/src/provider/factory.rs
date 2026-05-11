@@ -6,9 +6,7 @@ use std::sync::Arc;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 
-#[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::executor::TaskExecutor;
-#[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::lifecycle::SandboxLifecycle;
 
 /// Information about a registered provider.
@@ -48,7 +46,6 @@ impl ProviderFactory {
     /// This method leverages the blanket impl of SandboxProvider for any type
     /// that implements both SandboxLifecycle and TaskExecutor, allowing providers
     /// to implement only the segregated traits.
-    #[cfg(feature = "use-segregated-traits")]
     pub fn register_lifecycle(
         &mut self,
         name: &str,
@@ -57,12 +54,6 @@ impl ProviderFactory {
         tracing::debug!(provider = %name, "Registering provider with segregated traits");
         let wrapped: Arc<dyn SandboxProvider> = Arc::new(provider);
         self.providers.insert(name.to_string(), wrapped);
-    }
-
-    /// Register a provider using segregated traits (no feature flag, usesdyn SandboxProvider directly).
-    #[cfg(not(feature = "use-segregated-traits"))]
-    pub fn register_lifecycle(&mut self, _name: &str, _provider: impl SandboxProvider + 'static) {
-        panic!("register_lifecycle requires use-segregated-traits feature");
     }
 
     /// Get a provider by name.

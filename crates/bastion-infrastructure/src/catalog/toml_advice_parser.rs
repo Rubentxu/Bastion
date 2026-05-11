@@ -268,7 +268,8 @@ impl AdviceRegistry {
                     // Check for duplicates — last wins with a warning
                     {
                         let existing = {
-                            let advice = self.advice.read().expect("advice registry: lock poisoned");
+                            let advice =
+                                self.advice.read().expect("advice registry: lock poisoned");
                             advice.contains_key(&advice_id)
                         };
                         if existing {
@@ -281,11 +282,15 @@ impl AdviceRegistry {
                     }
 
                     {
-                        let mut advice = self.advice.write().expect("advice registry: lock poisoned");
+                        let mut advice =
+                            self.advice.write().expect("advice registry: lock poisoned");
                         advice.insert(advice_id.clone(), adv);
                     }
                     {
-                        let mut sources = self.sources.write().expect("advice registry: lock poisoned");
+                        let mut sources = self
+                            .sources
+                            .write()
+                            .expect("advice registry: lock poisoned");
                         sources.insert(advice_id, source);
                     }
                     loaded += 1;
@@ -310,27 +315,46 @@ impl AdviceRegistry {
 
     /// Get an advice descriptor by ID.
     pub fn get(&self, id: &str) -> Option<AdviceDescriptor> {
-        self.advice.read().expect("advice registry: lock poisoned").get(id).cloned()
+        self.advice
+            .read()
+            .expect("advice registry: lock poisoned")
+            .get(id)
+            .cloned()
     }
 
     /// List all loaded advice descriptors.
     pub fn list(&self) -> Vec<AdviceDescriptor> {
-        self.advice.read().expect("advice registry: lock poisoned").values().cloned().collect()
+        self.advice
+            .read()
+            .expect("advice registry: lock poisoned")
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Get the TOML source for an advice descriptor.
     pub fn get_source(&self, id: &str) -> Option<String> {
-        self.sources.read().expect("advice registry: lock poisoned").get(id).cloned()
+        self.sources
+            .read()
+            .expect("advice registry: lock poisoned")
+            .get(id)
+            .cloned()
     }
 
     /// Number of loaded advice items.
     pub fn len(&self) -> usize {
-        self.advice.read().expect("advice registry: lock poisoned").len()
+        self.advice
+            .read()
+            .expect("advice registry: lock poisoned")
+            .len()
     }
 
     /// Check if registry is empty.
     pub fn is_empty(&self) -> bool {
-        self.advice.read().expect("advice registry: lock poisoned").is_empty()
+        self.advice
+            .read()
+            .expect("advice registry: lock poisoned")
+            .is_empty()
     }
 }
 
@@ -402,7 +426,10 @@ impl AdviceConfigStore {
 
     /// Get a snapshot of the current config.
     pub fn get_config(&self) -> AdviceConfig {
-        self.config.read().expect("advice config: lock poisoned").clone()
+        self.config
+            .read()
+            .expect("advice config: lock poisoned")
+            .clone()
     }
 
     /// Set global enabled flag.

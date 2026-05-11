@@ -24,13 +24,13 @@ pub type CommandStream = Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainEr
 ///
 /// Implementations: PodmanAdapter, FirecrackerAdapter, GVisorAdapter, KubernetesAdapter.
 ///
-/// This trait follows Interface Segregation by splitting concerns into logical groups,
-/// while keeping a unified interface for simplicity in the MVP.
+/// ## Architecture
 ///
-/// When the `use-segregated-traits` feature is enabled (default), providers implement
-/// `SandboxLifecycle + TaskExecutor` and receive a blanket `SandboxProvider` impl via
-/// `provider/compat.rs`. This trait remains the canonical port interface for dependency
-/// injection and dynamic dispatch.
+/// Providers implement the segregated traits `SandboxLifecycle` (lifecycle management)
+/// and `TaskExecutor` (command execution and file operations). A blanket impl in
+/// `provider/compat.rs` automatically provides `SandboxProvider` for any type that
+/// implements both. This trait is the canonical port interface for dependency injection
+/// and dynamic dispatch via `dyn SandboxProvider`.
 #[async_trait]
 pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
     // ── Lifecycle ──────────────────────────────────────────────

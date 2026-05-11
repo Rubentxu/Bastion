@@ -19,15 +19,12 @@ use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
-#[cfg(feature = "use-segregated-traits")]
+use bastion_domain::provider::executor::TaskExecutor;
 use bastion_domain::provider::image_source::{ImageSource, OciImage};
 use bastion_domain::provider::lifecycle::SandboxLifecycle;
-use bastion_domain::provider::executor::TaskExecutor;
 use bastion_domain::provider::port::CommandStream;
-#[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::rootfs::RootfsManager;
 use bastion_domain::provider::router::CommandRouter;
-#[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::state_machine::SandboxStateMachine;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::value_objects::{
@@ -54,13 +51,11 @@ pub struct GVisorProvider {
     default_image: String,
     rootfs_dir: PathBuf,
     worker_binary: PathBuf,
-    #[cfg(feature = "use-segregated-traits")]
     rootfs_manager: Arc<dyn RootfsManager>,
     command_router: Option<Arc<dyn CommandRouter>>,
     containers: Arc<DashMap<String, ContainerState>>,
     gateway_addr: String,
     /// State machine for sandbox lifecycle (when use-segregated-traits is enabled)
-    #[cfg(feature = "use-segregated-traits")]
     state_machine: Arc<SandboxStateMachine>,
 }
 
@@ -86,7 +81,6 @@ impl GVisorProvider {
     /// * `rootfs_dir` — directory containing OCI root filesystem images
     /// * `worker_binary` — path to the bastion-worker MUSL static binary
     /// * `gateway_addr` — host gateway address for worker connections
-    #[cfg(feature = "use-segregated-traits")]
     pub fn new(
         runsc_binary: PathBuf,
         default_image: &str,
@@ -121,42 +115,6 @@ impl GVisorProvider {
             containers: Arc::new(DashMap::new()),
             gateway_addr,
             state_machine: Arc::new(SandboxStateMachine::new()),
-        })
-    }
-
-    /// Create a new gVisor provider (legacy API without RootfsManager).
-    #[cfg(not(feature = "use-segregated-traits"))]
-    pub fn new(
-        runsc_binary: PathBuf,
-        default_image: &str,
-        rootfs_dir: PathBuf,
-        worker_binary: PathBuf,
-        gateway_addr: String,
-    ) -> Result<Self, DomainError> {
-        if !runsc_binary.exists() {
-            return Err(DomainError::Config(format!(
-                "runsc binary not found: {}",
-                runsc_binary.display()
-            )));
-        }
-        if !rootfs_dir.exists() {
-            return Err(DomainError::Config(format!(
-                "Rootfs directory not found: {}",
-                rootfs_dir.display()
-            )));
-        }
-
-        std::fs::create_dir_all(&rootfs_dir)
-            .map_err(|e| DomainError::Config(format!("Cannot create rootfs directory: {e}")))?;
-
-        Ok(Self {
-            runsc_binary,
-            default_image: default_image.to_string(),
-            rootfs_dir,
-            worker_binary,
-            command_router: None,
-            containers: Arc::new(DashMap::new()),
-            gateway_addr,
         })
     }
 
@@ -287,183 +245,6 @@ impl GVisorProvider {
         }
     }
 
-    /// Verify the worker binary is static musl.
-    /// This is required because gVisor runsc containers use musl libc.
-    fn verify_worker_binary(&self) -> Result<(), DomainError> {
-        let worker_path = &self.worker_binary;
-
-        // Run `file` command to check binary format
-        let output = std::process::Command::new("file")
-            .arg(worker_path)
-            .output()
-            .map_err(|e| DomainError::Internal(format!("file command failed: {e}")))?;
-
-        let file_output = String::from_utf8_lossy(&output.stdout);
-
-        // Check for indicators of static musl binary
-        let is_static_musl = file_output.contains("statically linked")
-            || (file_output.contains("musl") && file_output.contains("static"));
-
-        if !is_static_musl {
-            tracing::warn!("Worker binary may not be static musl: {}", file_output);
-            // Don't fail - just warn. The binary might still work.
-        }
-
-        Ok(())
-    }
-
-    /// Create an OCI bundle for the container (legacy inline implementation).
-    ///
-    /// Copies the base rootfs image, generates config.json, and injects
-    /// the worker binary. Returns the path to the bundle directory.
-    #[cfg(not(feature = "use-segregated-traits"))]
-    fn create_oci_bundle(&self, sandbox_id: &str, image: &str) -> Result<PathBuf, DomainError> {
-        // Verify worker binary is static musl before injection
-        // gVisor runsc containers use musl libc, so the binary must be static musl
-        self.verify_worker_binary()?;
-
-        // Strip tag from image name (e.g. "debian:bookworm-slim" -> "debian")
-        let image_name = image.split(':').next().unwrap_or(image);
-        let bundle_dir = self.rootfs_dir.join(sandbox_id);
-        let rootfs_dest = bundle_dir.join("rootfs");
-
-        std::fs::create_dir_all(&rootfs_dest)
-            .map_err(|e| DomainError::Internal(format!("Cannot create bundle directory: {e}")))?;
-
-        // Copy base rootfs image
-        let base_rootfs = self.rootfs_dir.join(image_name);
-        if !base_rootfs.exists() {
-            std::fs::remove_dir_all(&bundle_dir).ok();
-            return Err(DomainError::Config(format!(
-                "Rootfs image not found: {}. Place a rootfs directory (e.g. debian:bookworm-slim) at this path, \
-                 or set 'default_image' in your gvisor provider config to an existing image under '{}'.",
-                base_rootfs.display(),
-                self.rootfs_dir.display()
-            )));
-        }
-
-        tracing::info!(
-            sandbox_id,
-            source = %base_rootfs.display(),
-            dest = %rootfs_dest.display(),
-            "Copying rootfs for OCI bundle"
-        );
-        copy_dir_recursive(&base_rootfs, &rootfs_dest)?;
-
-        // Copy worker binary into rootfs
-        let worker_dest = rootfs_dest.join("usr/local/bin/bastion-worker");
-        if let Some(parent) = worker_dest.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::copy(&self.worker_binary, &worker_dest).map_err(|e| {
-            DomainError::Internal(format!("Failed to copy worker binary to rootfs: {e}"))
-        })?;
-        // Make it executable
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&worker_dest)
-            .map_err(|e| DomainError::Internal(format!("Failed to stat worker binary: {e}")))?
-            .permissions();
-        perms.set_mode(perms.mode() | 0o111);
-        std::fs::set_permissions(&worker_dest, perms).ok();
-
-        // Create /workspace directory in rootfs
-        let workspace = rootfs_dest.join("workspace");
-        std::fs::create_dir_all(&workspace).ok();
-
-        // Generate config.json
-        let config = self.generate_config_json();
-        let config_path = bundle_dir.join("config.json");
-        let config_str = serde_json::to_string_pretty(&config)
-            .map_err(|e| DomainError::Internal(format!("Failed to serialize config.json: {e}")))?;
-        std::fs::write(&config_path, config_str)
-            .map_err(|e| DomainError::Internal(format!("Failed to write config.json: {e}")))?;
-
-        tracing::info!(sandbox_id, bundle = %bundle_dir.display(), "OCI bundle created");
-        Ok(bundle_dir)
-    }
-
-    /// Generate a minimal OCI config.json for runsc (legacy inline implementation).
-    #[cfg(not(feature = "use-segregated-traits"))]
-    fn generate_config_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "ociVersion": "1.0.2",
-            "process": {
-                "terminal": false,
-                "user": { "uid": 0, "gid": 0 },
-                "args": ["sleep", "999999"],
-                "env": [
-                    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-                ],
-                "cwd": "/",
-                "capabilities": {
-                    "bounding": [
-                        "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FSETID",
-                        "CAP_FOWNER", "CAP_MKNOD", "CAP_NET_RAW",
-                        "CAP_SETGID", "CAP_SETUID", "CAP_SETFCAP",
-                        "CAP_SETPCAP", "CAP_NET_BIND_SERVICE",
-                        "CAP_SYS_CHROOT", "CAP_KILL", "CAP_AUDIT_WRITE"
-                    ],
-                    "effective": [
-                        "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FSETID",
-                        "CAP_FOWNER", "CAP_MKNOD", "CAP_NET_RAW",
-                        "CAP_SETGID", "CAP_SETUID", "CAP_SETFCAP",
-                        "CAP_SETPCAP", "CAP_NET_BIND_SERVICE",
-                        "CAP_SYS_CHROOT", "CAP_KILL", "CAP_AUDIT_WRITE"
-                    ],
-                    "inheritable": [],
-                    "permitted": [
-                        "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FSETID",
-                        "CAP_FOWNER", "CAP_MKNOD", "CAP_NET_RAW",
-                        "CAP_SETGID", "CAP_SETUID", "CAP_SETFCAP",
-                        "CAP_SETPCAP", "CAP_NET_BIND_SERVICE",
-                        "CAP_SYS_CHROOT", "CAP_KILL", "CAP_AUDIT_WRITE"
-                    ]
-                }
-            },
-            "root": {
-                "path": "rootfs",
-                "readonly": false
-            },
-            "mounts": [
-                {
-                    "destination": "/proc",
-                    "type": "proc",
-                    "source": "proc"
-                },
-                {
-                    "destination": "/dev",
-                    "type": "tmpfs",
-                    "source": "tmpfs",
-                    "options": ["nosuid", "strictatime", "mode=755", "size=65536k"]
-                },
-                {
-                    "destination": "/sys",
-                    "type": "sysfs",
-                    "source": "sysfs",
-                    "options": ["nosuid", "noexec", "nodev"]
-                }
-            ],
-            "linux": {
-                // NOTE: network namespace removed — rootless runsc does not support
-                // sandbox-level networking. The container uses host network (--network=host equivalent).
-                "namespaces": [
-                    { "type": "pid" },
-                    { "type": "ipc" },
-                    { "type": "uts" },
-                    { "type": "mount" }
-                ],
-                "resources": {
-                    "devices": [
-                        {
-                            "allow": false,
-                            "access": "rwm"
-                        }
-                    ]
-                }
-            }
-        })
-    }
-
     /// Check if a container is running via runsc list.
     async fn container_is_running(&self, container_id: &str) -> Result<bool, DomainError> {
         let output = self
@@ -505,49 +286,9 @@ impl GVisorProvider {
     }
 }
 
-/// Recursively copy a directory (legacy inline implementation).
-#[cfg(not(feature = "use-segregated-traits"))]
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), DomainError> {
-    for entry in std::fs::read_dir(src).map_err(|e| {
-        DomainError::Internal(format!("Cannot read directory {}: {e}", src.display()))
-    })? {
-        let entry =
-            entry.map_err(|e| DomainError::Internal(format!("Cannot read dir entry: {e}")))?;
-        let ty = entry
-            .file_type()
-            .map_err(|e| DomainError::Internal(format!("Cannot get file type: {e}")))?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if ty.is_dir() {
-            std::fs::create_dir_all(&dst_path).map_err(|e| {
-                DomainError::Internal(format!("Cannot create dir {}: {e}", dst_path.display()))
-            })?;
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else if ty.is_symlink() {
-            let target = std::fs::read_link(&src_path).map_err(|e| {
-                DomainError::Internal(format!("Cannot read symlink {}: {e}", src_path.display()))
-            })?;
-            std::os::unix::fs::symlink(&target, &dst_path).map_err(|e| {
-                DomainError::Internal(format!("Cannot create symlink {}: {e}", dst_path.display()))
-            })?;
-        } else {
-            std::fs::copy(&src_path, &dst_path).map_err(|e| {
-                DomainError::Internal(format!(
-                    "Cannot copy {} to {}: {e}",
-                    src_path.display(),
-                    dst_path.display()
-                ))
-            })?;
-        }
-    }
-    Ok(())
-}
-
 #[async_trait]
 #[async_trait]
 impl SandboxLifecycle for GVisorProvider {
-
     async fn create(
         &self,
         id: &SandboxId,
@@ -580,14 +321,12 @@ impl SandboxLifecycle for GVisorProvider {
             )));
         }
 
-        #[cfg(feature = "use-segregated-traits")]
         {
             // Validate image using OciImage
             let oci_image = OciImage::new(image_path.clone(), false);
             oci_image.validate().await?;
         }
 
-        #[cfg(feature = "use-segregated-traits")]
         let bundle_dir = self
             .rootfs_manager
             .prepare_oci_bundle(
@@ -599,9 +338,6 @@ impl SandboxLifecycle for GVisorProvider {
                 &["/bin/sleep".to_string(), "infinity".to_string()],
             )
             .await?;
-
-        #[cfg(not(feature = "use-segregated-traits"))]
-        let bundle_dir = self.create_oci_bundle(&sandbox_id, &image)?;
 
         // Spawn runsc run (this process owns the container's lifetime)
         // Network config is set in the OCI config.json via linux.namespaces.
@@ -640,7 +376,6 @@ impl SandboxLifecycle for GVisorProvider {
         self.containers.insert(sandbox_id.clone(), state);
 
         // Register with state machine when feature is enabled
-        #[cfg(feature = "use-segregated-traits")]
         {
             self.state_machine.register(id.clone())?;
             self.state_machine.transition(id, SandboxStatus::Running)?;
@@ -711,7 +446,6 @@ impl SandboxLifecycle for GVisorProvider {
         };
 
         // Remove from state machine when feature is enabled
-        #[cfg(feature = "use-segregated-traits")]
         {
             self.state_machine.remove(id);
         }
@@ -741,7 +475,6 @@ impl SandboxLifecycle for GVisorProvider {
         let sandbox_id = id.to_string();
 
         // Check FSM state first when feature is enabled
-        #[cfg(feature = "use-segregated-traits")]
         {
             if let Some(status) = self.state_machine.get_state(id) {
                 // If FSM says Stopped or Failed, return false immediately
@@ -791,7 +524,6 @@ impl SandboxLifecycle for GVisorProvider {
         let limit = filter.limit.unwrap_or(u32::MAX) as usize;
 
         // Get list of sandbox IDs to check
-        #[cfg(feature = "use-segregated-traits")]
         let sandbox_ids: Vec<String> = {
             self.state_machine
                 .list_active()
@@ -800,14 +532,6 @@ impl SandboxLifecycle for GVisorProvider {
                 .take(limit)
                 .collect()
         };
-
-        #[cfg(not(feature = "use-segregated-traits"))]
-        let sandbox_ids: Vec<String> = self
-            .containers
-            .iter()
-            .map(|item| item.key().clone())
-            .take(limit)
-            .collect();
 
         for sandbox_id in sandbox_ids {
             // Use get_mut to allow calling try_wait()
@@ -907,7 +631,6 @@ impl SandboxLifecycle for GVisorProvider {
 
 #[async_trait]
 impl TaskExecutor for GVisorProvider {
-
     async fn run_command(
         &self,
         id: &SandboxId,
@@ -1236,7 +959,6 @@ fn parse_ls_output(output: &str, base_dir: &str) -> Vec<FileEntry> {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "use-segregated-traits")]
     #[test]
     fn test_new_validates_runsc_binary() {
         use crate::provider::DefaultRootfsManager;
@@ -1247,21 +969,6 @@ mod tests {
             PathBuf::from("/nonexistent/bastion-worker"),
             "host.containers.internal:50052".to_string(),
             DefaultRootfsManager::new(),
-        );
-        assert!(result.is_err());
-    }
-
-    #[cfg(not(feature = "use-segregated-traits"))]
-    #[test]
-    fn test_new_validates_runsc_binary() {
-        // Without segregated traits, GVisorProvider::new has different signature
-        // This test is only for the legacy API
-        let result = GVisorProvider::new(
-            PathBuf::from("/nonexistent/runsc"),
-            "default",
-            PathBuf::from("/tmp/bastion-test-rootfs"),
-            PathBuf::from("/nonexistent/bastion-worker"),
-            "host.containers.internal:50052".to_string(),
         );
         assert!(result.is_err());
     }

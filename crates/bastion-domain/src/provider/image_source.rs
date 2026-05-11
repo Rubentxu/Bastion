@@ -37,7 +37,6 @@ pub struct ImageSourceConfig {
 ///
 /// Implementations validate and provide access to root filesystems
 /// for sandbox providers (gVisor, Firecracker, etc.).
-#[cfg(feature = "use-segregated-traits")]
 #[async_trait]
 pub trait ImageSource: Send + Sync + std::fmt::Debug {
     /// Validate that the image exists and is usable.

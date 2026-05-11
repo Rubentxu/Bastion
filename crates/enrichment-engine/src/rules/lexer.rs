@@ -90,7 +90,10 @@ impl<'a> Lexer<'a> {
             };
         }
 
-        let ch = self.input[self.pos..].chars().next().expect("lexer: unexpected EOF at position {self.pos}");
+        let ch = self.input[self.pos..]
+            .chars()
+            .next()
+            .expect("lexer: unexpected EOF at position {self.pos}");
         let kind = match ch {
             '(' => {
                 self.advance();

@@ -11,7 +11,7 @@
 //! Run with: `cargo test -p bastion-gateway --test orientation_e2e`
 
 use chrono::{Duration, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -19,9 +19,9 @@ use std::time::{Duration as StdDuration, Instant};
 
 // Test domain components directly
 use bastion_domain::orientation::TemplateRecommender;
-use bastion_infrastructure::metrics::hub::MetricsHub;
-use bastion_infrastructure::metrics::heartbeat_bridge::HeartbeatBridge;
 use bastion_infrastructure::metrics::GatewayMetrics;
+use bastion_infrastructure::metrics::heartbeat_bridge::HeartbeatBridge;
+use bastion_infrastructure::metrics::hub::MetricsHub;
 
 // ============================================================================
 // Helper Functions for Gateway Process Tests
@@ -29,13 +29,9 @@ use bastion_infrastructure::metrics::GatewayMetrics;
 
 /// Returns the path to the bastion-gateway binary if it exists.
 fn gateway_binary_path() -> Option<std::path::PathBuf> {
-    let binary = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/debug/bastion-gateway");
-    if binary.exists() {
-        Some(binary)
-    } else {
-        None
-    }
+    let binary =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/bastion-gateway");
+    if binary.exists() { Some(binary) } else { None }
 }
 
 /// Spawn the gateway binary and return (child, stdin, stdout_reader).
@@ -43,8 +39,8 @@ fn gateway_binary_path() -> Option<std::path::PathBuf> {
 fn spawn_gateway() -> Option<(std::process::Child, impl Write, impl BufRead)> {
     let binary = gateway_binary_path()?;
 
-    let worker = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/debug/bastion-worker");
+    let worker =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/bastion-worker");
 
     let mut cmd = Command::new(&binary);
     cmd.arg("--image")
@@ -141,14 +137,7 @@ fn send_initialized_notification(stdin: &mut impl Write) {
     });
     let notif_str = serde_json::to_string(&notif).unwrap();
     stdin
-        .write_all(
-            format!(
-                "Content-Length: {}\r\n\r\n{}\n",
-                notif_str.len(),
-                notif_str
-            )
-            .as_bytes(),
-        )
+        .write_all(format!("Content-Length: {}\r\n\r\n{}\n", notif_str.len(), notif_str).as_bytes())
         .unwrap();
     stdin.flush().unwrap();
 }
@@ -444,10 +433,7 @@ fn test_heartbeat_bridge_update_and_get() {
     bridge.update_resources(resources);
 
     let tracked = bridge.get_resources("sb-1");
-    assert!(
-        tracked.is_some(),
-        "Should have tracked resources for sb-1"
-    );
+    assert!(tracked.is_some(), "Should have tracked resources for sb-1");
     let res = tracked.unwrap();
     assert!((res.cpu_percent - 25.0).abs() < 0.01);
     assert!((res.mem_used_mb - 128.0).abs() < 0.01);
@@ -505,7 +491,10 @@ fn test_heartbeat_bridge_remove() {
     assert_eq!(bridge.tracked_count(), 0);
 
     let not_removed = bridge.remove_resources("sb-1");
-    assert!(!not_removed, "Should return false for already-removed sandbox");
+    assert!(
+        !not_removed,
+        "Should return false for already-removed sandbox"
+    );
 }
 
 /// Test HeartbeatBridge stale pruning.
@@ -581,9 +570,8 @@ fn test_sandbox_orient_me_via_mcp() {
     let _ = child.kill();
 
     // Parse response
-    let result: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
-        json!({"error": format!("failed to parse: {}", e)})
-    });
+    let result: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| json!({"error": format!("failed to parse: {}", e)}));
 
     // Verify expected fields
     assert!(
@@ -624,10 +612,7 @@ fn test_sandbox_orient_me_via_mcp() {
 
     // Verify capabilities include orientation tools
     let capabilities = result["capabilities"].as_array().unwrap();
-    let cap_names: Vec<&str> = capabilities
-        .iter()
-        .filter_map(|c| c.as_str())
-        .collect();
+    let cap_names: Vec<&str> = capabilities.iter().filter_map(|c| c.as_str()).collect();
 
     assert!(
         cap_names.contains(&"sandbox_orient_me"),
@@ -662,22 +647,10 @@ fn test_sandbox_suggest_template_via_mcp() {
     send_initialized_notification(&mut stdin);
 
     let test_cases = vec![
-        (
-            "build a Java Maven project",
-            "eclipse-temurin:21-jdk-maven",
-        ),
-        (
-            "run Python tests with pytest",
-            "python:3.12-slim",
-        ),
-        (
-            "compile Rust code",
-            "rust:1.77-slim",
-        ),
-        (
-            "npm install and run node script",
-            "node:20-slim",
-        ),
+        ("build a Java Maven project", "eclipse-temurin:21-jdk-maven"),
+        ("run Python tests with pytest", "python:3.12-slim"),
+        ("compile Rust code", "rust:1.77-slim"),
+        ("npm install and run node script", "node:20-slim"),
     ];
 
     for (task, expected_template) in test_cases {
@@ -688,9 +661,8 @@ fn test_sandbox_suggest_template_via_mcp() {
             json!({"task_description": task}),
         );
 
-        let result: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
-            json!({"error": format!("failed to parse: {}", e)})
-        });
+        let result: Value = serde_json::from_str(&text)
+            .unwrap_or_else(|e| json!({"error": format!("failed to parse: {}", e)}));
 
         assert!(
             result.get("template").is_some(),
@@ -742,9 +714,8 @@ fn test_sandbox_capacity_check_via_mcp() {
         json!({"count": 1}),
     );
 
-    let result: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
-        json!({"error": format!("failed to parse: {}", e)})
-    });
+    let result: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| json!({"error": format!("failed to parse: {}", e)}));
 
     // Verify response structure
     assert!(
@@ -817,9 +788,8 @@ fn test_sandbox_optimal_config_via_mcp() {
             json!({"use_case": use_case}),
         );
 
-        let result: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
-            json!({"error": format!("failed to parse: {}", e)})
-        });
+        let result: Value = serde_json::from_str(&text)
+            .unwrap_or_else(|e| json!({"error": format!("failed to parse: {}", e)}));
 
         assert!(
             result.get("config").is_some(),
@@ -881,9 +851,8 @@ fn test_sandbox_get_config_via_mcp() {
 
     let _ = child.kill();
 
-    let result: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
-        json!({"error": format!("failed to parse: {}", e)})
-    });
+    let result: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| json!({"error": format!("failed to parse: {}", e)}));
 
     // Verify response structure
     assert!(
@@ -947,9 +916,8 @@ fn test_sandbox_set_config_restricted_keys() {
 
     let _ = child.kill();
 
-    let result: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
-        json!({"error": format!("failed to parse: {}", e)})
-    });
+    let result: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| json!({"error": format!("failed to parse: {}", e)}));
 
     // Verify response structure
     assert!(
@@ -999,18 +967,12 @@ fn test_sandbox_config_history_empty() {
 
     send_initialized_notification(&mut stdin);
 
-    let text = call_tool(
-        &mut stdin,
-        &mut reader,
-        "sandbox_config_history",
-        json!({}),
-    );
+    let text = call_tool(&mut stdin, &mut reader, "sandbox_config_history", json!({}));
 
     let _ = child.kill();
 
-    let result: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
-        json!({"error": format!("failed to parse: {}", e)})
-    });
+    let result: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| json!({"error": format!("failed to parse: {}", e)}));
 
     // Verify response structure
     assert!(
@@ -1056,9 +1018,8 @@ fn test_sandbox_metrics_history_via_mcp() {
 
     let _ = child.kill();
 
-    let result: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
-        json!({"error": format!("failed to parse: {}", e)})
-    });
+    let result: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| json!({"error": format!("failed to parse: {}", e)}));
 
     // Verify response structure
     assert!(
@@ -1114,9 +1075,8 @@ fn test_sandbox_resource_usage_via_mcp() {
 
     let _ = child.kill();
 
-    let result: Value = serde_json::from_str(&text).unwrap_or_else(|e| {
-        json!({"error": format!("failed to parse: {}", e)})
-    });
+    let result: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| json!({"error": format!("failed to parse: {}", e)}));
 
     // Verify response structure
     assert!(
@@ -1176,7 +1136,10 @@ fn test_orientation_tools_integration_flow() {
         !templates.is_empty(),
         "Should have some available templates"
     );
-    println!("✅ Step 1: sandbox_orient_me returned {} templates", templates.len());
+    println!(
+        "✅ Step 1: sandbox_orient_me returned {} templates",
+        templates.len()
+    );
 
     // 2. Get template suggestion
     let suggest_text = call_tool(
@@ -1212,7 +1175,10 @@ fn test_orientation_tools_integration_flow() {
         capacity.get("available").is_some(),
         "sandbox_capacity_check should return available"
     );
-    println!("✅ Step 3: sandbox_capacity_check available={}", capacity["available"]);
+    println!(
+        "✅ Step 3: sandbox_capacity_check available={}",
+        capacity["available"]
+    );
 
     // 4. Get current config
     let config_text = call_tool(&mut stdin, &mut reader, "sandbox_get_config", json!({}));

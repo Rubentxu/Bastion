@@ -34,7 +34,6 @@ pub enum NetworkKind {
 ///
 /// Implementations handle TAP device creation, bridge setup, or host networking
 /// depending on the backend type.
-#[cfg(feature = "use-segregated-traits")]
 #[async_trait]
 pub trait NetworkBackend: Send + Sync + std::fmt::Debug {
     /// Set up networking for a sandbox.
