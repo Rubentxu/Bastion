@@ -88,13 +88,11 @@ impl OciImage {
 impl ImageSource for OciImage {
     async fn validate(&self) -> Result<(), DomainError> {
         // Check path exists and is a directory
-        let metadata = tokio::fs::metadata(&self.config.path).await.map_err(|e| {
-            DomainError::Config(format!("OCI rootfs not found: {}", e))
-        })?;
+        let metadata = tokio::fs::metadata(&self.config.path)
+            .await
+            .map_err(|e| DomainError::Config(format!("OCI rootfs not found: {}", e)))?;
         if !metadata.is_dir() {
-            return Err(DomainError::Config(
-                "OCI rootfs is not a directory".into(),
-            ));
+            return Err(DomainError::Config("OCI rootfs is not a directory".into()));
         }
         // Check for rootfs subdirectory or presence of /bin
         // This is a heuristic - missing /bin is not an error, just unusual
@@ -156,16 +154,11 @@ const SQUASHFS_MAGIC: &[u8] = b"hsqs";
 impl ImageSource for SquashfsImage {
     async fn validate(&self) -> Result<(), DomainError> {
         // Check file exists
-        let metadata =
-            tokio::fs::metadata(&self.config.path)
-                .await
-                .map_err(|e| {
-                    DomainError::Config(format!("Squashfs image not found: {}", e))
-                })?;
+        let metadata = tokio::fs::metadata(&self.config.path)
+            .await
+            .map_err(|e| DomainError::Config(format!("Squashfs image not found: {}", e)))?;
         if !metadata.is_file() {
-            return Err(DomainError::Config(
-                "Squashfs path is not a file".into(),
-            ));
+            return Err(DomainError::Config("Squashfs path is not a file".into()));
         }
         // Magic byte check — read first 4 bytes
         let mut file = tokio::fs::File::open(&self.config.path).await?;
@@ -231,9 +224,9 @@ const WASM_MAGIC: &[u8] = b"\0asm";
 #[async_trait]
 impl ImageSource for WasmBundle {
     async fn validate(&self) -> Result<(), DomainError> {
-        let metadata = tokio::fs::metadata(&self.config.path).await.map_err(|e| {
-            DomainError::Config(format!("WASM bundle not found: {}", e))
-        })?;
+        let metadata = tokio::fs::metadata(&self.config.path)
+            .await
+            .map_err(|e| DomainError::Config(format!("WASM bundle not found: {}", e)))?;
         if !metadata.is_file() {
             return Err(DomainError::Config("WASM bundle is not a file".into()));
         }

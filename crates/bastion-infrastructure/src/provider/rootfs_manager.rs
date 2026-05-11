@@ -62,9 +62,8 @@ impl RootfsManager for DefaultRootfsManager {
         // Step 4: Write config.json
         let config = self.generate_oci_config(sandbox_id, env_vars, entrypoint)?;
         let config_path = bundle_dir.join("config.json");
-        let config_str =
-            serde_json::to_string_pretty(&config)
-                .map_err(|e| DomainError::Internal(format!("Failed to serialize config.json: {e}")))?;
+        let config_str = serde_json::to_string_pretty(&config)
+            .map_err(|e| DomainError::Internal(format!("Failed to serialize config.json: {e}")))?;
         fs::write(&config_path, config_str)
             .await
             .map_err(|e| DomainError::Internal(format!("Failed to write config.json: {e}")))?;
@@ -83,46 +82,52 @@ impl RootfsManager for DefaultRootfsManager {
         let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
 
         while let Some((current_src, current_dst)) = stack.pop() {
-            let mut entries = fs::read_dir(&current_src)
-                .await
-                .map_err(|e| {
-                    DomainError::Internal(format!("Cannot read directory {}: {e}", current_src.display()))
-                })?;
-
-            let mut dir_entry = entries.next_entry().await.map_err(|e| {
-                DomainError::Internal(format!("Cannot read dir entry: {e}"))
+            let mut entries = fs::read_dir(&current_src).await.map_err(|e| {
+                DomainError::Internal(format!(
+                    "Cannot read directory {}: {e}",
+                    current_src.display()
+                ))
             })?;
 
+            let mut dir_entry = entries
+                .next_entry()
+                .await
+                .map_err(|e| DomainError::Internal(format!("Cannot read dir entry: {e}")))?;
+
             while let Some(entry) = dir_entry {
-                let ty = entry.file_type().await.map_err(|e| {
-                    DomainError::Internal(format!("Cannot get file type: {e}"))
-                })?;
+                let ty = entry
+                    .file_type()
+                    .await
+                    .map_err(|e| DomainError::Internal(format!("Cannot get file type: {e}")))?;
                 let src_path = entry.path();
                 let dst_path = current_dst.join(entry.file_name());
 
                 if ty.is_dir() {
-                    fs::create_dir_all(&dst_path)
-                        .await
-                        .map_err(|e| {
-                            DomainError::Internal(format!("Cannot create dir {}: {e}", dst_path.display()))
-                        })?;
+                    fs::create_dir_all(&dst_path).await.map_err(|e| {
+                        DomainError::Internal(format!(
+                            "Cannot create dir {}: {e}",
+                            dst_path.display()
+                        ))
+                    })?;
                     stack.push((src_path, dst_path));
                 } else if ty.is_symlink() {
                     // Symlinks: read target and copy as regular file
-                    let target = fs::read_link(&src_path)
-                        .await
-                        .map_err(|e| {
-                            DomainError::Internal(format!("Cannot read symlink {}: {e}", src_path.display()))
-                        })?;
+                    let target = fs::read_link(&src_path).await.map_err(|e| {
+                        DomainError::Internal(format!(
+                            "Cannot read symlink {}: {e}",
+                            src_path.display()
+                        ))
+                    })?;
                     // Copy the target content as a regular file
                     copy_file_async(&target, &dst_path).await?;
                 } else {
                     copy_file_async(&src_path, &dst_path).await?;
                 }
 
-                dir_entry = entries.next_entry().await.map_err(|e| {
-                    DomainError::Internal(format!("Cannot read dir entry: {e}"))
-                })?;
+                dir_entry = entries
+                    .next_entry()
+                    .await
+                    .map_err(|e| DomainError::Internal(format!("Cannot read dir entry: {e}")))?;
             }
         }
 
@@ -133,33 +138,31 @@ impl RootfsManager for DefaultRootfsManager {
     ///
     /// Copies the worker binary to `bundle_dir/rootfs/usr/local/bin/bastion-worker`
     /// and sets executable permissions.
-    async fn inject_worker(&self, bundle_dir: &Path, worker_binary: &Path) -> Result<(), DomainError> {
+    async fn inject_worker(
+        &self,
+        bundle_dir: &Path,
+        worker_binary: &Path,
+    ) -> Result<(), DomainError> {
         let rootfs = bundle_dir.join("rootfs");
         let worker_dest = rootfs.join("usr/local/bin/bastion-worker");
 
         // Create parent directory if it doesn't exist
         if let Some(parent) = worker_dest.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| {
-                    DomainError::Internal(format!("Cannot create directory {}: {e}", parent.display()))
-                })?;
+            fs::create_dir_all(parent).await.map_err(|e| {
+                DomainError::Internal(format!("Cannot create directory {}: {e}", parent.display()))
+            })?;
         }
 
         // Copy the worker binary
-        fs::copy(worker_binary, &worker_dest)
-            .await
-            .map_err(|e| {
-                DomainError::Internal(format!("Failed to copy worker binary to rootfs: {e}"))
-            })?;
+        fs::copy(worker_binary, &worker_dest).await.map_err(|e| {
+            DomainError::Internal(format!("Failed to copy worker binary to rootfs: {e}"))
+        })?;
 
         // Set executable permissions
         use std::os::unix::fs::PermissionsExt;
         let metadata = fs::metadata(&worker_dest)
             .await
-            .map_err(|e| {
-                DomainError::Internal(format!("Failed to stat worker binary: {e}"))
-            })?;
+            .map_err(|e| DomainError::Internal(format!("Failed to stat worker binary: {e}")))?;
         let mut perms = metadata.permissions();
         perms.set_mode(perms.mode() | 0o111);
         fs::set_permissions(&worker_dest, perms)
@@ -191,9 +194,8 @@ impl RootfsManager for DefaultRootfsManager {
         entrypoint: &[String],
     ) -> Result<serde_json::Value, DomainError> {
         // Build environment variables list
-        let mut env_list: Vec<String> = vec![
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
-        ];
+        let mut env_list: Vec<String> =
+            vec!["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()];
         for (key, value) in env_vars {
             env_list.push(format!("{}={}", key, value));
         }
@@ -286,15 +288,13 @@ impl RootfsManager for DefaultRootfsManager {
 
 /// Helper function to copy a file asynchronously.
 async fn copy_file_async(src: &Path, dst: &Path) -> Result<(), DomainError> {
-    fs::copy(src, dst)
-        .await
-        .map_err(|e| {
-            DomainError::Internal(format!(
-                "Cannot copy {} to {}: {e}",
-                src.display(),
-                dst.display()
-            ))
-        })?;
+    fs::copy(src, dst).await.map_err(|e| {
+        DomainError::Internal(format!(
+            "Cannot copy {} to {}: {e}",
+            src.display(),
+            dst.display()
+        ))
+    })?;
     Ok(())
 }
 
@@ -312,7 +312,9 @@ mod tests {
         // Create source structure
         fs::create_dir_all(&src.join("subdir")).await.unwrap();
         fs::write(&src.join("file1.txt"), "content1").await.unwrap();
-        fs::write(&src.join("subdir/file2.txt"), "content2").await.unwrap();
+        fs::write(&src.join("subdir/file2.txt"), "content2")
+            .await
+            .unwrap();
 
         let manager = DefaultRootfsManager::new();
         manager.copy_dir(&src, &dst).await.unwrap();
@@ -331,7 +333,11 @@ mod tests {
         let manager = DefaultRootfsManager::new();
         let sandbox_id = SandboxId::new("test-sandbox");
         let env_vars = HashMap::new();
-        let entrypoint = vec!["/bin/sh".to_string(), "-c".to_string(), "echo hello".to_string()];
+        let entrypoint = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "echo hello".to_string(),
+        ];
 
         let config = manager
             .generate_oci_config(&sandbox_id, &env_vars, &entrypoint)
@@ -339,6 +345,9 @@ mod tests {
 
         assert_eq!(config["ociVersion"], "1.0.2");
         assert_eq!(config["hostname"], "sandbox-test-sandbox");
-        assert_eq!(config["process"]["args"], serde_json::json!(["/bin/sh", "-c", "echo hello"]));
+        assert_eq!(
+            config["process"]["args"],
+            serde_json::json!(["/bin/sh", "-c", "echo hello"])
+        );
     }
 }

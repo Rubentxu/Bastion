@@ -7,9 +7,9 @@ use bastion_domain::provider::SandboxProvider;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 
 #[cfg(feature = "use-segregated-traits")]
-use bastion_domain::provider::lifecycle::SandboxLifecycle;
-#[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::executor::TaskExecutor;
+#[cfg(feature = "use-segregated-traits")]
+use bastion_domain::provider::lifecycle::SandboxLifecycle;
 
 /// Information about a registered provider.
 #[derive(Debug, Clone)]
@@ -61,11 +61,7 @@ impl ProviderFactory {
 
     /// Register a provider using segregated traits (no feature flag, usesdyn SandboxProvider directly).
     #[cfg(not(feature = "use-segregated-traits"))]
-    pub fn register_lifecycle(
-        &mut self,
-        _name: &str,
-        _provider: impl SandboxProvider + 'static,
-    ) {
+    pub fn register_lifecycle(&mut self, _name: &str, _provider: impl SandboxProvider + 'static) {
         panic!("register_lifecycle requires use-segregated-traits feature");
     }
 

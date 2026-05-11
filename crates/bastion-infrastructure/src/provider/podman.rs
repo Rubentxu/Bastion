@@ -111,7 +111,9 @@ impl PodmanProvider {
         env_vars: Option<&HashMap<String, String>>,
     ) -> Result<(Vec<u8>, Vec<u8>, i32), DomainError> {
         let env = env_vars.map(|vars| {
-            vars.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>()
+            vars.iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
         });
         let exec_config = bollard::exec::CreateExecOptions {
             cmd: Some(vec![
@@ -434,8 +436,9 @@ impl SandboxProvider for PodmanProvider {
             )
         };
 
-        let (stdout, stderr, exit_code) =
-            self.exec_in_container(&container_name, &shell_cmd, Some(&command.env_vars)).await?;
+        let (stdout, stderr, exit_code) = self
+            .exec_in_container(&container_name, &shell_cmd, Some(&command.env_vars))
+            .await?;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         tracing::info!(
@@ -505,8 +508,9 @@ impl SandboxProvider for PodmanProvider {
             )
         };
 
-        let (stdout, stderr, exit_code) =
-            self.exec_in_container(&container_name, &shell_cmd, Some(&command.env_vars)).await?;
+        let (stdout, stderr, exit_code) = self
+            .exec_in_container(&container_name, &shell_cmd, Some(&command.env_vars))
+            .await?;
 
         // Create an mpsc channel-based stream for the result
         let (tx, rx) = mpsc::channel::<Result<CommandChunk, DomainError>>(4);
@@ -561,7 +565,9 @@ impl SandboxProvider for PodmanProvider {
         let encoded = base64::engine::general_purpose::STANDARD.encode(content);
         let shell_cmd = format!("echo '{}' | base64 -d > {}", encoded, path);
 
-        let (_, _, exit_code) = self.exec_in_container(&container_name, &shell_cmd, None).await?;
+        let (_, _, exit_code) = self
+            .exec_in_container(&container_name, &shell_cmd, None)
+            .await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(
@@ -591,7 +597,9 @@ impl SandboxProvider for PodmanProvider {
         // Read file and base64 encode it
         // Use -w0 to disable line wrapping (default wraps at 76 chars, causing decode errors)
         let shell_cmd = format!("base64 -w0 {}", path);
-        let (stdout, _, exit_code) = self.exec_in_container(&container_name, &shell_cmd, None).await?;
+        let (stdout, _, exit_code) = self
+            .exec_in_container(&container_name, &shell_cmd, None)
+            .await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(
@@ -603,7 +611,11 @@ impl SandboxProvider for PodmanProvider {
         // Decode base64 — strip whitespace as safety net (base64 -w0 should prevent
         // newlines, but some environments may still insert them)
         use base64::Engine;
-        let cleaned: Vec<u8> = stdout.iter().copied().filter(|&b| b != b'\n' && b != b'\r' && b != b' ').collect();
+        let cleaned: Vec<u8> = stdout
+            .iter()
+            .copied()
+            .filter(|&b| b != b'\n' && b != b'\r' && b != b' ')
+            .collect();
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&cleaned)
             .map_err(|e| DomainError::Internal(format!("Failed to decode base64: {}", e)))?;
@@ -627,7 +639,9 @@ impl SandboxProvider for PodmanProvider {
 
         // Use ls for simple listing (just names)
         let shell_cmd = format!("ls -la {}", dir);
-        let (stdout, _, exit_code) = self.exec_in_container(&container_name, &shell_cmd, None).await?;
+        let (stdout, _, exit_code) = self
+            .exec_in_container(&container_name, &shell_cmd, None)
+            .await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(
@@ -675,7 +689,9 @@ impl SandboxProvider for PodmanProvider {
                 bollard::body_full(bytes::Bytes::from(tar_bytes)),
             )
             .await
-            .map_err(|e| DomainError::Internal(format!("Failed to copy files to container: {e}")))?;
+            .map_err(|e| {
+                DomainError::Internal(format!("Failed to copy files to container: {e}"))
+            })?;
 
         Ok(())
     }

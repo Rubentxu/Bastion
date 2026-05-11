@@ -149,7 +149,10 @@ impl SandboxProvider for WasmSandboxProvider {
         #[cfg(feature = "use-segregated-traits")]
         {
             self.state_machine.register(id.clone())?;
-            self.state_machine.transition(id, bastion_domain::sandbox::value_objects::SandboxStatus::Running)?;
+            self.state_machine.transition(
+                id,
+                bastion_domain::sandbox::value_objects::SandboxStatus::Running,
+            )?;
         }
 
         tracing::info!(sandbox_id = %id, "WasmSandboxProvider: created sandbox");

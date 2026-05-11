@@ -3,12 +3,12 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 
+use crate::provider::capabilities::ProviderCapabilities;
 use crate::sandbox::entity::Sandbox;
 use crate::sandbox::snapshot::SnapshotInfo;
 use crate::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
 use crate::shared::DomainError;
 use crate::shared::id::SandboxId;
-use crate::provider::capabilities::ProviderCapabilities;
 
 /// Unsupported operation helper
 fn unsupported(op: &str) -> DomainError {
@@ -71,7 +71,11 @@ pub trait SandboxLifecycle: Send + Sync + std::fmt::Debug {
     // ── Snapshot Operations (defaults: unsupported) ─────────────
 
     /// Create a snapshot of the sandbox state.
-    async fn create_snapshot(&self, id: &SandboxId, name: &str) -> Result<SnapshotInfo, DomainError> {
+    async fn create_snapshot(
+        &self,
+        id: &SandboxId,
+        name: &str,
+    ) -> Result<SnapshotInfo, DomainError> {
         let _ = (id, name);
         Err(unsupported("create_snapshot"))
     }

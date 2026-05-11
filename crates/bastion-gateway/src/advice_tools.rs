@@ -90,7 +90,9 @@ impl BastionGateway {
     /// List all registered advice descriptors.
     ///
     /// Returns advice that is not disabled by configuration. Filtered by global_enabled and per-ID disabled list.
-    #[tool(description = "List all loaded and enabled advice descriptors. Respects global_enabled and per-ID disabled list.")]
+    #[tool(
+        description = "List all loaded and enabled advice descriptors. Respects global_enabled and per-ID disabled list."
+    )]
     async fn advice_list(&self, Parameters(_params): Parameters<AdviceListParams>) -> String {
         let registry = match &self.catalog_config.advice_registry {
             Some(r) => r,
@@ -131,7 +133,9 @@ impl BastionGateway {
     /// Get a single advice descriptor by ID.
     ///
     /// Returns the full advice descriptor including triggers, suggested_actions, and the raw TOML source.
-    #[tool(description = "Get a single advice descriptor by ID. Includes triggers, suggested_actions, and raw TOML source.")]
+    #[tool(
+        description = "Get a single advice descriptor by ID. Includes triggers, suggested_actions, and raw TOML source."
+    )]
     async fn advice_get(&self, Parameters(params): Parameters<AdviceGetParams>) -> String {
         let registry = match &self.catalog_config.advice_registry {
             Some(r) => r,
@@ -267,7 +271,9 @@ impl BastionGateway {
     /// Configure advice (enable/disable globally or per-ID).
     ///
     /// Set advice_id to "global" to control global_enabled. Use clear_disabled=true with global_enabled=true to reset the disabled list.
-    #[tool(description = "Enable or disable advice globally or per-ID. Use advice_id='global' for global settings. clear_disabled=true resets the disabled list.")]
+    #[tool(
+        description = "Enable or disable advice globally or per-ID. Use advice_id='global' for global settings. clear_disabled=true resets the disabled list."
+    )]
     async fn advice_configure(
         &self,
         Parameters(params): Parameters<AdviceConfigureParams>,

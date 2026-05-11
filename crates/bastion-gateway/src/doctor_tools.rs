@@ -57,7 +57,9 @@ impl BastionGateway {
     /// List all registered doctors.
     ///
     /// Doctors are diagnostic checks that verify sandbox health (aliveness, resource limits, assertion-driven checks).
-    #[tool(description = "List all registered doctor descriptors. Doctors verify sandbox health (aliveness, resources, assertion-driven checks).")]
+    #[tool(
+        description = "List all registered doctor descriptors. Doctors verify sandbox health (aliveness, resources, assertion-driven checks)."
+    )]
     async fn doctor_list(&self, Parameters(_params): Parameters<DoctorListParams>) -> String {
         let registry = match &self.catalog_config.doctor_registry {
             Some(r) => r,
@@ -80,7 +82,9 @@ impl BastionGateway {
     /// Run a doctor against a sandbox.
     ///
     /// Executes all checks in the doctor. Returns per-check results and an overall status. Use sandbox_info to get a valid sandbox_id first.
-    #[tool(description = "Run a doctor against a sandbox. Executes all checks, returns per-check results and overall status. Use sandbox_info to get a valid sandbox_id first.")]
+    #[tool(
+        description = "Run a doctor against a sandbox. Executes all checks, returns per-check results and overall status. Use sandbox_info to get a valid sandbox_id first."
+    )]
     async fn doctor_run(&self, Parameters(params): Parameters<DoctorRunParams>) -> String {
         let registry = match &self.catalog_config.doctor_registry {
             Some(r) => r,
@@ -161,7 +165,9 @@ impl BastionGateway {
     /// Get doctor descriptor and TOML source.
     ///
     /// Returns the full doctor definition including all checks, severity, category, and the raw TOML configuration.
-    #[tool(description = "Get doctor descriptor and TOML source. Includes all checks, severity, category, and raw TOML config.")]
+    #[tool(
+        description = "Get doctor descriptor and TOML source. Includes all checks, severity, category, and raw TOML config."
+    )]
     async fn doctor_explain(&self, Parameters(params): Parameters<DoctorExplainParams>) -> String {
         let registry = match &self.catalog_config.doctor_registry {
             Some(r) => r,

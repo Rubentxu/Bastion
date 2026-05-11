@@ -19,14 +19,14 @@ use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
-use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 #[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::image_source::{ImageSource, OciImage};
+use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 #[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::rootfs::RootfsManager;
+use bastion_domain::provider::router::CommandRouter;
 #[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::state_machine::SandboxStateMachine;
-use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::value_objects::{
     NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus,
@@ -178,7 +178,10 @@ impl GVisorProvider {
             if vars.is_empty() {
                 shell_cmd.to_string()
             } else {
-                let exports: Vec<String> = vars.iter().map(|(k, v)| format!("export {k}={v}")).collect();
+                let exports: Vec<String> = vars
+                    .iter()
+                    .map(|(k, v)| format!("export {k}={v}"))
+                    .collect();
                 format!("{} && {}", exports.join(" && "), shell_cmd)
             }
         } else {
@@ -256,7 +259,10 @@ impl GVisorProvider {
     ) -> Result<(), DomainError> {
         // If no router is configured, we're in fallback mode — skip wait
         let Some(ref router) = self.command_router else {
-            tracing::debug!(sandbox_id, "No command router configured — skipping worker connection wait");
+            tracing::debug!(
+                sandbox_id,
+                "No command router configured — skipping worker connection wait"
+            );
             return Ok(());
         };
 
@@ -578,7 +584,8 @@ impl SandboxProvider for GVisorProvider {
         }
 
         #[cfg(feature = "use-segregated-traits")]
-        let bundle_dir = self.rootfs_manager
+        let bundle_dir = self
+            .rootfs_manager
             .prepare_oci_bundle(
                 id,
                 &self.rootfs_dir.join(&sandbox_id),
@@ -597,12 +604,7 @@ impl SandboxProvider for GVisorProvider {
         // --network flag is not supported in modern runsc (>=2025).
         let mut child = self
             .runsc_cmd()
-            .args([
-                "run",
-                "-bundle",
-                &bundle_dir.to_string_lossy(),
-                &sandbox_id,
-            ])
+            .args(["run", "-bundle", &bundle_dir.to_string_lossy(), &sandbox_id])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
@@ -815,7 +817,9 @@ impl SandboxProvider for GVisorProvider {
             )
         };
 
-        let (stdout, stderr, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd, Some(&command.env_vars)).await?;
+        let (stdout, stderr, exit_code) = self
+            .exec_in_container(&sandbox_id, &shell_cmd, Some(&command.env_vars))
+            .await?;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         tracing::info!(
@@ -953,7 +957,9 @@ impl SandboxProvider for GVisorProvider {
         let encoded = base64::engine::general_purpose::STANDARD.encode(content);
         let shell_cmd = format!("printf '%s' '{}' | base64 -d > '{}'", encoded, path);
 
-        let (_, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd, None).await?;
+        let (_, _, exit_code) = self
+            .exec_in_container(&sandbox_id, &shell_cmd, None)
+            .await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(
@@ -981,7 +987,9 @@ impl SandboxProvider for GVisorProvider {
         tracing::info!(sandbox_id = %id, path, "Reading file via runsc exec (fallback)");
 
         let shell_cmd = format!("base64 -w0 < '{}' 2>/dev/null || base64 < '{}'", path, path);
-        let (stdout, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd, None).await?;
+        let (stdout, _, exit_code) = self
+            .exec_in_container(&sandbox_id, &shell_cmd, None)
+            .await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(
@@ -992,7 +1000,11 @@ impl SandboxProvider for GVisorProvider {
 
         // Decode base64 — strip whitespace as safety net
         use base64::Engine;
-        let cleaned: Vec<u8> = stdout.iter().copied().filter(|&b| b != b'\n' && b != b'\r' && b != b' ').collect();
+        let cleaned: Vec<u8> = stdout
+            .iter()
+            .copied()
+            .filter(|&b| b != b'\n' && b != b'\r' && b != b' ')
+            .collect();
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&cleaned)
             .map_err(|e| DomainError::Internal(format!("Failed to decode base64: {e}")))?;
@@ -1015,7 +1027,9 @@ impl SandboxProvider for GVisorProvider {
         tracing::info!(sandbox_id = %id, dir, "Listing files via runsc exec (fallback)");
 
         let shell_cmd = format!("ls -la '{}' 2>/dev/null || ls -la '{}'", dir, dir);
-        let (stdout, _, exit_code) = self.exec_in_container(&sandbox_id, &shell_cmd, None).await?;
+        let (stdout, _, exit_code) = self
+            .exec_in_container(&sandbox_id, &shell_cmd, None)
+            .await?;
 
         if exit_code != 0 {
             return Err(DomainError::Internal(format!(

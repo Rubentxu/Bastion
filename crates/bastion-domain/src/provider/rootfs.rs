@@ -39,7 +39,11 @@ pub trait RootfsManager: Send + Sync + std::fmt::Debug {
     /// Inject the worker binary into a bundle rootfs.
     ///
     /// Copies the worker binary to `bundle_dir/rootfs/usr/local/bin/` and sets executable permissions.
-    async fn inject_worker(&self, bundle_dir: &Path, worker_binary: &Path) -> Result<(), DomainError>;
+    async fn inject_worker(
+        &self,
+        bundle_dir: &Path,
+        worker_binary: &Path,
+    ) -> Result<(), DomainError>;
 
     /// Generate OCI config.json for a bundle.
     ///

@@ -4,10 +4,10 @@
 //! Replaces the previous CLI-based SnapshotManager.
 
 use bollard::Docker;
-use bollard::models::{ContainerCreateBody, ContainerConfig, HostConfig};
+use bollard::models::{ContainerConfig, ContainerCreateBody, HostConfig};
 use bollard::query_parameters::{
-    CommitContainerOptionsBuilder, CreateContainerOptionsBuilder,
-    ListImagesOptionsBuilder, RemoveImageOptionsBuilder,
+    CommitContainerOptionsBuilder, CreateContainerOptionsBuilder, ListImagesOptionsBuilder,
+    RemoveImageOptionsBuilder,
 };
 
 use bastion_domain::sandbox::entity::Sandbox;
@@ -21,7 +21,12 @@ const SNAPSHOT_TAG: &str = "latest";
 
 /// Build the full image tag for a named snapshot.
 fn image_tag(name: &str) -> String {
-    format!("{}{}:{}", SNAPSHOT_PREFIX, name.replace('/', "-"), SNAPSHOT_TAG)
+    format!(
+        "{}{}:{}",
+        SNAPSHOT_PREFIX,
+        name.replace('/', "-"),
+        SNAPSHOT_TAG
+    )
 }
 
 /// Extract snapshot name from a snapshot_id (e.g., "snap:my-build-1712345678").
@@ -97,10 +102,7 @@ pub async fn snapshot_exists(docker: &Docker, name: &str) -> Result<bool, Domain
 }
 
 /// Restore a sandbox from a snapshot image.
-pub async fn restore_snapshot(
-    docker: &Docker,
-    snapshot_id: &str,
-) -> Result<Sandbox, DomainError> {
+pub async fn restore_snapshot(docker: &Docker, snapshot_id: &str) -> Result<Sandbox, DomainError> {
     let name = snapshot_name_from_id(snapshot_id);
     let tag = image_tag(&name);
 
@@ -131,7 +133,9 @@ pub async fn restore_snapshot(
     docker
         .create_container(Some(create_options), container_config)
         .await
-        .map_err(|e| DomainError::Internal(format!("Failed to create container from snapshot: {e}")))?;
+        .map_err(|e| {
+            DomainError::Internal(format!("Failed to create container from snapshot: {e}"))
+        })?;
 
     // Start container
     docker
@@ -173,9 +177,7 @@ pub async fn delete_snapshot(docker: &Docker, snapshot_id: &str) -> Result<(), D
 
 /// List all snapshots (images matching bastion-snap-*).
 pub async fn list_snapshots(docker: &Docker) -> Result<Vec<SnapshotInfo>, DomainError> {
-    let options = ListImagesOptionsBuilder::default()
-        .all(true)
-        .build();
+    let options = ListImagesOptionsBuilder::default().all(true).build();
 
     let images = docker
         .list_images(Some(options))
@@ -187,18 +189,18 @@ pub async fn list_snapshots(docker: &Docker) -> Result<Vec<SnapshotInfo>, Domain
 
     for image in &images {
         for repo_tag in &image.repo_tags {
-                if is_snapshot_image(repo_tag) {
-                    if let Some(name) = parse_snapshot_name(repo_tag) {
-                        snapshots.push(SnapshotInfo {
-                            snapshot_id: format!("snap:{}", name),
-                            sandbox_id: String::new(),
-                            name,
-                            created_at: now,
-                            size_bytes: image.size as u64,
-                        });
-                    }
+            if is_snapshot_image(repo_tag) {
+                if let Some(name) = parse_snapshot_name(repo_tag) {
+                    snapshots.push(SnapshotInfo {
+                        snapshot_id: format!("snap:{}", name),
+                        sandbox_id: String::new(),
+                        name,
+                        created_at: now,
+                        size_bytes: image.size as u64,
+                    });
                 }
             }
+        }
     }
 
     Ok(snapshots)

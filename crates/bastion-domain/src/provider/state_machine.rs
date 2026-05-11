@@ -103,9 +103,10 @@ impl SandboxStateMachine {
         new_status: SandboxStatus,
     ) -> Result<SandboxStatus, DomainError> {
         // Get the current entry
-        let mut entry = self.states.get_mut(id).ok_or_else(|| {
-            DomainError::NotFound(format!("Sandbox {} not found", id))
-        })?;
+        let mut entry = self
+            .states
+            .get_mut(id)
+            .ok_or_else(|| DomainError::NotFound(format!("Sandbox {} not found", id)))?;
 
         let old_status = entry.status;
 
@@ -155,9 +156,10 @@ impl SandboxStateMachine {
         id: &SandboxId,
         payload: T,
     ) -> Result<(), DomainError> {
-        let mut entry = self.states.get_mut(id).ok_or_else(|| {
-            DomainError::NotFound(format!("Sandbox {} not found", id))
-        })?;
+        let mut entry = self
+            .states
+            .get_mut(id)
+            .ok_or_else(|| DomainError::NotFound(format!("Sandbox {} not found", id)))?;
 
         entry.payload = Some(Box::new(payload));
         Ok(())
@@ -175,9 +177,7 @@ impl SandboxStateMachine {
     /// This is called by the provider during `terminate` to get the opaque
     /// state back (e.g., `ContainerState` with the `Child` handle to kill).
     pub fn remove(&self, id: &SandboxId) -> Option<Box<dyn std::any::Any + Send + Sync>> {
-        self.states
-            .remove(id)
-            .and_then(|(_, entry)| entry.payload)
+        self.states.remove(id).and_then(|(_, entry)| entry.payload)
     }
 
     /// List all active sandbox IDs (sandboxes still in the map).

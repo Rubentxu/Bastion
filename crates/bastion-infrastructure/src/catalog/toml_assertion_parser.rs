@@ -55,22 +55,21 @@ impl TomlCheck {
     /// Returns `None` for checks that have no CEL equivalent (e.g., SandboxAlive).
     pub fn to_cel_condition(&self) -> Option<String> {
         match self {
-            TomlCheck::ExitCode { expected } => {
-                Some(format!("exit_code == {}", expected))
-            }
-            TomlCheck::StdoutContains { substring } => {
-                Some(format!("stdout_contains('{}')", Self::escape_cel_string(substring)))
-            }
-            TomlCheck::StderrContains { substring } => {
-                Some(format!("stderr_contains('{}')", Self::escape_cel_string(substring)))
-            }
-            TomlCheck::StdoutMatches { regex } => {
-                Some(format!("stdout_matches('{}')", Self::escape_cel_string(regex)))
-            }
+            TomlCheck::ExitCode { expected } => Some(format!("exit_code == {}", expected)),
+            TomlCheck::StdoutContains { substring } => Some(format!(
+                "stdout_contains('{}')",
+                Self::escape_cel_string(substring)
+            )),
+            TomlCheck::StderrContains { substring } => Some(format!(
+                "stderr_contains('{}')",
+                Self::escape_cel_string(substring)
+            )),
+            TomlCheck::StdoutMatches { regex } => Some(format!(
+                "stdout_matches('{}')",
+                Self::escape_cel_string(regex)
+            )),
             TomlCheck::SandboxAlive => None, // Deferred — no CEL equivalent
-            TomlCheck::CommandDuration { max_ms } => {
-                Some(format!("duration_lt({})", max_ms))
-            }
+            TomlCheck::CommandDuration { max_ms } => Some(format!("duration_lt({})", max_ms)),
         }
     }
 
@@ -103,17 +102,11 @@ impl From<AssertionCheck> for TomlCheck {
     fn from(assertion: AssertionCheck) -> Self {
         match assertion {
             AssertionCheck::ExitCode { expected } => TomlCheck::ExitCode { expected },
-            AssertionCheck::StdoutContains { substring } => {
-                TomlCheck::StdoutContains { substring }
-            }
-            AssertionCheck::StderrContains { substring } => {
-                TomlCheck::StderrContains { substring }
-            }
+            AssertionCheck::StdoutContains { substring } => TomlCheck::StdoutContains { substring },
+            AssertionCheck::StderrContains { substring } => TomlCheck::StderrContains { substring },
             AssertionCheck::StdoutMatches { regex } => TomlCheck::StdoutMatches { regex },
             AssertionCheck::SandboxAlive => TomlCheck::SandboxAlive,
-            AssertionCheck::CommandDuration { max_ms } => {
-                TomlCheck::CommandDuration { max_ms }
-            }
+            AssertionCheck::CommandDuration { max_ms } => TomlCheck::CommandDuration { max_ms },
         }
     }
 }
@@ -421,7 +414,10 @@ substring = "done"
     #[test]
     fn test_toml_check_to_cel_exit_code_nonzero() {
         let check = TomlCheck::ExitCode { expected: 127 };
-        assert_eq!(check.to_cel_condition(), Some("exit_code == 127".to_string()));
+        assert_eq!(
+            check.to_cel_condition(),
+            Some("exit_code == 127".to_string())
+        );
     }
 
     #[test]

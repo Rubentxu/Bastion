@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 
 use crate::sandbox::value_objects::NetworkSpec;
-use crate::shared::id::SandboxId;
 use crate::shared::DomainError;
+use crate::shared::id::SandboxId;
 
 /// Network configuration returned by a network backend after setup.
 #[derive(Debug, Clone)]

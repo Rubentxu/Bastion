@@ -107,13 +107,33 @@ impl SqliteCatalogRepository {
         }
 
         // Migration: add Phase 1 columns to enrichers table (if not exist)
-        Self::add_column_if_not_exists(&conn, "enrichers", "schema_version", "TEXT NOT NULL DEFAULT '1.0'");
+        Self::add_column_if_not_exists(
+            &conn,
+            "enrichers",
+            "schema_version",
+            "TEXT NOT NULL DEFAULT '1.0'",
+        );
         Self::add_column_if_not_exists(&conn, "enrichers", "description", "TEXT");
         Self::add_column_if_not_exists(&conn, "enrichers", "category", "TEXT");
         Self::add_column_if_not_exists(&conn, "enrichers", "command_pattern", "TEXT");
-        Self::add_column_if_not_exists(&conn, "enrichers", "advice_scope_json", "TEXT NOT NULL DEFAULT '[]'");
-        Self::add_column_if_not_exists(&conn, "enrichers", "pre_checks_json", "TEXT NOT NULL DEFAULT '[]'");
-        Self::add_column_if_not_exists(&conn, "enrichers", "assertions_json", "TEXT NOT NULL DEFAULT '[]'");
+        Self::add_column_if_not_exists(
+            &conn,
+            "enrichers",
+            "advice_scope_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        );
+        Self::add_column_if_not_exists(
+            &conn,
+            "enrichers",
+            "pre_checks_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        );
+        Self::add_column_if_not_exists(
+            &conn,
+            "enrichers",
+            "assertions_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        );
 
         // Migration: add Phase 1 columns to extractors table (if not exist)
         Self::add_column_if_not_exists(&conn, "extractors", "output_key", "TEXT");
@@ -130,7 +150,12 @@ impl SqliteCatalogRepository {
     }
 
     /// Helper to add a column to a table if it doesn't exist.
-    fn add_column_if_not_exists(conn: &rusqlite::Connection, table: &str, column: &str, type_and_default: &str) {
+    fn add_column_if_not_exists(
+        conn: &rusqlite::Connection,
+        table: &str,
+        column: &str,
+        type_and_default: &str,
+    ) {
         let query = format!(
             "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = '{}'",
             table, column
@@ -139,8 +164,12 @@ impl SqliteCatalogRepository {
             .query_row(&query, [], |row| Ok(row.get::<_, i32>(0)? > 0))
             .unwrap_or(false);
         if !has_column {
-            let alter = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, type_and_default);
-            conn.execute(&alter, []).unwrap_or_else(|_| panic!("Failed to add column {} to table {}", column, table));
+            let alter = format!(
+                "ALTER TABLE {} ADD COLUMN {} {}",
+                table, column, type_and_default
+            );
+            conn.execute(&alter, [])
+                .unwrap_or_else(|_| panic!("Failed to add column {} to table {}", column, table));
         }
     }
 
@@ -369,9 +398,12 @@ impl CatalogRepository for SqliteCatalogRepository {
             ) = row;
 
             let patterns: Vec<String> = serde_json::from_str(&patterns_json).unwrap_or_default();
-            let advice_scope: Vec<String> = serde_json::from_str(&advice_scope_json).unwrap_or_default();
-            let pre_checks: Vec<String> = serde_json::from_str(&pre_checks_json).unwrap_or_default();
-            let assertions: Vec<String> = serde_json::from_str(&assertions_json).unwrap_or_default();
+            let advice_scope: Vec<String> =
+                serde_json::from_str(&advice_scope_json).unwrap_or_default();
+            let pre_checks: Vec<String> =
+                serde_json::from_str(&pre_checks_json).unwrap_or_default();
+            let assertions: Vec<String> =
+                serde_json::from_str(&assertions_json).unwrap_or_default();
 
             enricher_map.entry(id.clone()).or_default().name = name;
             enricher_map.entry(id.clone()).or_default().version = version;
@@ -389,22 +421,26 @@ impl CatalogRepository for SqliteCatalogRepository {
             if let (Some(eid), Some(etype), Some(epattern), Some(efact_key), Some(epriority)) =
                 (ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority)
             {
-                enricher_map.entry(id).or_default().extractors.push(ExtractorConfig {
-                    id: eid,
-                    extractor_type: etype,
-                    pattern: epattern,
-                    fact_key: efact_key,
-                    priority: epriority,
-                    merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
-                    output_key: ext_output_key,
-                    shape: ext_shape,
-                    fact_type: ext_fact_type,
-                    confidence: ext_confidence,
-                    source: ext_source,
-                    single: ext_single.unwrap_or(0) != 0,
-                    command_extractor_policy: None,
-                    ..Default::default()
-                });
+                enricher_map
+                    .entry(id)
+                    .or_default()
+                    .extractors
+                    .push(ExtractorConfig {
+                        id: eid,
+                        extractor_type: etype,
+                        pattern: epattern,
+                        fact_key: efact_key,
+                        priority: epriority,
+                        merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
+                        output_key: ext_output_key,
+                        shape: ext_shape,
+                        fact_type: ext_fact_type,
+                        confidence: ext_confidence,
+                        source: ext_source,
+                        single: ext_single.unwrap_or(0) != 0,
+                        command_extractor_policy: None,
+                        ..Default::default()
+                    });
             }
         }
 
@@ -417,23 +453,21 @@ impl CatalogRepository for SqliteCatalogRepository {
                         .unwrap_or(false)
                 })
             })
-            .map(|(id, data)| {
-                EnricherDescriptor {
-                    id,
-                    name: data.name,
-                    version: data.version,
-                    match_patterns: data.patterns,
-                    template: data.template,
-                    enabled: data.enabled,
-                    extractors: data.extractors,
-                    schema_version: data.schema_version,
-                    description: data.description,
-                    category: data.category,
-                    command_pattern: data.command_pattern,
-                    advice_scope: data.advice_scope,
-                    pre_checks: data.pre_checks,
-                    assertions: data.assertions,
-                }
+            .map(|(id, data)| EnricherDescriptor {
+                id,
+                name: data.name,
+                version: data.version,
+                match_patterns: data.patterns,
+                template: data.template,
+                enabled: data.enabled,
+                extractors: data.extractors,
+                schema_version: data.schema_version,
+                description: data.description,
+                category: data.category,
+                command_pattern: data.command_pattern,
+                advice_scope: data.advice_scope,
+                pre_checks: data.pre_checks,
+                assertions: data.assertions,
             })
             .collect()
     }
@@ -543,9 +577,12 @@ impl CatalogRepository for SqliteCatalogRepository {
             ) = row;
 
             let patterns: Vec<String> = serde_json::from_str(&patterns_json).unwrap_or_default();
-            let advice_scope: Vec<String> = serde_json::from_str(&advice_scope_json).unwrap_or_default();
-            let pre_checks: Vec<String> = serde_json::from_str(&pre_checks_json).unwrap_or_default();
-            let assertions: Vec<String> = serde_json::from_str(&assertions_json).unwrap_or_default();
+            let advice_scope: Vec<String> =
+                serde_json::from_str(&advice_scope_json).unwrap_or_default();
+            let pre_checks: Vec<String> =
+                serde_json::from_str(&pre_checks_json).unwrap_or_default();
+            let assertions: Vec<String> =
+                serde_json::from_str(&assertions_json).unwrap_or_default();
 
             enricher_map.entry(id.clone()).or_default().name = name;
             enricher_map.entry(id.clone()).or_default().version = version;
@@ -563,44 +600,46 @@ impl CatalogRepository for SqliteCatalogRepository {
             if let (Some(eid), Some(etype), Some(epattern), Some(efact_key), Some(epriority)) =
                 (ext_id, ext_type, ext_pattern, ext_fact_key, ext_priority)
             {
-                enricher_map.entry(id).or_default().extractors.push(ExtractorConfig {
-                    id: eid,
-                    extractor_type: etype,
-                    pattern: epattern,
-                    fact_key: efact_key,
-                    priority: epriority,
-                    merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
-                    output_key: ext_output_key,
-                    shape: ext_shape,
-                    fact_type: ext_fact_type,
-                    confidence: ext_confidence,
-                    source: ext_source,
-                    single: ext_single.unwrap_or(0) != 0,
-                    command_extractor_policy: None,
-                    ..Default::default()
-                });
+                enricher_map
+                    .entry(id)
+                    .or_default()
+                    .extractors
+                    .push(ExtractorConfig {
+                        id: eid,
+                        extractor_type: etype,
+                        pattern: epattern,
+                        fact_key: efact_key,
+                        priority: epriority,
+                        merge_mode: ext_merge_mode.unwrap_or_else(|| "single".to_string()),
+                        output_key: ext_output_key,
+                        shape: ext_shape,
+                        fact_type: ext_fact_type,
+                        confidence: ext_confidence,
+                        source: ext_source,
+                        single: ext_single.unwrap_or(0) != 0,
+                        command_extractor_policy: None,
+                        ..Default::default()
+                    });
             }
         }
 
         enricher_map
             .into_iter()
-            .map(|(id, data)| {
-                EnricherDescriptor {
-                    id,
-                    name: data.name,
-                    version: data.version,
-                    match_patterns: data.patterns,
-                    template: data.template,
-                    enabled: data.enabled,
-                    extractors: data.extractors,
-                    schema_version: data.schema_version,
-                    description: data.description,
-                    category: data.category,
-                    command_pattern: data.command_pattern,
-                    advice_scope: data.advice_scope,
-                    pre_checks: data.pre_checks,
-                    assertions: data.assertions,
-                }
+            .map(|(id, data)| EnricherDescriptor {
+                id,
+                name: data.name,
+                version: data.version,
+                match_patterns: data.patterns,
+                template: data.template,
+                enabled: data.enabled,
+                extractors: data.extractors,
+                schema_version: data.schema_version,
+                description: data.description,
+                category: data.category,
+                command_pattern: data.command_pattern,
+                advice_scope: data.advice_scope,
+                pre_checks: data.pre_checks,
+                assertions: data.assertions,
             })
             .collect()
     }
@@ -1520,7 +1559,10 @@ enricher:
         let e = &enrichers[0];
         assert_eq!(e.id, "gradle");
         assert_eq!(e.schema_version, "2.0");
-        assert_eq!(e.description.as_deref(), Some("Analyzes Gradle build output"));
+        assert_eq!(
+            e.description.as_deref(),
+            Some("Analyzes Gradle build output")
+        );
         assert_eq!(e.category.as_deref(), Some("build"));
         assert_eq!(e.command_pattern.as_deref(), Some("^gradle\\s+"));
         assert_eq!(e.advice_scope, vec!["build", "test"]);
@@ -1627,10 +1669,7 @@ enricher:
 
         assert_eq!(enrichers.len(), 1);
         // command_pattern is prepended to match_patterns
-        assert_eq!(
-            enrichers[0].match_patterns,
-            vec!["^gradle\\s+build"]
-        );
+        assert_eq!(enrichers[0].match_patterns, vec!["^gradle\\s+build"]);
     }
 
     /// Test command_pattern alias: existing match_patterns → prepended if not duplicate.
@@ -1796,7 +1835,10 @@ single = false
         let e = &enrichers[0];
         assert_eq!(e.id, "gradle");
         assert_eq!(e.schema_version, "2.0");
-        assert_eq!(e.description.as_deref(), Some("Analyzes Gradle build output"));
+        assert_eq!(
+            e.description.as_deref(),
+            Some("Analyzes Gradle build output")
+        );
         assert_eq!(e.category.as_deref(), Some("build"));
         assert_eq!(e.command_pattern.as_deref(), Some("^gradle\\s+"));
         assert_eq!(e.advice_scope, vec!["build", "test"]);

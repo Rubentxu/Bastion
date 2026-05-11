@@ -21,14 +21,14 @@ use tokio::time::sleep;
 use bastion_domain::execution::command::{CommandResult, CommandSpec};
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
-use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 #[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::image_source::{ImageSource, SquashfsImage};
 #[cfg(feature = "use-segregated-traits")]
-use bastion_domain::provider::state_machine::SandboxStateMachine;
-#[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::network::NetworkBackend;
+use bastion_domain::provider::port::{CommandStream, SandboxProvider};
 use bastion_domain::provider::router::CommandRouter;
+#[cfg(feature = "use-segregated-traits")]
+use bastion_domain::provider::state_machine::SandboxStateMachine;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
 use bastion_domain::sandbox::value_objects::{
@@ -604,11 +604,15 @@ impl SandboxProvider for FirecrackerProvider {
                 .map_err(|e| DomainError::Internal(format!("Failed to copy rootfs: {e}")))?;
 
             if self.rootfs_readonly {
-                tracing::debug!("Rootfs is read-only, skipping worker injection (must be pre-baked)");
+                tracing::debug!(
+                    "Rootfs is read-only, skipping worker injection (must be pre-baked)"
+                );
             } else {
                 // For Firecracker, we still need mount-based injection for disk images
                 // RootfsManager is designed for OCI bundles - Firecracker needs special handling
-                tracing::warn!("Firecracker worker injection via mount - consider pre-baking worker in rootfs");
+                tracing::warn!(
+                    "Firecracker worker injection via mount - consider pre-baking worker in rootfs"
+                );
                 // Use mount-based injection
                 self.prepare_rootfs(&self.rootfs_path, &sandbox_rootfs)?;
             }

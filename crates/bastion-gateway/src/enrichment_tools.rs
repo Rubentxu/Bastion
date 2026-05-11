@@ -61,7 +61,9 @@ impl BastionGateway {
     /// - `recommendations`: Per-enricher optimization recommendations
     ///
     /// When recorder is not configured, returns an empty report with `total_runs_analyzed: 0`.
-    #[tool(description = "Generate an optimizer report from recorded enrichment runs. Returns per-enricher scores (utility_score, artifact_yield) and optimization recommendations. Empty report if recorder not configured.")]
+    #[tool(
+        description = "Generate an optimizer report from recorded enrichment runs. Returns per-enricher scores (utility_score, artifact_yield) and optimization recommendations. Empty report if recorder not configured."
+    )]
     async fn enrichment_optimizer_report(
         &self,
         Parameters(params): Parameters<EnrichmentOptimizerReportParams>,
@@ -124,7 +126,9 @@ impl BastionGateway {
     /// - `stats`: Database stats (current_row_count, oldest_record_ts, newest_record_ts)
     ///
     /// When recorder is not configured, returns an error.
-    #[tool(description = "Get retention configuration (max_age_days, max_rows, enabled) and database statistics (row count, oldest/newest record timestamps). Returns error if recorder not configured.")]
+    #[tool(
+        description = "Get retention configuration (max_age_days, max_rows, enabled) and database statistics (row count, oldest/newest record timestamps). Returns error if recorder not configured."
+    )]
     async fn enrichment_retention_info(&self) -> String {
         // Get the enrichment adapter
         let adapter = match &*self.enrichment_adapter {
@@ -172,7 +176,9 @@ impl BastionGateway {
     /// Returns a JSON object with:
     /// - `deleted_rows`: Number of rows deleted by this cleanup
     /// - `remaining_rows`: Number of rows remaining after cleanup
-    #[tool(description = "Run retention cleanup. Idempotent — safe to call repeatedly. Respects retention.enabled flag. Returns deleted_rows and remaining_rows counts.")]
+    #[tool(
+        description = "Run retention cleanup. Idempotent — safe to call repeatedly. Respects retention.enabled flag. Returns deleted_rows and remaining_rows counts."
+    )]
     async fn enrichment_retention_cleanup(&self) -> String {
         // Get the enrichment adapter
         let adapter = match &*self.enrichment_adapter {
@@ -232,7 +238,9 @@ impl BastionGateway {
     /// - `saturation_events`: Number of saturation drop events
     /// - `db_row_count`: Current row count in database (if recorder available)
     /// - `recorder_available`: Whether a recorder is configured
-    #[tool(description = "Get enrichment adapter health (enabled, enricher count, recent runs, saturation events, db row count). Returns error if adapter not configured.")]
+    #[tool(
+        description = "Get enrichment adapter health (enabled, enricher count, recent runs, saturation events, db row count). Returns error if adapter not configured."
+    )]
     async fn enrichment_health(&self) -> String {
         // Get the enrichment adapter
         let adapter = match &*self.enrichment_adapter {

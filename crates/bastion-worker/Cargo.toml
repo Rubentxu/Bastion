@@ -27,9 +27,9 @@ sha2 = { workspace = true }
 dashmap = "6.1"
 rustls-pemfile = { workspace = true }
 tokio-rustls = { workspace = true }
+rand = "0.8"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
-rand = "0.8"

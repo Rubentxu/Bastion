@@ -150,7 +150,10 @@ impl SandboxProvider for LocalProvider {
         #[cfg(feature = "use-segregated-traits")]
         {
             self.state_machine.register(id.clone())?;
-            self.state_machine.transition(id, bastion_domain::sandbox::value_objects::SandboxStatus::Running)?;
+            self.state_machine.transition(
+                id,
+                bastion_domain::sandbox::value_objects::SandboxStatus::Running,
+            )?;
         }
 
         tracing::info!(sandbox_id = %id, workspace = %dir_name, "LocalProvider: created sandbox");
@@ -229,11 +232,7 @@ impl SandboxProvider for LocalProvider {
         let shell_cmd = if command.args.is_empty() {
             command.command.clone()
         } else {
-            format!(
-                "{} {}",
-                command.command,
-                command.args.join(" ")
-            )
+            format!("{} {}", command.command, command.args.join(" "))
         };
 
         let mut cmd = std::process::Command::new("sh");

@@ -3,24 +3,24 @@
 #[cfg(feature = "use-segregated-traits")]
 mod shim {
     use async_trait::async_trait;
+    use futures::Stream;
     use std::collections::HashMap;
     use std::path::Path;
     use std::pin::Pin;
-    use futures::Stream;
 
     use crate::execution::command::{CommandResult, CommandSpec};
     use crate::execution::stream::CommandChunk;
     use crate::file_ops::FileEntry;
+    use crate::provider::capabilities::ProviderCapabilities;
     use crate::sandbox::entity::Sandbox;
     use crate::sandbox::snapshot::SnapshotInfo;
     use crate::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
     use crate::shared::DomainError;
     use crate::shared::id::SandboxId;
-    use crate::provider::capabilities::ProviderCapabilities;
 
-    use super::super::port::SandboxProvider;
-    use super::super::lifecycle::SandboxLifecycle;
     use super::super::executor::TaskExecutor;
+    use super::super::lifecycle::SandboxLifecycle;
+    use super::super::port::SandboxProvider;
 
     /// Stream type for command output chunks.
     pub type CommandStream = Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainError>> + Send>>;
@@ -44,7 +44,8 @@ mod shim {
             env_vars: &HashMap<String, String>,
             timeout_ms: u64,
         ) -> Result<Sandbox, DomainError> {
-            SandboxLifecycle::create(self, id, template, resources, network, env_vars, timeout_ms).await
+            SandboxLifecycle::create(self, id, template, resources, network, env_vars, timeout_ms)
+                .await
         }
 
         async fn terminate(&self, id: &SandboxId) -> Result<(), DomainError> {
@@ -96,7 +97,11 @@ mod shim {
             TaskExecutor::read_file(self, id, path).await
         }
 
-        async fn list_files(&self, id: &SandboxId, dir: &str) -> Result<Vec<FileEntry>, DomainError> {
+        async fn list_files(
+            &self,
+            id: &SandboxId,
+            dir: &str,
+        ) -> Result<Vec<FileEntry>, DomainError> {
             TaskExecutor::list_files(self, id, dir).await
         }
 
@@ -147,7 +152,10 @@ mod shim {
 
         // ── Provider-scoped Operations ────────────────────────────────
 
-        async fn list_sandboxes(&self, filter: &SandboxFilter) -> Result<Vec<Sandbox>, DomainError> {
+        async fn list_sandboxes(
+            &self,
+            filter: &SandboxFilter,
+        ) -> Result<Vec<Sandbox>, DomainError> {
             SandboxLifecycle::list_sandboxes(self, filter).await
         }
 

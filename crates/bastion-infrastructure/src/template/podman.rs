@@ -130,7 +130,9 @@ impl<S: ArtifactStore> PodmanOptimizedMaterializer<S> {
         let _ = self.provider.run_command(sandbox_id, &mkdir_cmd).await;
 
         // Use provider's copy_to (bollard upload_to_container) instead of podman cp CLI
-        self.provider.copy_to(sandbox_id, host_dir, container_target).await
+        self.provider
+            .copy_to(sandbox_id, host_dir, container_target)
+            .await
     }
 
     /// Run verification steps inside the sandbox.

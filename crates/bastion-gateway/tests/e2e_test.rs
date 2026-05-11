@@ -20,7 +20,9 @@ use bastion_test_harness::MetricsCollector;
 #[cfg(feature = "test-metrics")]
 fn make_metrics_collector(test_name: &str) -> MetricsCollector {
     let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join(format!("{}.db", test_name.replace("::", "_")));
+    let db_path = temp_dir
+        .path()
+        .join(format!("{}.db", test_name.replace("::", "_")));
     MetricsCollector::new(&db_path).expect("Failed to create metrics collector")
 }
 
@@ -319,7 +321,12 @@ fn test_gateway_e2e_lifecycle() {
     println!("✓ E2E test passed!");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_gateway_e2e_lifecycle"), "test_gateway_e2e_lifecycle", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_gateway_e2e_lifecycle"),
+        "test_gateway_e2e_lifecycle",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[test]
@@ -366,7 +373,12 @@ fn test_gateway_health_only() {
     println!("✓ Health test passed!");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_gateway_health_only"), "test_gateway_health_only", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_gateway_health_only"),
+        "test_gateway_health_only",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 // ============================================================================
@@ -638,7 +650,12 @@ fn test_gateway_pool_lifecycle() {
     println!("✓ Pool lifecycle test passed!");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_gateway_pool_lifecycle"), "test_gateway_pool_lifecycle", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_gateway_pool_lifecycle"),
+        "test_gateway_pool_lifecycle",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[test]
@@ -736,7 +753,12 @@ fn test_gateway_list_and_info() {
     println!("✓ List and info test passed!");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_gateway_list_and_info"), "test_gateway_list_and_info", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_gateway_list_and_info"),
+        "test_gateway_list_and_info",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[test]
@@ -861,7 +883,12 @@ fn test_gateway_pool_recovery() {
     println!("✓ Pool recovery test passed!");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_gateway_pool_recovery"), "test_gateway_pool_recovery", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_gateway_pool_recovery"),
+        "test_gateway_pool_recovery",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[test]
@@ -965,5 +992,10 @@ fn test_gateway_error_handling() {
     println!("✓ Error handling test passed!");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_gateway_error_handling"), "test_gateway_error_handling", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_gateway_error_handling"),
+        "test_gateway_error_handling",
+        start.elapsed(),
+        "pass",
+    );
 }

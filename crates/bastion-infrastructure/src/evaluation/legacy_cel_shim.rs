@@ -14,9 +14,9 @@ use enrichment_engine::rules::ast::{EvalContext, Parser};
 use bastion_domain::catalog::assertion::AssertionCheck;
 use bastion_domain::catalog::experience::ExperienceRecord;
 
+use crate::catalog::toml_advice_parser::TomlTrigger;
 use crate::catalog::toml_assertion_parser::TomlCheck;
 use crate::catalog::toml_doctor_parser::TomlDoctorCheck;
-use crate::catalog::toml_advice_parser::TomlTrigger;
 
 // ─── Error types ─────────────────────────────────────────────────────────────
 
@@ -28,7 +28,10 @@ pub enum ShimError {
     #[error("Legacy evaluation failed: {0}")]
     LegacyEval(String),
     #[error("CEL/legacy mismatch: legacy={legacy_result}, cel={cel_result}")]
-    ResultMismatch { legacy_result: bool, cel_result: bool },
+    ResultMismatch {
+        legacy_result: bool,
+        cel_result: bool,
+    },
     #[error("No CEL condition available for this check type")]
     NoCelCondition,
 }
@@ -59,10 +62,7 @@ fn eval_cel_on_record(record: &ExperienceRecord, condition: &str) -> Result<bool
     // Use i32::MAX as sentinel for unknown duration.
     // This ensures duration comparisons fail for unfinished commands,
     // matching legacy AssertionCheck behavior where duration unknown = check fails.
-    let duration_ms = record
-        .duration_ms()
-        .map(|d| d as i32)
-        .unwrap_or(i32::MAX);
+    let duration_ms = record.duration_ms().map(|d| d as i32).unwrap_or(i32::MAX);
     let timed_out = matches!(
         record.status,
         bastion_domain::catalog::experience::ExperienceStatus::Timeout
@@ -92,10 +92,7 @@ fn eval_cel_on_record_with_facts(
     let expr = Parser::parse(condition).map_err(|e| ShimError::CelParse(e.to_string()))?;
 
     let exit_code = record.exit_code.unwrap_or(0);
-    let duration_ms = record
-        .duration_ms()
-        .map(|d| d as i32)
-        .unwrap_or(i32::MAX);
+    let duration_ms = record.duration_ms().map(|d| d as i32).unwrap_or(i32::MAX);
     let timed_out = matches!(
         record.status,
         bastion_domain::catalog::experience::ExperienceStatus::Timeout
@@ -361,8 +358,8 @@ impl TomlCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bastion_domain::catalog::experience::ExperienceRecord;
     use crate::catalog::toml_assertion_parser::AssertionRegistry;
+    use bastion_domain::catalog::experience::ExperienceRecord;
 
     fn make_pass_record() -> ExperienceRecord {
         ExperienceRecord::new("sandbox_run")
@@ -677,8 +674,7 @@ expected = 0
         // Aliveness has no CEL equivalent — should return matches=true
         let record = make_pass_record();
         let doctor_check = TomlDoctorCheck::Aliveness { sandbox_id: None };
-        let result =
-            evaluate_doctor_check(&doctor_check, &record, &AssertionRegistry::new());
+        let result = evaluate_doctor_check(&doctor_check, &record, &AssertionRegistry::new());
         assert!(result.is_ok());
         let r = result.unwrap();
         assert!(r.matches);
@@ -771,9 +767,7 @@ max_ms = 5000
                     assert!(
                         r.matches,
                         "Mismatch for {:?}: legacy={}, cel={}",
-                        toml_check,
-                        r.legacy_passed,
-                        r.cel_passed
+                        toml_check, r.legacy_passed, r.cel_passed
                     );
                 }
             }

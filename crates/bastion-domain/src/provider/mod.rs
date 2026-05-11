@@ -7,19 +7,19 @@ pub mod port;
 pub mod router;
 
 #[cfg(feature = "use-segregated-traits")]
-pub mod lifecycle;
+pub mod compat;
 #[cfg(feature = "use-segregated-traits")]
 pub mod executor;
+#[cfg(feature = "use-segregated-traits")]
+pub mod image_source;
+#[cfg(feature = "use-segregated-traits")]
+pub mod lifecycle;
+#[cfg(feature = "use-segregated-traits")]
+pub mod network;
 #[cfg(feature = "use-segregated-traits")]
 pub mod rootfs;
 #[cfg(feature = "use-segregated-traits")]
 pub mod state_machine;
-#[cfg(feature = "use-segregated-traits")]
-pub mod network;
-#[cfg(feature = "use-segregated-traits")]
-pub mod image_source;
-#[cfg(feature = "use-segregated-traits")]
-pub mod compat;
 
 pub use capabilities::ProviderCapabilities;
 pub use port::SandboxProvider;

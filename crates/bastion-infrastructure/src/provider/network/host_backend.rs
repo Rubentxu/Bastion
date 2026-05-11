@@ -4,8 +4,8 @@ use async_trait::async_trait;
 
 use bastion_domain::provider::network::{NetworkBackend, NetworkConfig, NetworkKind};
 use bastion_domain::sandbox::value_objects::NetworkSpec;
-use bastion_domain::shared::id::SandboxId;
 use bastion_domain::shared::DomainError;
+use bastion_domain::shared::id::SandboxId;
 
 /// Host network backend — no network abstraction needed.
 ///

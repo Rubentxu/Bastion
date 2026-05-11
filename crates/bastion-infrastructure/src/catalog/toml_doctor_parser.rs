@@ -68,13 +68,10 @@ impl TomlDoctorCheck {
     pub fn to_cel_condition(&self) -> Option<String> {
         match self {
             TomlDoctorCheck::Aliveness { .. } => None, // Deferred — infrastructure check
-            TomlDoctorCheck::Resources { .. } => None,  // Deferred — infrastructure check
+            TomlDoctorCheck::Resources { .. } => None, // Deferred — infrastructure check
             TomlDoctorCheck::AssertionDriven { assertion_id } => {
                 // fact('assertion:<id>') == "passed"
-                Some(format!(
-                    "fact('assertion:{}') == 'passed'",
-                    assertion_id
-                ))
+                Some(format!("fact('assertion:{}') == 'passed'", assertion_id))
             }
         }
     }
