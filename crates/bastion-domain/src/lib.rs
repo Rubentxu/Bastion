@@ -16,6 +16,7 @@
 pub mod catalog;
 pub mod execution;
 pub mod file_ops;
+pub mod orientation;
 pub mod provider;
 pub mod sandbox;
 pub mod secret;

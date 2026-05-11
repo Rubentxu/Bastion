@@ -25,7 +25,7 @@ use bastion_infrastructure::catalog::sqlite_experience_store::SqliteExperienceSt
 use bastion_infrastructure::catalog::toml_advice_parser::{AdviceConfigStore, AdviceRegistry};
 use bastion_infrastructure::catalog::toml_assertion_parser::AssertionRegistry;
 use bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry;
-use bastion_infrastructure::metrics::GatewayMetrics;
+use bastion_infrastructure::metrics::{GatewayMetrics, MetricsHub};
 use bastion_infrastructure::persistence::SqliteSandboxRepository;
 use bastion_infrastructure::pool::{PoolConfig, SandboxPoolManager};
 use bastion_infrastructure::provider::{PodmanProvider, ProviderFactory, ProviderRegistry};
@@ -48,10 +48,16 @@ mod auto_tls;
 mod catalog_tools;
 mod doctor_tools;
 mod enrichment_tools;
+mod metrics_tools;
+mod metrics_tools_types;
+mod orientation_tools;
+mod orientation_tools_types;
 mod registry;
 mod sandbox;
 mod server;
 
+use metrics_tools_types::*;
+use orientation_tools_types::*;
 use registry::{RegistryService, WorkerRegistryServer};
 use tonic::codec::CompressionEncoding;
 
@@ -401,6 +407,16 @@ async fn main() -> Result<()> {
     // Create gateway metrics
     let metrics = GatewayMetrics::default();
 
+    // Create MetricsHub for historical metrics and heartbeat data (Phase 4)
+    // Wrapped in Arc<tokio::sync::Mutex<>> — tokio Mutex guards are Send,
+    // allowing us to hold the lock across .await points in tool handlers
+    let metrics_db_path = bastion_home.join("metrics.db");
+    let metrics_hub = Arc::new(tokio::sync::Mutex::new(
+        MetricsHub::new(Arc::new(metrics.clone()), Some(metrics_db_path))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to initialize MetricsHub: {}", e))?,
+    ));
+
     // Clone pool_manager for potential cleanup after server exits
     let pool_manager_cleanup = pool_manager.clone();
 
@@ -658,6 +674,7 @@ async fn main() -> Result<()> {
     let gateway_config = server::GatewayConfig {
         pool_manager,
         metrics,
+        metrics_hub: Some(metrics_hub.clone()),
         auto_tls: Arc::new(auto_tls::get_auto_tls().clone()),
         auth: server::AuthConfig::default(),
     };

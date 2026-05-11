@@ -18,7 +18,7 @@ use bastion_domain::shared::DomainError;
 use bastion_domain::template::ArtifactCatalog;
 use bastion_infrastructure::catalog::toml_advice_parser::{AdviceConfigStore, AdviceRegistry};
 use bastion_infrastructure::enrichment::{BastionEnrichmentAdapter, EnrichmentConfig};
-use bastion_infrastructure::metrics::GatewayMetrics;
+use bastion_infrastructure::metrics::{GatewayMetrics, MetricsHub};
 use bastion_infrastructure::pool::SandboxPoolManager;
 use bastion_infrastructure::template::{CapabilityRegistry, FsArtifactStore};
 
@@ -76,6 +76,11 @@ pub struct GatewayConfig {
     pub pool_manager: Option<Arc<SandboxPoolManager>>,
     /// Gateway metrics collector
     pub metrics: GatewayMetrics,
+    /// MetricsHub for historical metrics and heartbeat data (Phase 4)
+    /// Wrapped in Arc<tokio::sync::Mutex<>> because tokio::sync::Mutex is Sync
+    /// (guards are Send) even when T is !Sync. This lets us hold the lock
+    /// across .await points in tool handlers.
+    pub metrics_hub: Option<Arc<tokio::sync::Mutex<MetricsHub>>>,
     /// AutoTLS manager for mTLS
     #[allow(dead_code)]
     pub auto_tls: Arc<crate::auto_tls::AutoTls>,
@@ -89,6 +94,7 @@ impl Default for GatewayConfig {
         Self {
             pool_manager: None,
             metrics: GatewayMetrics::default(),
+            metrics_hub: None,
             auto_tls: Arc::new(crate::auto_tls::get_auto_tls().clone()),
             auth: AuthConfig::default(),
         }
@@ -213,7 +219,7 @@ impl BastionGateway {
     pub fn new(
         provider: Arc<dyn SandboxProvider>,
         providers: std::collections::HashMap<String, Arc<dyn SandboxProvider>>,
-    repository: Arc<dyn SandboxRepository>,
+        repository: Arc<dyn SandboxRepository>,
         secret_resolver: Arc<dyn SecretResolver>,
         gateway_config: GatewayConfig,
         capability_registry: CapabilityRegistry,
@@ -361,6 +367,6 @@ pub use sandbox_tools::{
     SandboxWriteParams,
 };
 
-/// Combine catalog_tools, doctor_tools, advice_tools, enrichment_tools, and sandbox_tools routers into a single ServerHandler impl.
-#[tool_handler(router = (crate::catalog_tools::catalog_tools() + crate::doctor_tools::doctor_tools() + crate::advice_tools::advice_tools() + crate::enrichment_tools::enrichment_tools() + crate::server::sandbox_tools::sandbox_tools()))]
+/// Combine catalog_tools, doctor_tools, advice_tools, enrichment_tools, orientation_tools, metrics_tools, and sandbox_tools routers into a single ServerHandler impl.
+#[tool_handler(router = (crate::catalog_tools::catalog_tools() + crate::doctor_tools::doctor_tools() + crate::advice_tools::advice_tools() + crate::enrichment_tools::enrichment_tools() + crate::orientation_tools::orientation_tools() + crate::metrics_tools::metrics_tools() + crate::server::sandbox_tools::sandbox_tools()))]
 impl ServerHandler for BastionGateway {}

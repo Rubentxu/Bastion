@@ -1,7 +1,14 @@
-//! Gateway metrics collection.
+//! Gateway metrics collection, MetricsHub aggregation, and heartbeat bridge.
+
+pub mod heartbeat_bridge;
+pub mod hub;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+// Re-export key types for convenience
+pub use heartbeat_bridge::{HeartbeatBridge, SystemResources, WorkerResources};
+pub use hub::{MetricRecord, MetricsHub, MetricsHubError, SandboxResources, SetConfigResult};
 
 /// Gateway metrics.
 ///
