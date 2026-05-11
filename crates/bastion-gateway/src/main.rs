@@ -56,8 +56,6 @@ mod registry;
 mod sandbox;
 mod server;
 
-use metrics_tools_types::*;
-use orientation_tools_types::*;
 use registry::{RegistryService, WorkerRegistryServer};
 use tonic::codec::CompressionEncoding;
 

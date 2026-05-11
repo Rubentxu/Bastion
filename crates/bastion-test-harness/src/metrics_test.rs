@@ -12,9 +12,9 @@ mod latency_tests {
     #[test]
     fn record_test_writes_row() {
         // GIVEN an in-memory metrics collector
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("metrics test: failed to create temp dir");
         let db_path = temp_dir.path().join("test.db");
-        let metrics = MetricsCollector::new(&db_path).unwrap();
+        let metrics = MetricsCollector::new(&db_path).expect("metrics test: failed to create metrics collector");
 
         // WHEN we record a test run
         metrics.record_test(
@@ -28,14 +28,14 @@ mod latency_tests {
         // THEN: record was written (check via raw query) and insufficient samples error
         // (per spec MC-004, latency_stats requires ≥3 runs)
         use rusqlite::Connection;
-        let conn = Connection::open(&db_path).unwrap();
+        let conn = Connection::open(&db_path).expect("metrics test: failed to open database");
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM test_runs WHERE test_name = 'pool_init'",
                 [],
                 |row| row.get(0),
             )
-            .unwrap();
+            .expect("metrics test: failed to query database");
         assert_eq!(count, 1, "Should have exactly 1 row written for pool_init");
 
         // But latency_stats requires ≥3 samples (per spec MC-004)
@@ -49,9 +49,9 @@ mod latency_tests {
     #[test]
     fn latency_stats_p50_p95_p99() {
         // GIVEN a collector with 5 runs: durations [100, 200, 300, 400, 500]ms
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("metrics test: failed to create temp dir");
         let db_path = temp_dir.path().join("test.db");
-        let metrics = MetricsCollector::new(&db_path).unwrap();
+        let metrics = MetricsCollector::new(&db_path).expect("metrics test: failed to create metrics collector");
 
         for duration in [100_u64, 200, 300, 400, 500] {
             metrics.record_test(
@@ -64,7 +64,7 @@ mod latency_tests {
         }
 
         // WHEN we query latency stats
-        let stats = metrics.latency_stats("pool_latency_test").unwrap();
+        let stats = metrics.latency_stats("pool_latency_test").expect("metrics test: failed to get latency stats");
 
         // THEN percentiles match expected values
         assert_eq!(stats.p50_ms, 300, "p50 should be median (300)");
@@ -76,9 +76,9 @@ mod latency_tests {
     #[test]
     fn latency_stats_insufficient_samples() {
         // GIVEN a collector with only 2 runs (less than minimum 3)
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("metrics test: failed to create temp dir");
         let db_path = temp_dir.path().join("test.db");
-        let metrics = MetricsCollector::new(&db_path).unwrap();
+        let metrics = MetricsCollector::new(&db_path).expect("metrics test: failed to create metrics collector");
 
         metrics.record_test(
             "not_enough",
@@ -110,9 +110,9 @@ mod latency_tests {
     #[test]
     fn flakiness_score_calculation() {
         // GIVEN a collector with 10 runs: 7 pass, 3 fail
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("metrics test: failed to create temp dir");
         let db_path = temp_dir.path().join("test.db");
-        let metrics = MetricsCollector::new(&db_path).unwrap();
+        let metrics = MetricsCollector::new(&db_path).expect("metrics test: failed to create metrics collector");
 
         for _ in 0..7 {
             metrics.record_test(
@@ -134,7 +134,7 @@ mod latency_tests {
         }
 
         // WHEN we query flakiness score
-        let score = metrics.flakiness_score("e2e_lifecycle").unwrap();
+        let score = metrics.flakiness_score("e2e_lifecycle").expect("metrics test: failed to get flakiness score");
 
         // THEN score is 0.3 (3 failed / 10 total)
         assert!(
@@ -147,12 +147,12 @@ mod latency_tests {
     #[test]
     fn flakiness_score_zero_runs() {
         // GIVEN no recorded runs for a test
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("metrics test: failed to create temp dir");
         let db_path = temp_dir.path().join("test.db");
-        let metrics = MetricsCollector::new(&db_path).unwrap();
+        let metrics = MetricsCollector::new(&db_path).expect("metrics test: failed to create metrics collector");
 
         // WHEN we query flakiness for non-existent test
-        let score = metrics.flakiness_score("nonexistent_test").unwrap();
+        let score = metrics.flakiness_score("nonexistent_test").expect("metrics test: failed to get flakiness score");
 
         // THEN flakiness is 0.0
         assert!(
@@ -164,9 +164,9 @@ mod latency_tests {
     #[test]
     fn flakiness_score_all_fail() {
         // GIVEN 5 runs, all fail
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().expect("metrics test: failed to create temp dir");
         let db_path = temp_dir.path().join("test.db");
-        let metrics = MetricsCollector::new(&db_path).unwrap();
+        let metrics = MetricsCollector::new(&db_path).expect("metrics test: failed to create metrics collector");
 
         for _ in 0..5 {
             metrics.record_test(
@@ -179,7 +179,7 @@ mod latency_tests {
         }
 
         // WHEN we query flakiness score
-        let score = metrics.flakiness_score("flaky_always").unwrap();
+        let score = metrics.flakiness_score("flaky_always").expect("metrics test: failed to get flakiness score");
 
         // THEN score is 1.0
         assert!(
@@ -191,14 +191,14 @@ mod latency_tests {
     #[test]
     fn regression_detect_finds_regression() {
         // GIVEN baseline db with P95=200ms and current db with P95=500ms
-        let baseline_dir = tempfile::tempdir().unwrap();
-        let current_dir = tempfile::tempdir().unwrap();
+        let baseline_dir = tempfile::tempdir().expect("metrics test: failed to create temp dir");
+        let current_dir = tempfile::tempdir().expect("metrics test: failed to create temp dir");
 
         let baseline_db = baseline_dir.path().join("baseline.db");
         let current_db = current_dir.path().join("current.db");
 
-        let baseline_metrics = MetricsCollector::new(&baseline_db).unwrap();
-        let current_metrics = MetricsCollector::new(&current_db).unwrap();
+        let baseline_metrics = MetricsCollector::new(&baseline_db).expect("metrics test: failed to create baseline metrics collector");
+        let current_metrics = MetricsCollector::new(&current_db).expect("metrics test: failed to create current metrics collector");
 
         // Baseline: [100, 150, 200, 250, 300] ms -> P95 ≈ 300
         for duration in [100_u64, 150, 200, 250, 300] {
@@ -223,7 +223,7 @@ mod latency_tests {
         }
 
         // WHEN we run regression detection with 20% threshold
-        let regressions = MetricsCollector::regression_detect(&baseline_db, &current_db).unwrap();
+        let regressions = MetricsCollector::regression_detect(&baseline_db, &current_db).expect("metrics test: failed to detect regressions");
 
         // THEN pool_latency is flagged
         assert!(
@@ -238,12 +238,12 @@ mod latency_tests {
     #[test]
     fn regression_detect_no_regression() {
         // GIVEN two identical databases
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("metrics test: failed to create temp dir");
         let db1_path = dir.path().join("db1.db");
         let db2_path = dir.path().join("db2.db");
 
-        let metrics1 = MetricsCollector::new(&db1_path).unwrap();
-        let metrics2 = MetricsCollector::new(&db2_path).unwrap();
+        let metrics1 = MetricsCollector::new(&db1_path).expect("metrics test: failed to create metrics collector for db1");
+        let metrics2 = MetricsCollector::new(&db2_path).expect("metrics test: failed to create metrics collector for db2");
 
         for duration in [100_u64, 200, 300, 400, 500] {
             metrics1.record_test(
@@ -263,7 +263,7 @@ mod latency_tests {
         }
 
         // WHEN we run regression detection
-        let regressions = MetricsCollector::regression_detect(&db1_path, &db2_path).unwrap();
+        let regressions = MetricsCollector::regression_detect(&db1_path, &db2_path).expect("metrics test: failed to detect regressions");
 
         // THEN no regressions found
         assert!(

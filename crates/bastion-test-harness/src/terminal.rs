@@ -42,9 +42,9 @@ impl GatewayConfig {
     pub fn gateway() -> Self {
         let binary = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .unwrap()
+            .expect("terminal: CARGO_MANIFEST_DIR should have parent")
             .parent()
-            .unwrap()
+            .expect("terminal: CARGO_MANIFEST_DIR should have grandparent")
             .join("target/debug/bastion-gateway");
 
         Self {
@@ -106,7 +106,7 @@ impl GatewayHandle {
             "params": params,
         });
 
-        let mut line = serde_json::to_string(&request).unwrap();
+        let mut line = serde_json::to_string(&request).expect("terminal: failed to serialize JSON-RPC request");
         line.push('\n');
         self.stdin.write_all(line.as_bytes())?;
         self.stdin.flush()?;
@@ -266,7 +266,7 @@ impl TestTerminal {
         cmd.arg("--image").arg("debian:bookworm-slim");
 
         // Set up the worker binary path
-        let worker_binary = config.binary_path.parent().unwrap().join("bastion-worker");
+        let worker_binary = config.binary_path.parent().expect("terminal: binary path should have parent").join("bastion-worker");
         if worker_binary.exists() {
             cmd.arg("--worker-binary").arg(&worker_binary);
         }
@@ -290,15 +290,15 @@ impl TestTerminal {
             .stderr(Stdio::null())
             .spawn()?;
 
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
+        let stdin = child.stdin.take().expect("terminal: child process stdin should be available");
+        let stdout = child.stdout.take().expect("terminal: child process stdout should be available");
 
         Ok(GatewayHandle {
             child,
             stdin,
             stdout: BufReader::new(stdout),
             port,
-            _temp_dir: tempfile::tempdir().expect("Failed to create temp dir for handle"),
+            _temp_dir: tempfile::tempdir().expect("terminal: failed to create temp dir for handle"),
         })
     }
 
@@ -307,9 +307,9 @@ impl TestTerminal {
     pub fn spawn_worker(&mut self, port: u16) -> std::io::Result<GatewayHandle> {
         let worker_binary = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .unwrap()
+            .expect("terminal: CARGO_MANIFEST_DIR should have parent")
             .parent()
-            .unwrap()
+            .expect("terminal: CARGO_MANIFEST_DIR should have grandparent")
             .join("target/debug/bastion-worker");
 
         let mut cmd = Command::new(&worker_binary);
@@ -321,15 +321,15 @@ impl TestTerminal {
             .stderr(Stdio::null())
             .spawn()?;
 
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
+        let stdin = child.stdin.take().expect("terminal: child process stdin should be available");
+        let stdout = child.stdout.take().expect("terminal: child process stdout should be available");
 
         Ok(GatewayHandle {
             child,
             stdin,
             stdout: BufReader::new(stdout),
             port,
-            _temp_dir: tempfile::tempdir().expect("Failed to create temp dir for handle"),
+            _temp_dir: tempfile::tempdir().expect("terminal: failed to create temp dir for handle"),
         })
     }
 

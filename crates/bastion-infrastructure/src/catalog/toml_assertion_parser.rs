@@ -196,7 +196,7 @@ impl AssertionRegistry {
                     );
                     self.assertions
                         .write()
-                        .unwrap()
+                        .expect("assertion registry: lock poisoned")
                         .insert(assertion.id.clone(), assertion);
                     loaded += 1;
                 }
@@ -219,22 +219,22 @@ impl AssertionRegistry {
 
     /// Get an assertion by ID.
     pub fn get(&self, id: &str) -> Option<AssertionDescriptor> {
-        self.assertions.read().unwrap().get(id).cloned()
+        self.assertions.read().expect("assertion registry: lock poisoned").get(id).cloned()
     }
 
     /// List all loaded assertion IDs.
     pub fn list(&self) -> Vec<AssertionDescriptor> {
-        self.assertions.read().unwrap().values().cloned().collect()
+        self.assertions.read().expect("assertion registry: lock poisoned").values().cloned().collect()
     }
 
     /// Number of loaded assertions.
     pub fn len(&self) -> usize {
-        self.assertions.read().unwrap().len()
+        self.assertions.read().expect("assertion registry: lock poisoned").len()
     }
 
     /// Check if registry is empty.
     pub fn is_empty(&self) -> bool {
-        self.assertions.read().unwrap().is_empty()
+        self.assertions.read().expect("assertion registry: lock poisoned").is_empty()
     }
 }
 

@@ -209,7 +209,7 @@ impl PerClientRateLimiter {
             .or_insert_with(|| Mutex::new(RateLimiter::new(self.max_tokens, self.refill_rate)))
             .value()
             .lock()
-            .unwrap()
+            .expect("rate limiter: lock poisoned")
             .try_consume()
     }
 }

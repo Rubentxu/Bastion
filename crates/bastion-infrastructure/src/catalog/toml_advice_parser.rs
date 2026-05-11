@@ -268,7 +268,7 @@ impl AdviceRegistry {
                     // Check for duplicates — last wins with a warning
                     {
                         let existing = {
-                            let advice = self.advice.read().unwrap();
+                            let advice = self.advice.read().expect("advice registry: lock poisoned");
                             advice.contains_key(&advice_id)
                         };
                         if existing {
@@ -281,11 +281,11 @@ impl AdviceRegistry {
                     }
 
                     {
-                        let mut advice = self.advice.write().unwrap();
+                        let mut advice = self.advice.write().expect("advice registry: lock poisoned");
                         advice.insert(advice_id.clone(), adv);
                     }
                     {
-                        let mut sources = self.sources.write().unwrap();
+                        let mut sources = self.sources.write().expect("advice registry: lock poisoned");
                         sources.insert(advice_id, source);
                     }
                     loaded += 1;
@@ -310,27 +310,27 @@ impl AdviceRegistry {
 
     /// Get an advice descriptor by ID.
     pub fn get(&self, id: &str) -> Option<AdviceDescriptor> {
-        self.advice.read().unwrap().get(id).cloned()
+        self.advice.read().expect("advice registry: lock poisoned").get(id).cloned()
     }
 
     /// List all loaded advice descriptors.
     pub fn list(&self) -> Vec<AdviceDescriptor> {
-        self.advice.read().unwrap().values().cloned().collect()
+        self.advice.read().expect("advice registry: lock poisoned").values().cloned().collect()
     }
 
     /// Get the TOML source for an advice descriptor.
     pub fn get_source(&self, id: &str) -> Option<String> {
-        self.sources.read().unwrap().get(id).cloned()
+        self.sources.read().expect("advice registry: lock poisoned").get(id).cloned()
     }
 
     /// Number of loaded advice items.
     pub fn len(&self) -> usize {
-        self.advice.read().unwrap().len()
+        self.advice.read().expect("advice registry: lock poisoned").len()
     }
 
     /// Check if registry is empty.
     pub fn is_empty(&self) -> bool {
-        self.advice.read().unwrap().is_empty()
+        self.advice.read().expect("advice registry: lock poisoned").is_empty()
     }
 }
 
@@ -402,12 +402,12 @@ impl AdviceConfigStore {
 
     /// Get a snapshot of the current config.
     pub fn get_config(&self) -> AdviceConfig {
-        self.config.read().unwrap().clone()
+        self.config.read().expect("advice config: lock poisoned").clone()
     }
 
     /// Set global enabled flag.
     pub fn set_global_enabled(&self, enabled: bool) -> Result<AdviceConfig, AdviceParserError> {
-        let mut cfg = self.config.write().unwrap();
+        let mut cfg = self.config.write().expect("advice config: lock poisoned");
         cfg.enabled = enabled;
         self.save_config(&cfg)?;
         Ok(cfg.clone())
@@ -415,7 +415,7 @@ impl AdviceConfigStore {
 
     /// Disable a specific advice ID.
     pub fn disable_advice(&self, id: &str) -> Result<AdviceConfig, AdviceParserError> {
-        let mut cfg = self.config.write().unwrap();
+        let mut cfg = self.config.write().expect("advice config: lock poisoned");
         if !cfg.disabled.contains(&id.to_string()) {
             cfg.disabled.push(id.to_string());
         }
@@ -425,7 +425,7 @@ impl AdviceConfigStore {
 
     /// Enable a specific advice ID (remove from disabled list).
     pub fn enable_advice(&self, id: &str) -> Result<AdviceConfig, AdviceParserError> {
-        let mut cfg = self.config.write().unwrap();
+        let mut cfg = self.config.write().expect("advice config: lock poisoned");
         cfg.disabled.retain(|d| d != id);
         self.save_config(&cfg)?;
         Ok(cfg.clone())
@@ -433,7 +433,7 @@ impl AdviceConfigStore {
 
     /// Clear all disabled advice IDs.
     pub fn clear_disabled(&self) -> Result<AdviceConfig, AdviceParserError> {
-        let mut cfg = self.config.write().unwrap();
+        let mut cfg = self.config.write().expect("advice config: lock poisoned");
         cfg.disabled.clear();
         self.save_config(&cfg)?;
         Ok(cfg.clone())

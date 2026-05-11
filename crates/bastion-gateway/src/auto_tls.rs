@@ -51,7 +51,7 @@ pub async fn init_or_load(base_dir: PathBuf) -> Result<&'static AutoTls> {
     AUTO_TLS
         .get_or_try_init(|| async { AutoTls::init_or_load(&base_dir).await })
         .await?;
-    Ok(AUTO_TLS.get().unwrap())
+    Ok(AUTO_TLS.get().expect("AutoTls not initialized"))
 }
 
 impl AutoTls {

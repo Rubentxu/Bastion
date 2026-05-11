@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 /// Parameters for `sandbox_metrics_history`.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
 pub struct MetricsHistoryParams {
     /// ISO 8601 timestamp to get metrics since (e.g. "2024-01-01T00:00:00Z").
     pub since: String,

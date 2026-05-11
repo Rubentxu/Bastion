@@ -155,7 +155,7 @@ impl FactPipeline {
 
     /// Build cached extractors lazily from the compiled cache.
     fn build_cached_extractors(&self) {
-        let mut guard = self.cached_extractors.lock().unwrap();
+        let mut guard = self.cached_extractors.lock().expect("pipeline cache: lock poisoned");
         if guard.is_some() {
             return;
         }
@@ -287,7 +287,7 @@ impl FactPipeline {
 
         // Collect cached instances first, then drop the lock before awaiting
         let cached_instances: Vec<ExtractorInstance> = {
-            let cached = self.cached_extractors.lock().unwrap();
+            let cached = self.cached_extractors.lock().expect("pipeline cache: lock poisoned");
             if let Some(ref cached_extractors) = *cached {
                 if let Some(instances) = cached_extractors.get(&enricher.id) {
                     let result: Vec<ExtractorInstance> = instances.to_vec();

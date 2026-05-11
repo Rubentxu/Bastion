@@ -56,7 +56,7 @@ impl ValidatedPattern {
     /// Create a new ValidatedPattern for a glob extractor (with dummy regex).
     pub fn new_glob(extractor_id: &str, pattern: &str, fact_key: &str, merge_mode: &str) -> Self {
         // Use a dummy regex that matches everything - glob extractors don't use it
-        let dummy_regex = Regex::new(".").unwrap();
+        let dummy_regex = Regex::new(".").expect("regex: known valid pattern");
         Self {
             regex: Arc::new(dummy_regex),
             pattern_str: pattern.to_string(),

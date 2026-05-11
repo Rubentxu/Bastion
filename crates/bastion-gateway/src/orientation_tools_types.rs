@@ -25,6 +25,7 @@ pub struct TemplateSuggestParams {
 
 /// Parameters for `sandbox_capacity_check`.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
 pub struct CapacityCheckParams {
     /// Number of sandboxes to check capacity for.
     pub count: u32,

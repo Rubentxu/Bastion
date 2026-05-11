@@ -177,11 +177,11 @@ impl DoctorRegistry {
                         "Loaded doctor"
                     );
                     {
-                        let mut doctors = self.doctors.write().unwrap();
+                        let mut doctors = self.doctors.write().expect("doctor registry: lock poisoned");
                         doctors.insert(doctor_id.clone(), doctor);
                     }
                     {
-                        let mut sources = self.sources.write().unwrap();
+                        let mut sources = self.sources.write().expect("doctor registry: lock poisoned");
                         sources.insert(doctor_id, source);
                     }
                     loaded += 1;
@@ -206,27 +206,27 @@ impl DoctorRegistry {
 
     /// Get a doctor by ID.
     pub fn get(&self, id: &str) -> Option<DoctorDescriptor> {
-        self.doctors.read().unwrap().get(id).cloned()
+        self.doctors.read().expect("doctor registry: lock poisoned").get(id).cloned()
     }
 
     /// List all loaded doctors.
     pub fn list(&self) -> Vec<DoctorDescriptor> {
-        self.doctors.read().unwrap().values().cloned().collect()
+        self.doctors.read().expect("doctor registry: lock poisoned").values().cloned().collect()
     }
 
     /// Get the TOML source for a doctor (for doctor_explain).
     pub fn get_source(&self, id: &str) -> Option<String> {
-        self.sources.read().unwrap().get(id).cloned()
+        self.sources.read().expect("doctor registry: lock poisoned").get(id).cloned()
     }
 
     /// Number of loaded doctors.
     pub fn len(&self) -> usize {
-        self.doctors.read().unwrap().len()
+        self.doctors.read().expect("doctor registry: lock poisoned").len()
     }
 
     /// Check if registry is empty.
     pub fn is_empty(&self) -> bool {
-        self.doctors.read().unwrap().is_empty()
+        self.doctors.read().expect("doctor registry: lock poisoned").is_empty()
     }
 }
 

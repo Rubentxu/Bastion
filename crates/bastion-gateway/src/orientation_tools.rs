@@ -14,8 +14,6 @@
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
-use schemars::JsonSchema;
-use serde::Deserialize;
 
 use bastion_domain::orientation::TemplateRecommender;
 
