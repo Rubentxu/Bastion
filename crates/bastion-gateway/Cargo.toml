@@ -46,6 +46,7 @@ time = "0.3"
 hex = "0.4"
 base64 = { workspace = true }
 rustls = { version = "0.23", features = ["ring"] }
+rand = "0.8"
 
 # ── HTTP transport ─────────────────────────────────────────────
 hyper = { version = "1", features = ["http1"] }
@@ -56,7 +57,6 @@ tower-service = "0.3"
 tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
-rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 tempfile = "3"
 bastion-test-harness = { path = "../bastion-test-harness", features = ["test-metrics"] }

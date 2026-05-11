@@ -386,43 +386,65 @@ impl BastionGateway {
     async fn sandbox_set_config(&self, Parameters(params): Parameters<SetConfigParams>) -> String {
         let updates = params.updates;
 
-        // Phase 4: Will delegate to MetricsHub for actual config persistence
-        // For now, return a placeholder response
-
         let mut applied = Vec::new();
         let mut failed = Vec::new();
-        let mut has_auth_failure = false;
+        let mut requires_restart = false;
+        let mut restart_hint: Option<String> = None;
 
-        if let Some(obj) = updates.as_object() {
-            for (key, value) in obj {
-                // Check for restricted keys
-                let restricted = key.starts_with("auth.hmac_enabled")
-                    || key.starts_with("auth.jwt_enabled")
-                    || key.starts_with("auth.pre_shared_key_enabled")
-                    || key.starts_with("gateway.port");
+        // Delegate to MetricsHub if available
+        if let Some(ref metrics_hub_arc) = self.gateway_config.metrics_hub {
+            let hub = metrics_hub_arc.lock().await;
 
-                if restricted {
-                    failed.push(key.clone());
-                    if key.starts_with("auth.") {
-                        has_auth_failure = true;
+            if let Some(obj) = updates.as_object() {
+                for (key, value) in obj {
+                    let new_value = value.to_string();
+                    let result = hub
+                        .set_config(key, None, new_value, "sandbox_set_config")
+                        .await;
+
+                    match result {
+                        Ok(set_result) => {
+                            if set_result.applied {
+                                applied.push(key.clone());
+                                if set_result.requires_restart {
+                                    requires_restart = true;
+                                    if restart_hint.is_none() {
+                                        restart_hint = set_result.restart_hint;
+                                    }
+                                }
+                            } else {
+                                failed.push(key.clone());
+                                if restart_hint.is_none() {
+                                    restart_hint = set_result.restart_hint;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // MetricsHub error — treat as failed
+                            failed.push(key.clone());
+                        }
                     }
-                } else {
-                    applied.push(key.clone());
                 }
+            } else {
+                failed.push("updates".to_string());
             }
         } else {
-            failed.push("updates".to_string());
+            // No MetricsHub available — all updates fail
+            if let Some(obj) = updates.as_object() {
+                for (key, _value) in obj {
+                    failed.push(key.clone());
+                }
+            } else {
+                failed.push("updates".to_string());
+            }
+            restart_hint = Some("MetricsHub not available".to_string());
         }
 
         let response = SetConfigResponse {
             applied,
             failed,
-            requires_restart: false,
-            restart_hint: if has_auth_failure {
-                Some("Auth changes require gateway restart to take effect".to_string())
-            } else {
-                None
-            },
+            requires_restart,
+            restart_hint,
         };
 
         serde_json::to_string(&response).unwrap_or_else(|e| {

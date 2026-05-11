@@ -28,7 +28,11 @@ impl std::fmt::Display for MetricsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MetricsError::InsufficientSamples { have, need } => {
-                write!(f, "Insufficient samples: have {}, need at least {}", have, need)
+                write!(
+                    f,
+                    "Insufficient samples: have {}, need at least {}",
+                    have, need
+                )
             }
             MetricsError::Database(s) => write!(f, "Database error: {}", s),
             MetricsError::RegressionDetect(s) => write!(f, "Regression detection error: {}", s),
@@ -99,7 +103,9 @@ impl MetricsCollector {
 
     /// Returns an error for noop collector.
     pub fn latency_stats(&self, _test_name: &str) -> Result<LatencyStats, MetricsError> {
-        Err(MetricsError::Database("MetricsCollector is disabled".to_string()))
+        Err(MetricsError::Database(
+            "MetricsCollector is disabled".to_string(),
+        ))
     }
 
     /// Returns 0.0 for noop collector.

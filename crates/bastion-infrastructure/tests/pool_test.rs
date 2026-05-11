@@ -40,19 +40,22 @@ use bastion_test_harness::{MetricsCollector, TestTerminal};
 #[cfg(feature = "test-metrics")]
 fn make_metrics_collector(test_name: &str) -> MetricsCollector {
     let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join(format!("{}.db", test_name.replace("::", "_")));
+    let db_path = temp_dir
+        .path()
+        .join(format!("{}.db", test_name.replace("::", "_")));
     MetricsCollector::new(&db_path).expect("Failed to create metrics collector")
 }
 
 /// Records a test result via metrics collector (no-op when feature disabled).
 #[cfg(feature = "test-metrics")]
-fn record_test(
-    metrics: &MetricsCollector,
-    test_name: &str,
-    duration: Duration,
-    status: &str,
-) {
-    metrics.record_test(test_name, duration.as_millis() as u64, status, "bastion-infrastructure", "tests/pool_test.rs");
+fn record_test(metrics: &MetricsCollector, test_name: &str, duration: Duration, status: &str) {
+    metrics.record_test(
+        test_name,
+        duration.as_millis() as u64,
+        status,
+        "bastion-infrastructure",
+        "tests/pool_test.rs",
+    );
 }
 
 /// Mock provider that tracks sandbox creation and can be controlled per-test.
@@ -321,7 +324,12 @@ async fn test_pool_initialization() {
     manager.stop().await.expect("Pool should stop cleanly");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&metrics, "test_pool_initialization", start.elapsed(), "pass");
+    record_test(
+        &metrics,
+        "test_pool_initialization",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[tokio::test]
@@ -380,7 +388,12 @@ async fn test_pool_grow_on_demand() {
     manager.stop().await.expect("Pool should stop cleanly");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&metrics, "test_pool_grow_on_demand", start.elapsed(), "pass");
+    record_test(
+        &metrics,
+        "test_pool_grow_on_demand",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[tokio::test]
@@ -425,7 +438,12 @@ async fn test_pool_shrink_to_min() {
     manager.stop().await.expect("Pool should stop cleanly");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_pool_shrink_to_min"), "test_pool_shrink_to_min", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_pool_shrink_to_min"),
+        "test_pool_shrink_to_min",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[tokio::test]
@@ -484,7 +502,12 @@ async fn test_pool_recovery_on_restart() {
     );
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_pool_recovery_on_restart"), "test_pool_recovery_on_restart", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_pool_recovery_on_restart"),
+        "test_pool_recovery_on_restart",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[tokio::test]
@@ -532,7 +555,12 @@ async fn test_pool_max_total_limits_growth() {
     manager.stop().await.expect("Pool should stop cleanly");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_pool_max_total_limits_growth"), "test_pool_max_total_limits_growth", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_pool_max_total_limits_growth"),
+        "test_pool_max_total_limits_growth",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[tokio::test]
@@ -583,7 +611,12 @@ async fn test_pool_cleanup_on_shutdown() {
     assert!(true, "Pool stopped cleanly");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_pool_cleanup_on_shutdown"), "test_pool_cleanup_on_shutdown", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_pool_cleanup_on_shutdown"),
+        "test_pool_cleanup_on_shutdown",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[tokio::test]
@@ -619,7 +652,12 @@ async fn test_pool_skips_unregistered_templates_on_recovery() {
     );
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_pool_skips_unregistered_templates_on_recovery"), "test_pool_skips_unregistered_templates_on_recovery", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_pool_skips_unregistered_templates_on_recovery"),
+        "test_pool_skips_unregistered_templates_on_recovery",
+        start.elapsed(),
+        "pass",
+    );
 }
 
 #[tokio::test]
@@ -652,5 +690,10 @@ async fn test_pool_handles_create_failure_gracefully() {
     manager.stop().await.expect("Pool should stop cleanly");
 
     #[cfg(feature = "test-metrics")]
-    record_test(&make_metrics_collector("test_pool_handles_create_failure_gracefully"), "test_pool_handles_create_failure_gracefully", start.elapsed(), "pass");
+    record_test(
+        &make_metrics_collector("test_pool_handles_create_failure_gracefully"),
+        "test_pool_handles_create_failure_gracefully",
+        start.elapsed(),
+        "pass",
+    );
 }

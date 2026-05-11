@@ -24,13 +24,13 @@ mod metrics;
 #[cfg(feature = "test-metrics")]
 pub use metrics::MetricsCollector;
 #[cfg(not(feature = "test-metrics"))]
-pub use types::{MetricsCollector, LatencyStats, MetricsError, RegressionResult};
+pub use types::{LatencyStats, MetricsCollector, MetricsError, RegressionResult};
 
 // Only expose TestTerminal when test-metrics is enabled (it depends on metrics)
 #[cfg(feature = "test-metrics")]
 mod terminal;
 #[cfg(feature = "test-metrics")]
-pub use terminal::{TestTerminal, GatewayHandle};
+pub use terminal::{GatewayHandle, TestTerminal};
 
 #[cfg(test)]
 mod metrics_test;
@@ -39,5 +39,5 @@ mod metrics_test;
 pub mod prelude {
     pub use crate::MetricsCollector;
     #[cfg(feature = "test-metrics")]
-    pub use crate::{TestTerminal, GatewayHandle};
+    pub use crate::{GatewayHandle, TestTerminal};
 }

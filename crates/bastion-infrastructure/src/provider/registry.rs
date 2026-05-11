@@ -11,11 +11,11 @@ use std::sync::{Arc, RwLock};
 
 use crate::provider::config::ProviderConfig;
 use crate::provider::factory::ProviderFactory;
+#[cfg(feature = "use-segregated-traits")]
+use crate::provider::network::TapBackend;
 use bastion_domain::provider::SandboxProvider;
 #[cfg(feature = "use-segregated-traits")]
 use bastion_domain::provider::rootfs::RootfsManager;
-#[cfg(feature = "use-segregated-traits")]
-use crate::provider::network::TapBackend;
 
 #[cfg(feature = "file-watcher")]
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -166,10 +166,7 @@ impl ProviderRegistry {
             }
             "gvisor" => {
                 let runsc_binary = PathBuf::from("/usr/local/bin/runsc");
-                let image = config
-                    .image
-                    .clone()
-                    .unwrap_or_else(|| "debian".to_string());
+                let image = config.image.clone().unwrap_or_else(|| "debian".to_string());
                 let rootfs_dir = PathBuf::from("/tmp/bastion-gvisor-rootfs");
                 std::fs::create_dir_all(&rootfs_dir).ok();
                 let worker_binary = config
@@ -207,10 +204,7 @@ impl ProviderRegistry {
                     PathBuf::from(sock)
                 } else {
                     // Try common locations
-                    let candidates = [
-                        "/usr/bin/firecracker",
-                        "/usr/local/bin/firecracker",
-                    ];
+                    let candidates = ["/usr/bin/firecracker", "/usr/local/bin/firecracker"];
                     let mut found = None;
                     for c in &candidates {
                         if Path::new(c).exists() {

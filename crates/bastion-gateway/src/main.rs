@@ -417,6 +417,14 @@ async fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("Failed to initialize MetricsHub: {}", e))?,
     ));
 
+    // Wire HeartbeatBridge from MetricsHub to RegistryService for worker resource tracking
+    // This enables per-sandbox CPU/memory monitoring via worker heartbeat data
+    {
+        let hub = metrics_hub.lock().await;
+        let heartbeat_bridge = hub.heartbeat_bridge();
+        grpc_registry.set_heartbeat_bridge(heartbeat_bridge);
+    }
+
     // Clone pool_manager for potential cleanup after server exits
     let pool_manager_cleanup = pool_manager.clone();
 

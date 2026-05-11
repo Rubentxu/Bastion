@@ -130,11 +130,7 @@ impl GatewayHandle {
     }
 
     /// Wait for a pattern to appear in stdout, with timeout.
-    pub fn wait_for_output(
-        &mut self,
-        pattern: &str,
-        timeout: Duration,
-    ) -> Result<(), WaitError> {
+    pub fn wait_for_output(&mut self, pattern: &str, timeout: Duration) -> Result<(), WaitError> {
         let deadline = std::time::Instant::now() + timeout;
         let mut buf = String::new();
 
@@ -222,7 +218,11 @@ impl std::fmt::Display for WaitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WaitError::Timeout { pattern, elapsed } => {
-                write!(f, "Timeout waiting for pattern '{}' after {:?}", pattern, elapsed)
+                write!(
+                    f,
+                    "Timeout waiting for pattern '{}' after {:?}",
+                    pattern, elapsed
+                )
             }
             WaitError::Eof => write!(f, "EOF reached while reading stdout"),
             WaitError::HealthCheckTimeout(d) => {
@@ -266,11 +266,7 @@ impl TestTerminal {
         cmd.arg("--image").arg("debian:bookworm-slim");
 
         // Set up the worker binary path
-        let worker_binary = config
-            .binary_path
-            .parent()
-            .unwrap()
-            .join("bastion-worker");
+        let worker_binary = config.binary_path.parent().unwrap().join("bastion-worker");
         if worker_binary.exists() {
             cmd.arg("--worker-binary").arg(&worker_binary);
         }

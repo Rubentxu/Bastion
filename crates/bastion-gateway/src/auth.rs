@@ -111,15 +111,10 @@ fn generate_hmac_key() -> String {
 }
 
 fn rand_bytes() -> [u8; 32] {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
+    // Use cryptographically secure random bytes for nonce generation
+    use rand::RngCore;
     let mut bytes = [0u8; 32];
-    for (i, b) in bytes.iter_mut().enumerate() {
-        *b = ((ts.wrapping_mul((i as u64) + 1)) >> (i % 8)) as u8;
-    }
+    rand::thread_rng().fill_bytes(&mut bytes);
     bytes
 }
 

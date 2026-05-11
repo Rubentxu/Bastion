@@ -28,6 +28,7 @@ use bastion_domain::shared::DomainError;
 use crate::sandbox::v2::worker_registry_server::WorkerRegistry;
 use crate::sandbox::v2::*;
 use crate::server::AuthConfig;
+use bastion_infrastructure::metrics::{HeartbeatBridge, WorkerResources};
 
 type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
@@ -203,6 +204,11 @@ pub struct RegistryService {
     auto_tls: Arc<crate::auto_tls::AutoTls>,
     /// Authentication config (pre-shared key settings)
     auth_config: AuthConfig,
+    /// Heartbeat bridge for per-sandbox resource usage tracking.
+    /// Uses RwLock for interior mutability since RegistryService is Clone and may be
+    /// used behind Arc. Set via set_heartbeat_bridge() after MetricsHub initialization.
+    heartbeat_bridge:
+        Arc<std::sync::RwLock<Option<Arc<HeartbeatBridge>>>>,
 }
 
 impl RegistryService {
@@ -220,6 +226,60 @@ impl RegistryService {
             jwt_manager,
             auto_tls,
             auth_config,
+            heartbeat_bridge: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    /// Set the heartbeat bridge for per-sandbox resource tracking.
+    /// This is called after MetricsHub is initialized in main.rs.
+    pub fn set_heartbeat_bridge(self: &Arc<Self>, heartbeat_bridge: Arc<bastion_infrastructure::metrics::HeartbeatBridge>) {
+        if let Ok(mut guard) = self.heartbeat_bridge.write() {
+            *guard = Some(heartbeat_bridge);
+        }
+    }
+
+    /// Update heartbeat bridge with worker resource data from a PongResponse.
+    fn update_heartbeat_bridge(&self, sandbox_id: &str, health: &HealthReport) {
+        let guard = match self.heartbeat_bridge.read() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let Some(ref bridge) = *guard else {
+            return;
+        };
+
+        // Convert bytes to MB for memory fields
+        let mem_used_mb = health.memory_used_bytes as f64 / (1024.0 * 1024.0);
+        let mem_limit_mb = health.memory_total_bytes as f64 / (1024.0 * 1024.0);
+
+        // Note: HealthReport only has disk_free_bytes, not disk_total_bytes.
+        // We can't compute disk_used_mb accurately, so set it to 0.
+        // TODO: Extend the worker protocol to report disk_total_bytes so we can
+        // compute disk_used_mb = disk_total - disk_free.
+        let disk_used_mb = 0.0;
+
+        let resources = WorkerResources {
+            sandbox_id: sandbox_id.to_string(),
+            cpu_percent: health.cpu_usage_percent,
+            mem_used_mb,
+            mem_limit_mb,
+            disk_used_mb,
+            loadavg_1m: health.load_average_1m,
+            uptime_seconds: health.uptime_seconds as u64,
+            last_heartbeat_epoch: chrono::Utc::now().timestamp(),
+        };
+
+        bridge.update_resources(resources);
+    }
+
+    /// Remove a sandbox's resource data from the heartbeat bridge.
+    fn remove_heartbeat_bridge(&self, sandbox_id: &str) {
+        let guard = match self.heartbeat_bridge.read() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if let Some(ref bridge) = *guard {
+            bridge.remove_resources(sandbox_id);
         }
     }
 
@@ -243,6 +303,8 @@ impl RegistryService {
 
                 for id in dead_workers {
                     tracing::warn!(sandbox_id = %id, "Watchdog: removing dead worker");
+                    // Remove from HeartbeatBridge
+                    registry.remove_heartbeat_bridge(&id);
                     registry.workers.remove(&id);
                 }
             }
@@ -971,7 +1033,10 @@ impl WorkerRegistry for RegistryService {
         self.register_worker(ready_sandbox_id.clone(), handle);
 
         // Spawn task to handle worker messages - route to pending_multi
+        // and update HeartbeatBridge when PongResponse with HealthReport arrives
         let pending_multi = self.pending_multi.clone();
+        let registry_for_hb = self.clone();
+        let ready_sandbox_id_clone = ready_sandbox_id.clone();
         tokio::spawn(async move {
             while let Some(msg_result) = in_stream.next().await {
                 match msg_result {
@@ -980,7 +1045,17 @@ impl WorkerRegistry for RegistryService {
                         if !msg.command_id.is_empty()
                             && let Some(sender) = pending_multi.get(&msg.command_id)
                         {
-                            let _ = sender.send(Ok(msg)).await;
+                            let _ = sender.send(Ok(msg.clone())).await;
+                        }
+
+                        // Update HeartbeatBridge if this is a PongResponse with HealthReport
+                        if let Some(worker_message::Payload::Pong(pong)) = &msg.payload {
+                            if let Some(ref health) = pong.health {
+                                registry_for_hb.update_heartbeat_bridge(
+                                    &ready_sandbox_id_clone,
+                                    health,
+                                );
+                            }
                         }
                     }
                     Err(e) => {
@@ -989,6 +1064,8 @@ impl WorkerRegistry for RegistryService {
                     }
                 }
             }
+            // Remove sandbox from HeartbeatBridge when worker stream ends
+            registry_for_hb.remove_heartbeat_bridge(&ready_sandbox_id_clone);
             tracing::info!("Worker stream ended");
         });
 

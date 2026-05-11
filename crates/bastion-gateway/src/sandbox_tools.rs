@@ -52,10 +52,10 @@ use serde::Deserialize;
 
 use bastion_application::execution::{RunCommandStreamUseCase, RunCommandUseCase};
 use bastion_application::file_ops::{ListFilesUseCase, ReadFileUseCase, WriteFileUseCase};
-use bastion_application::template::MaterializationStrategyResolver;
 use bastion_application::sandbox::{
     CreateSandboxUseCase, GetSandboxInfoUseCase, ListSandboxesUseCase, TerminateSandboxUseCase,
 };
+use bastion_application::template::MaterializationStrategyResolver;
 use bastion_domain::catalog::experience::ExperienceRecord;
 use bastion_domain::execution::command::CommandSpec;
 use bastion_domain::execution::stream::ChunkType;
@@ -67,7 +67,7 @@ use bastion_domain::template::{
     ArtifactCatalog, CapabilityDescriptor, MaterializationMode, ProviderKind, ProviderMaterializer,
     TemplateArtifact, ToolDescriptor, ToolResolver, ToolchainRequest, ToolchainStrategy,
 };
-use bastion_infrastructure::metrics::GatewayMetrics;
+use bastion_infrastructure::metrics::{GatewayMetrics, MetricsHub};
 use bastion_infrastructure::pool::SandboxPoolManager;
 use bastion_infrastructure::template::{
     AptAdapter, AsdfAdapter, CapabilityRegistry, FsArtifactStore, PodmanOptimizedMaterializer,
@@ -170,7 +170,9 @@ impl BastionGateway {
     ///
     /// Standard workflow: sandbox_create(template) → sandbox_prepare(sandbox_id, capability) → sandbox_run(sandbox_id, command, env_ref) → sandbox_terminate(sandbox_id).
     /// Returns a sandbox_id you must pass to subsequent tools. The sandbox starts stopped; call sandbox_prepare to install tools before running commands.
-    #[tool(description = "Create a new isolated sandbox environment. Standard flow: create → prepare → run → terminate. Returns sandbox_id for subsequent tools. DO NOT use raw podman/docker exec — use sandbox_run instead.")]
+    #[tool(
+        description = "Create a new isolated sandbox environment. Standard flow: create → prepare → run → terminate. Returns sandbox_id for subsequent tools. DO NOT use raw podman/docker exec — use sandbox_run instead."
+    )]
     async fn sandbox_create(&self, Parameters(params): Parameters<SandboxCreateParams>) -> String {
         // Check rate limit (per-client + global)
         if let Some(rate_limit_error) = self.check_per_client_rate_limit("mcp-client") {
@@ -247,7 +249,9 @@ impl BastionGateway {
     ///
     /// Auto-injects env from sandbox_prepare if env_ref is not explicitly provided. Pass env_ref explicitly in concurrent workflows to avoid race conditions.
     /// DO NOT manually install tools here — use sandbox_prepare with a capability like "jvm-build" or "node-build" instead.
-    #[tool(description = "Execute a command in a sandbox. Auto-injects env from sandbox_prepare via env_ref (pass explicitly in concurrent workflows). DO NOT manually install tools — use sandbox_prepare instead. For asdf-vm commands, use bash -c wrapper: bash -c 'export ASDF_DIR=$HOME/.asdf && . $ASDF_DIR/asdf.sh && <your cmd>'.")]
+    #[tool(
+        description = "Execute a command in a sandbox. Auto-injects env from sandbox_prepare via env_ref (pass explicitly in concurrent workflows). DO NOT manually install tools — use sandbox_prepare instead. For asdf-vm commands, use bash -c wrapper: bash -c 'export ASDF_DIR=$HOME/.asdf && . $ASDF_DIR/asdf.sh && <your cmd>'."
+    )]
     async fn sandbox_run(&self, Parameters(params): Parameters<SandboxRunParams>) -> String {
         // Check rate limit (per-client + global)
         if let Some(rate_limit_error) = self.check_per_client_rate_limit("mcp-client") {
@@ -574,7 +578,9 @@ impl BastionGateway {
     /// Write content to a file inside a sandbox.
     ///
     /// Creates parent directories if they don't exist. Content is base64-encoded in the response for verification.
-    #[tool(description = "Write content to a file inside a sandbox. Creates parent directories if needed.")]
+    #[tool(
+        description = "Write content to a file inside a sandbox. Creates parent directories if needed."
+    )]
     async fn sandbox_write(&self, Parameters(params): Parameters<SandboxWriteParams>) -> String {
         tracing::info!(sandbox_id = %params.sandbox_id, path = %params.path, "Writing file");
 
@@ -599,7 +605,9 @@ impl BastionGateway {
     /// Read a file from a sandbox.
     ///
     /// Returns file content base64-encoded. Use sandbox_list_files to discover paths first.
-    #[tool(description = "Read a file from a sandbox. Returns base64-encoded content. Use sandbox_list_files to discover paths first.")]
+    #[tool(
+        description = "Read a file from a sandbox. Returns base64-encoded content. Use sandbox_list_files to discover paths first."
+    )]
     async fn sandbox_read(&self, Parameters(params): Parameters<SandboxReadParams>) -> String {
         tracing::info!(sandbox_id = %params.sandbox_id, path = %params.path, "Reading file");
 
@@ -624,7 +632,9 @@ impl BastionGateway {
     /// List files in a directory inside a sandbox.
     ///
     /// Returns file paths, sizes, permissions, and whether each entry is a directory.
-    #[tool(description = "List files in a directory inside a sandbox. Returns paths, sizes, permissions, and directory flags.")]
+    #[tool(
+        description = "List files in a directory inside a sandbox. Returns paths, sizes, permissions, and directory flags."
+    )]
     async fn sandbox_list_files(
         &self,
         Parameters(params): Parameters<SandboxListFilesParams>,
@@ -664,7 +674,9 @@ impl BastionGateway {
     /// List available sandbox templates (container images).
     ///
     /// Queries local podman images and includes known defaults (debian:bookworm-slim, ubuntu:22.04, etc.). Use returned image names as the template parameter for sandbox_create.
-    #[tool(description = "List available sandbox templates (container images). Use returned image names as template param for sandbox_create.")]
+    #[tool(
+        description = "List available sandbox templates (container images). Use returned image names as template param for sandbox_create."
+    )]
     async fn sandbox_list_templates(&self) -> String {
         tracing::info!("Listing available templates");
 
@@ -725,7 +737,9 @@ impl BastionGateway {
     /// Terminate and destroy a sandbox.
     ///
     /// Returns sandbox to the pool if pool mode is enabled (reuse), otherwise destroys it. Always call when done to free resources.
-    #[tool(description = "Terminate and destroy a sandbox. Returns to pool if enabled, otherwise destroys. Always call when done to free resources.")]
+    #[tool(
+        description = "Terminate and destroy a sandbox. Returns to pool if enabled, otherwise destroys. Always call when done to free resources."
+    )]
     async fn sandbox_terminate(
         &self,
         Parameters(params): Parameters<SandboxTerminateParams>,
@@ -734,12 +748,26 @@ impl BastionGateway {
 
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
 
+        // Helper to remove sandbox from HeartbeatBridge tracking
+        let remove_from_heartbeat = |metrics_hub: &Option<Arc<tokio::sync::Mutex<MetricsHub>>>, sid: &str| {
+            if let Some(hub) = metrics_hub {
+                let guard = match hub.try_lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let bridge = guard.heartbeat_bridge();
+                bridge.remove_resources(sid);
+            }
+        };
+
         // Try to return to pool first if pool is available
         if let Some(ref pool) = self.gateway_config.pool_manager {
             match pool.checkin(&sandbox_id).await {
                 Ok(()) => {
                     tracing::debug!(sandbox_id = %params.sandbox_id, "Sandbox returned to pool");
                     self.gateway_config.metrics.record_sandbox_terminated();
+                    // Remove from HeartbeatBridge tracking
+                    remove_from_heartbeat(&self.gateway_config.metrics_hub, &params.sandbox_id);
                     return serde_json::json!({
                         "status": "pooled",
                         "sandbox_id": params.sandbox_id
@@ -759,6 +787,8 @@ impl BastionGateway {
         match use_case.execute(&sandbox_id, provider.as_ref()).await {
             Ok(()) => {
                 self.gateway_config.metrics.record_sandbox_terminated();
+                // Remove from HeartbeatBridge tracking
+                remove_from_heartbeat(&self.gateway_config.metrics_hub, &params.sandbox_id);
                 serde_json::json!({"status": "terminated"}).to_string()
             }
             Err(e) => {
@@ -771,7 +801,9 @@ impl BastionGateway {
     /// Cancel a running command in a sandbox.
     ///
     /// Sends SIGTERM, waits grace_period_ms, then SIGKILL. Works on both streaming (sandbox_run_stream) and regular (sandbox_run) commands.
-    #[tool(description = "Cancel a running command in a sandbox. Sends SIGTERM, waits grace_period_ms, then SIGKILL. Works on both streaming and regular sandbox_run commands.")]
+    #[tool(
+        description = "Cancel a running command in a sandbox. Sends SIGTERM, waits grace_period_ms, then SIGKILL. Works on both streaming and regular sandbox_run commands."
+    )]
     async fn sandbox_cancel(&self, Parameters(params): Parameters<SandboxCancelParams>) -> String {
         tracing::info!(sandbox_id = %params.sandbox_id, grace_period_ms = params.grace_period_ms, "Cancelling sandbox command");
 
@@ -822,7 +854,9 @@ impl BastionGateway {
     /// Get information about a sandbox.
     ///
     /// Returns sandbox_id, status, template, created_at, and expires_at. Use to check if a sandbox is still alive before running commands.
-    #[tool(description = "Get information about a sandbox (status, template, created_at, expires_at). Check status before running commands.")]
+    #[tool(
+        description = "Get information about a sandbox (status, template, created_at, expires_at). Check status before running commands."
+    )]
     async fn sandbox_info(&self, Parameters(params): Parameters<SandboxInfoParams>) -> String {
         tracing::info!(sandbox_id = %params.sandbox_id, "Getting sandbox info");
 
@@ -846,7 +880,9 @@ impl BastionGateway {
     /// List all active sandboxes.
     ///
     /// Returns all sandboxes known to the gateway, including pooled sandboxes. Use to discover existing sandboxes before creating new ones.
-    #[tool(description = "List all active sandboxes known to the gateway. Use to discover existing sandboxes before creating new ones.")]
+    #[tool(
+        description = "List all active sandboxes known to the gateway. Use to discover existing sandboxes before creating new ones."
+    )]
     async fn sandbox_list(&self) -> String {
         tracing::info!("Listing active sandboxes");
 
@@ -878,7 +914,9 @@ impl BastionGateway {
     /// Get sandbox pool statistics.
     ///
     /// Returns active/idle/total counts per template. Use to check if pool has capacity before sandbox_create if using pool mode.
-    #[tool(description = "Get sandbox pool statistics (active/idle/total per template). Check capacity before creating sandboxes in pool mode.")]
+    #[tool(
+        description = "Get sandbox pool statistics (active/idle/total per template). Check capacity before creating sandboxes in pool mode."
+    )]
     async fn sandbox_pool_stats(&self) -> String {
         tracing::trace!("Getting pool statistics");
 
@@ -911,7 +949,9 @@ impl BastionGateway {
     /// Check gateway health including provider connectivity and pool status.
     ///
     /// Returns overall healthy/degraded status with component-level checks. Call this before running commands if you suspect infrastructure issues.
-    #[tool(description = "Check gateway health (provider connectivity, pool status). Call before running commands if you suspect infrastructure issues.")]
+    #[tool(
+        description = "Check gateway health (provider connectivity, pool status). Call before running commands if you suspect infrastructure issues."
+    )]
     async fn sandbox_health(&self) -> String {
         let mut checks = Vec::new();
 
@@ -950,7 +990,9 @@ impl BastionGateway {
     /// Get gateway metrics in Prometheus exposition format.
     ///
     /// Includes sandbox_create/runs/terminates counts, command durations, error counts, and pool stats. Parse with any Prometheus scraper.
-    #[tool(description = "Get gateway metrics in Prometheus exposition format. Includes sandbox/command counts, durations, errors, and pool stats.")]
+    #[tool(
+        description = "Get gateway metrics in Prometheus exposition format. Includes sandbox/command counts, durations, errors, and pool stats."
+    )]
     async fn sandbox_metrics(&self) -> String {
         tracing::debug!("Getting metrics");
         self.gateway_config.metrics.prometheus_export()
@@ -959,7 +1001,9 @@ impl BastionGateway {
     /// Register a template artifact that provides a capability.
     ///
     /// Registers a named+versioned artifact with tools that sandbox_prepare can materialize. Tools are comma-separated "name:version" pairs (version optional).
-    #[tool(description = "Register a template artifact with tools for sandbox_prepare to materialize. Provide name:version pairs (version optional).")]
+    #[tool(
+        description = "Register a template artifact with tools for sandbox_prepare to materialize. Provide name:version pairs (version optional)."
+    )]
     async fn sandbox_register_artifact(
         &self,
         Parameters(params): Parameters<RegisterArtifactParams>,
@@ -1007,7 +1051,9 @@ impl BastionGateway {
     /// Installs tools and sets up env for subsequent sandbox_run calls. Returns env_ref + env + path_prefix for auto-injection.
     /// After prepare, sandbox_run auto-injects the env — pass env_ref explicitly in concurrent workflows.
     /// Available capabilities: "jvm-build" (Java 17 + Maven), "node-build" (Node.js 20 + npm).
-    #[tool(description = "Prepare a sandbox with a capability (e.g. jvm-build, node-build). Installs tools, returns env_ref for sandbox_run auto-injection. Available: jvm-build (Java+Maven), node-build (Node.js+npm).")]
+    #[tool(
+        description = "Prepare a sandbox with a capability (e.g. jvm-build, node-build). Installs tools, returns env_ref for sandbox_run auto-injection. Available: jvm-build (Java+Maven), node-build (Node.js+npm)."
+    )]
     async fn sandbox_prepare(
         &self,
         Parameters(params): Parameters<SandboxPrepareParams>,
@@ -1047,11 +1093,8 @@ impl BastionGateway {
 
             // Use MaterializationStrategyResolver for smarter routing
             let catalog = self.artifact_catalog.read().await;
-            let resolution = MaterializationStrategyResolver::resolve(
-                capability,
-                provider_kind,
-                &catalog,
-            );
+            let resolution =
+                MaterializationStrategyResolver::resolve(capability, provider_kind, &catalog);
             drop(catalog);
 
             // Select materializer based on resolution
@@ -1328,7 +1371,9 @@ impl BastionGateway {
     ///
     /// Snapshots preserve sandbox state for fast reuse. create: specify sandbox_id + name. restore: specify snapshot_id. list: no params. delete: specify snapshot_id.
     /// Restored sandboxes register as new sandbox_ids in the gateway.
-    #[tool(description = "Manage sandbox snapshots. Actions: create (sandbox_id+name), restore (snapshot_id), list (no params), delete (snapshot_id). Restored sandboxes get new sandbox_ids.")]
+    #[tool(
+        description = "Manage sandbox snapshots. Actions: create (sandbox_id+name), restore (snapshot_id), list (no params), delete (snapshot_id). Restored sandboxes get new sandbox_ids."
+    )]
     async fn sandbox_snapshot(
         &self,
         Parameters(params): Parameters<SandboxSnapshotParams>,
@@ -1433,7 +1478,9 @@ impl BastionGateway {
     ///
     /// push: copy host source → sandbox target. pull: copy sandbox source → host target. Source and destination paths must exist.
     /// Backend auto-detected (tar for rootless podman, rsync if installed in sandbox, podman-cp as fallback).
-    #[tool(description = "Sync files between host and sandbox. push=host→sandbox, pull=sandbox→host. Paths must exist. Backend auto-detected (tar/podman-cp/rsync).")]
+    #[tool(
+        description = "Sync files between host and sandbox. push=host→sandbox, pull=sandbox→host. Paths must exist. Backend auto-detected (tar/podman-cp/rsync)."
+    )]
     async fn sandbox_sync(&self, Parameters(params): Parameters<SandboxSyncParams>) -> String {
         let sandbox_id = SandboxId::new(params.sandbox_id.clone());
 
@@ -1642,7 +1689,9 @@ impl BastionGateway {
     /// Returns capability names, descriptions, toolchain strategies (apt, asdf, sdkman),
     /// packages installed, and estimated duration. Call this before sandbox_prepare to discover
     /// what you can install. Also lists registered template artifacts from the artifact catalog.
-    #[tool(description = "List all capabilities available for sandbox_prepare. Returns names, descriptions, toolchains (apt/asdf/sdkman), packages, and artifacts. Call this BEFORE sandbox_prepare to discover what you can install.")]
+    #[tool(
+        description = "List all capabilities available for sandbox_prepare. Returns names, descriptions, toolchains (apt/asdf/sdkman), packages, and artifacts. Call this BEFORE sandbox_prepare to discover what you can install."
+    )]
     async fn sandbox_list_capabilities(&self) -> String {
         tracing::info!("Listing available capabilities");
 
@@ -1790,7 +1839,9 @@ impl BastionGateway {
     /// Artifacts are pre-packaged environments that sandbox_prepare can materialize
     /// (e.g., a container image with JDK+Maven already installed). Each artifact
     /// lists the capabilities it provides, the tools included, and verification steps.
-    #[tool(description = "List registered template artifacts for sandbox_prepare materialization. Each artifact shows capabilities, tools, versions, and verification steps. Use sandbox_register_artifact to add new artifacts.")]
+    #[tool(
+        description = "List registered template artifacts for sandbox_prepare materialization. Each artifact shows capabilities, tools, versions, and verification steps. Use sandbox_register_artifact to add new artifacts."
+    )]
     async fn sandbox_list_artifacts(&self) -> String {
         tracing::info!("Listing registered artifacts");
 

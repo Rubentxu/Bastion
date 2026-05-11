@@ -50,7 +50,9 @@ mod active {
         pub fn new(path: impl AsRef<Path>) -> Result<Self, MetricsError> {
             // Canonicalize FIRST, then use the canonical path for everything.
             // This ensures self.db_path matches the path used to open the connection.
-            let canonical = path.as_ref().canonicalize()
+            let canonical = path
+                .as_ref()
+                .canonicalize()
                 .unwrap_or_else(|_| path.as_ref().to_path_buf());
 
             let conn = Connection::open(&canonical)
@@ -130,7 +132,9 @@ mod active {
 
             let timestamp = chrono::Utc::now().to_rfc3339();
 
-            let conn = self.conn.lock()
+            let conn = self
+                .conn
+                .lock()
                 .map_err(|e| MetricsError::Database(format!("Lock poisoned: {}", e)))?;
 
             crate::schema::record_run(
@@ -142,12 +146,15 @@ mod active {
                 duration_ms,
                 status,
                 &build_hash,
-            ).map_err(|e| MetricsError::Database(e.to_string()))
+            )
+            .map_err(|e| MetricsError::Database(e.to_string()))
         }
 
         /// Compute latency statistics (P50, P95, P99) for a test.
         pub fn latency_stats(&self, test_name: &str) -> Result<LatencyStats, MetricsError> {
-            let conn = self.conn.lock()
+            let conn = self
+                .conn
+                .lock()
                 .map_err(|e| MetricsError::Database(format!("Lock poisoned: {}", e)))?;
 
             let mut stmt = conn
@@ -188,11 +195,16 @@ mod active {
 
         /// Compute flakiness score: `failed / total` runs.
         pub fn flakiness_score(&self, test_name: &str) -> Result<f32, MetricsError> {
-            let conn = self.conn.lock()
+            let conn = self
+                .conn
+                .lock()
                 .map_err(|e| MetricsError::Database(format!("Lock poisoned: {}", e)))?;
 
             #[derive(Debug)]
-            struct CountRow { total: i64, failed: i64 }
+            struct CountRow {
+                total: i64,
+                failed: i64,
+            }
 
             let row: CountRow = conn
                 .query_row(
@@ -204,7 +216,12 @@ mod active {
                     WHERE test_name = ?1
                     "#,
                     [test_name],
-                    |row| Ok(CountRow { total: row.get(0)?, failed: row.get(1)? }),
+                    |row| {
+                        Ok(CountRow {
+                            total: row.get(0)?,
+                            failed: row.get(1)?,
+                        })
+                    },
                 )
                 .map_err(|e| MetricsError::Database(e.to_string()))?;
 
@@ -221,10 +238,12 @@ mod active {
             baseline_db: impl AsRef<Path>,
             current_db: impl AsRef<Path>,
         ) -> Result<Vec<RegressionResult>, MetricsError> {
-            let baseline_conn = rusqlite::Connection::open(baseline_db.as_ref())
-                .map_err(|e| MetricsError::RegressionDetect(format!("Cannot open baseline: {}", e)))?;
-            let current_conn = rusqlite::Connection::open(current_db.as_ref())
-                .map_err(|e| MetricsError::RegressionDetect(format!("Cannot open current: {}", e)))?;
+            let baseline_conn = rusqlite::Connection::open(baseline_db.as_ref()).map_err(|e| {
+                MetricsError::RegressionDetect(format!("Cannot open baseline: {}", e))
+            })?;
+            let current_conn = rusqlite::Connection::open(current_db.as_ref()).map_err(|e| {
+                MetricsError::RegressionDetect(format!("Cannot open current: {}", e))
+            })?;
 
             let test_names: Vec<String> = {
                 let mut stmt = baseline_conn
@@ -332,7 +351,9 @@ mod noop {
         /// Returns an error for noop collector.
         #[allow(dead_code)]
         pub fn latency_stats(&self, _test_name: &str) -> Result<LatencyStats, MetricsError> {
-            Err(MetricsError::Database("MetricsCollector is disabled".to_string()))
+            Err(MetricsError::Database(
+                "MetricsCollector is disabled".to_string(),
+            ))
         }
 
         /// Returns 0.0 for noop collector.

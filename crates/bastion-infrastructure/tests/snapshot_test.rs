@@ -117,10 +117,7 @@ async fn test_snapshot_create_and_restore() {
 
     // Cleanup
     provider.terminate(&restored_id).await.ok();
-    provider
-        .delete_snapshot(&snapshot.snapshot_id)
-        .await
-        .ok();
+    provider.delete_snapshot(&snapshot.snapshot_id).await.ok();
 
     eprintln!("Snapshot cycle test PASSED");
 }
