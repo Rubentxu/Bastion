@@ -106,7 +106,7 @@ jobs:
         run: cargo test --test podman_lifecycle -- --test-threads=1
 
       - name: Run gateway E2E tests
-        run: cargo test -p bastion-gateway --test e2e_test
+        run: cargo test -p bastion-gateway --test e2e_test -- --test-threads=1
 
       - name: Run worker E2E tests
         run: cargo test --test e2e_worker_v2 -- --test-threads=1

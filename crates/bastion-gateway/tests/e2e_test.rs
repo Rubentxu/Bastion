@@ -32,9 +32,9 @@ fn record_test(metrics: &MetricsCollector, name: &str, elapsed: Duration, status
     metrics.record_test(name, elapsed, status).ok();
 }
 
-/// Spawn the gateway and return stdin/stdout handles.
+/// Spawn the gateway in test mode (uses NullProvider, no real infrastructure).
 fn spawn_gateway() -> (std::process::Child, impl Write, impl BufRead) {
-    spawn_gateway_with_args(&[])
+    spawn_gateway_with_args(&["--test-mode"])
 }
 
 /// Spawn the gateway with additional CLI arguments and return stdin/stdout handles.
@@ -142,14 +142,16 @@ fn send_notification(stdin: &mut impl Write, method: &str, params: Value) {
 fn test_gateway_e2e_lifecycle() {
     let start = Instant::now();
 
-    // Requires Podman daemon running
+    // NOTE: This test requires Podman for full lifecycle testing.
+    // With --test-mode (NullProvider), sandbox_create will fail.
+    // Run this test with real Podman for complete coverage.
     let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
     if !socket.exists() {
         eprintln!("Skipping: Podman socket not found at {:?}", socket);
         return;
     }
 
-    let (mut child, mut stdin, mut reader) = spawn_gateway();
+    let (mut child, mut stdin, mut reader) = spawn_gateway_with_args(&[]); // No --test-mode, need real Podman
 
     // Small delay for gateway startup
     std::thread::sleep(Duration::from_millis(500));
@@ -332,6 +334,7 @@ fn test_gateway_e2e_lifecycle() {
 #[test]
 fn test_gateway_health_only() {
     let start = Instant::now();
+    // Health check doesn't need Podman - works with NullProvider
     let (mut child, mut stdin, mut reader) = spawn_gateway();
     std::thread::sleep(Duration::from_millis(500));
 
@@ -534,14 +537,14 @@ fn run_command(
 #[test]
 fn test_gateway_pool_lifecycle() {
     let start = Instant::now();
-    // Requires Podman daemon running
+    // Requires Podman daemon running for real pool operations
     let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
     if !socket.exists() {
         eprintln!("Skipping: Podman socket not found at {:?}", socket);
         return;
     }
 
-    let (mut child, mut stdin, mut reader) = spawn_gateway_pool();
+    let (mut child, mut stdin, mut reader) = spawn_gateway_pool(); // No --test-mode, pool needs real Podman
     init_gateway(&mut child, &mut stdin, &mut reader);
 
     // 1. Create a sandbox (should indicate from_pool: false since pool starts empty)
@@ -661,14 +664,14 @@ fn test_gateway_pool_lifecycle() {
 #[test]
 fn test_gateway_list_and_info() {
     let start = Instant::now();
-    // Requires Podman daemon running
+    // Requires Podman for real sandbox operations
     let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
     if !socket.exists() {
         eprintln!("Skipping: Podman socket not found at {:?}", socket);
         return;
     }
 
-    let (mut child, mut stdin, mut reader) = spawn_gateway();
+    let (mut child, mut stdin, mut reader) = spawn_gateway_with_args(&[]); // No --test-mode, need real Podman
     init_gateway(&mut child, &mut stdin, &mut reader);
 
     // 1. Create two sandboxes
@@ -764,7 +767,7 @@ fn test_gateway_list_and_info() {
 #[test]
 fn test_gateway_pool_recovery() {
     let start = Instant::now();
-    // Requires Podman daemon running
+    // Requires Podman daemon running for real pool recovery
     let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
     if !socket.exists() {
         eprintln!("Skipping: Podman socket not found at {:?}", socket);
@@ -894,13 +897,7 @@ fn test_gateway_pool_recovery() {
 #[test]
 fn test_gateway_error_handling() {
     let start = Instant::now();
-    // Requires Podman daemon running
-    let socket = std::path::Path::new("/run/user/1000/podman/podman.sock");
-    if !socket.exists() {
-        eprintln!("Skipping: Podman socket not found at {:?}", socket);
-        return;
-    }
-
+    // Error handling tests work with NullProvider - it returns errors for all sandbox ops
     let (mut child, mut stdin, mut reader) = spawn_gateway();
     init_gateway(&mut child, &mut stdin, &mut reader);
 

@@ -141,6 +141,11 @@ struct Args {
     /// Run retention cleanup on enrichment database at startup (deletes old rows based on retention policy)
     #[arg(long, default_value_t = false)]
     enrichment_retention_cleanup: bool,
+
+    /// Test mode: skip slow initialization (no Podman, no pool, no TOML loading, in-memory DB).
+    /// Useful for e2e tests that only need MCP protocol testing without real infrastructure.
+    #[arg(long, default_value_t = false)]
+    test_mode: bool,
 }
 
 /// Run HTTP transport server using StreamableHttpService
@@ -282,51 +287,61 @@ async fn main() -> Result<()> {
 
     // Create PodmanProvider WITHOUT doing network I/O yet (ping is deferred).
     // This is fast — no socket connection involved.
-    let podman_result = PodmanProvider::new(
-        &args.socket,
-        &args.image,
-        PathBuf::from(&args.worker_binary),
-    );
+    let podman: Arc<dyn SandboxProvider> = if args.test_mode {
+        // In test mode, skip Podman entirely — use NullProvider directly
+        tracing::warn!("TEST MODE: using NullProvider (no real sandbox operations)");
+        Arc::new(NullProvider::new("test mode".to_string())) as Arc<dyn SandboxProvider>
+    } else {
+        let podman_result = PodmanProvider::new(
+            &args.socket,
+            &args.image,
+            PathBuf::from(&args.worker_binary),
+        );
+        match podman_result {
+            Ok(mut p) => {
+                p.set_command_router(grpc_registry.clone() as Arc<dyn CommandRouter>);
 
-    // Build the provider — ping is fast (~500ms) and we want it ready before serve.
-    // Pool start is the slow one (deferred below).
-    let podman: Arc<dyn SandboxProvider> = match podman_result {
-        Ok(mut p) => {
-            p.set_command_router(grpc_registry.clone() as Arc<dyn CommandRouter>);
-
-            // Quick ping to verify Podman is reachable
-            match p.ping().await {
-                Ok(pong) => tracing::info!(pong = %pong, "Connected to Podman"),
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to ping Podman, containers may not be reachable")
+                // Quick ping to verify Podman is reachable
+                match p.ping().await {
+                    Ok(pong) => tracing::info!(pong = %pong, "Connected to Podman"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to ping Podman, containers may not be reachable")
+                    }
                 }
+                tracing::info!("Podman provider initialized");
+                Arc::new(p)
             }
-            tracing::info!("Podman provider initialized");
-            Arc::new(p)
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                socket = %args.socket,
-                "Podman not available — sandbox operations will fail."
-            );
-            Arc::new(NullProvider::new(e.to_string())) as Arc<dyn SandboxProvider>
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    socket = %args.socket,
+                    "Podman not available — sandbox operations will fail."
+                );
+                Arc::new(NullProvider::new(e.to_string())) as Arc<dyn SandboxProvider>
+            }
         }
     };
     registry.register("podman", podman.clone());
 
     // Sync repository with provider state BEFORE wrapping in Arc (sync_from_provider needs concrete type)
-    if let Err(e) = sqlite_repo.sync_from_provider(podman.as_ref()).await {
-        tracing::warn!(error = %e, "Failed to sync sandboxes from provider — continuing anyway");
-    } else {
-        tracing::info!("Sandbox repository synced with provider");
+    // Skip in test mode — NullProvider returns no sandboxes
+    if !args.test_mode {
+        if let Err(e) = sqlite_repo.sync_from_provider(podman.as_ref()).await {
+            tracing::warn!(error = %e, "Failed to sync sandboxes from provider — continuing anyway");
+        } else {
+            tracing::info!("Sandbox repository synced with provider");
+        }
     }
 
     // Wrap sqlite_repo as Arc<dyn SandboxRepository> for gateway use
     let repository: Arc<dyn SandboxRepository> = Arc::new(sqlite_repo);
 
     // Optionally create pool manager — pool fill is deferred to background
-    let pool_manager: Option<Arc<SandboxPoolManager>> = if args.pool_enabled {
+    // In test mode, skip pool entirely (NullProvider doesn't support pool operations)
+    let pool_manager: Option<Arc<SandboxPoolManager>> = if args.test_mode {
+        tracing::warn!("TEST MODE: pool disabled");
+        None
+    } else if args.pool_enabled {
         let pool_config = PoolConfig {
             min_idle: args.pool_min_idle,
             max_idle: args.pool_max_idle,
