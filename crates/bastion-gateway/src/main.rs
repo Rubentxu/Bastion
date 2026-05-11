@@ -2,6 +2,10 @@
 //!
 //! Entry point for the sandbox gateway MCP server.
 
+// TODO: Migrate all SandboxProvider usages to SandboxLifecycle + TaskExecutor.
+// Tracked as a phased migration; suppress deprecation warnings until complete.
+#![allow(deprecated)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
