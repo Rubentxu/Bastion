@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+default = ["use-segregated-traits"]
 use-segregated-traits = []
 
 [dependencies]

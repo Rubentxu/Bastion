@@ -14,8 +14,6 @@ use crate::provider::factory::ProviderFactory;
 #[cfg(feature = "use-segregated-traits")]
 use crate::provider::network::TapBackend;
 use bastion_domain::provider::SandboxProvider;
-#[cfg(feature = "use-segregated-traits")]
-use bastion_domain::provider::rootfs::RootfsManager;
 
 #[cfg(feature = "file-watcher")]
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};

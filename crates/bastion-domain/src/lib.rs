@@ -2,10 +2,6 @@
 //!
 //! Core domain layer containing entities, value objects, repository interfaces (ports),
 //! and domain events for the Bastion sandbox gateway.
-
-// SandboxProvider trait is intentionally deprecated in favor of SandboxLifecycle + TaskExecutor.
-// The trait definition itself emits the deprecation warning; suppress at crate root.
-#![allow(deprecated)]
 //!
 //! ## Architecture
 //! This crate has ZERO external infrastructure dependencies. It defines the

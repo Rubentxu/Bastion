@@ -27,8 +27,6 @@ use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::SandboxProvider;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
-#[cfg(feature = "use-segregated-traits")]
-use bastion_domain::provider::state_machine::SandboxStateMachine;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};

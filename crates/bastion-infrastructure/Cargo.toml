@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["use-segregated-traits"]
 file-watcher = ["notify"]
 wasm-sandbox = ["dep:wasmtime", "dep:wasmtime-wasi"]
 use-segregated-traits = ["bastion-domain/use-segregated-traits"]

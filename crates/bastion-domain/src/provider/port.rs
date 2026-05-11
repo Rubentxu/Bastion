@@ -26,10 +26,11 @@ pub type CommandStream = Pin<Box<dyn Stream<Item = Result<CommandChunk, DomainEr
 ///
 /// This trait follows Interface Segregation by splitting concerns into logical groups,
 /// while keeping a unified interface for simplicity in the MVP.
-#[deprecated(
-    since = "0.5.0",
-    note = "Use SandboxLifecycle + TaskExecutor instead. See provider/compat.rs for migration."
-)]
+///
+/// When the `use-segregated-traits` feature is enabled (default), providers implement
+/// `SandboxLifecycle + TaskExecutor` and receive a blanket `SandboxProvider` impl via
+/// `provider/compat.rs`. This trait remains the canonical port interface for dependency
+/// injection and dynamic dispatch.
 #[async_trait]
 pub trait SandboxProvider: Send + Sync + std::fmt::Debug {
     // ── Lifecycle ──────────────────────────────────────────────

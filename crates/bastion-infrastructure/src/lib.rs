@@ -2,10 +2,6 @@
 //!
 //! Infrastructure adapters that implement domain ports (driven adapters).
 
-// TODO: Migrate all SandboxProvider usages to SandboxLifecycle + TaskExecutor.
-// Tracked as a phased migration; suppress deprecation warnings until complete.
-#![allow(deprecated)]
-
 pub mod catalog;
 pub mod config;
 pub mod enrichment;
