@@ -1,1230 +1,1105 @@
-# Bastion Dashboard — Propuesta de Arquitectura Web
+# Bastion Dashboard — Propuesta de Arquitectura v2 (Project-Centric)
 
 > **Fecha**: 2026-05-12
-> **Estado**: Investigación completada, propuesta inicial
+> **Estado**: Propuesta revisada con enfoque project-centric
 > **Tipo**: Documento de arquitectura y diseño técnico
+> **Revisión**: v2 — Integra feedback de enfoque por proyectos con `.bastion/`
 
 ---
 
 ## Resumen Ejecutivo
 
-Este documento presenta una propuesta para construir un **dashboard web completo** para Bastion, inspirado en las mejores prácticas de Docker Desktop, Portainer, Lens y Okteto, pero implementado con tecnologías Rust nativas: **Leptos** (frontend WASM) y **Tailwind CSS 4.x** (estilos).
+Bastion no es Portainer. **Bastion orquesta sandboxes para proyectos de software** — PoCs, testing e2e, test reales, jobs, pipelines — todo asociado a un proyecto con su repositorio Git y su directorio `.bastion/`.
 
-El dashboard propuesto no es solo una interfaz de visualización — es un **centro de control completo** para la orquestación de sandboxes AI, con características de observabilidad, gestión de recursos, lifecycle automation y extensibilidad declarativa.
+El dashboard propuesto es **project-centric**: el proyecto es la unidad fundamental, no el sandbox. Cada proyecto tiene:
 
----
+- Un **repositorio Git local**
+- Un **directorio `.bastion/`** con configuración, BBDD, métricas, catálogos
+- **Sandboxes** asociados al proyecto para testing, PoCs, pipelines
+- **Pipelines** declarativos que ejecutan stages en sandboxes aislados
 
-## 1. Investigación de Tecnologías de Referencia
-
-### 1.1 Portainer
-
-**Tipo**: Dashboard web multi-orquestador
-**Tech Stack**: Go (backend) + AngularJS/React (frontend)
-
-#### Arquitectura
-- **Server**: Servicio central con API REST, autenticación, persistencia y proxy
-- **Agent**: Agente ligero desplegado en nodos gestionados
-- **Edge Agent**: Agente que invierte conectividad (outbound TLS hacia server)
-- Persistencia centralizada; agentes stateless
-
-#### Features Clave
-- Gestión de Docker, Swarm, Kubernetes y Azure Container Instances
-- UI para contenedores, imágenes, volúmenes, redes, stacks
-- RBAC avanzado (Business Edition)
-- Edge management para nodos remotos
-- Soporte air-gapped
-
-#### Patrones UI/UX
-- Navegación por "environments" como unidad primaria
-- Tablas densas con acciones por recurso
-- Formularios guiados para despliegue
-- Separación de roles: usuario estándar, operador, administrador
-
-#### Comunicación API
-- API HTTP central → reverse proxy hacia Docker/Kubernetes APIs
-- Edge Agent usa túnel TLS outbound (evita abrir puertos)
-
-#### Lección Clave
-> El patrón **Edge Agent con conectividad invertida** es esencial para entornos restrictionados. El agente inicia conexión outbound hacia el server, eliminando necesidad de inbound ports.
+**Stack tecnológico**: Leptos 0.7+ (WASM) + Tailwind CSS 4.x (Oxide engine) + Axum (backend)
 
 ---
 
-### 1.2 Docker Desktop
+## 1. Modelo Fundamental: Project-Centric
 
-**Tipo**: Aplicación desktop multiplataforma
-**Tech Stack**: Electron + Go/React (componentes internos)
+### 1.1 El Proyecto como Ciudadano de Primera Clase
 
-#### Arquitectura
-- VM Linux aislada con Docker Engine
-- Contexto Docker dedicado (`desktop-linux`)
-- Socket per-user (`~/.docker/desktop/docker.sock`)
-- Kubernetes local opcional (cluster interno)
-- Extensions SDK para third-party add-ons
-
-#### Features Clave
-- Dashboard con navegación por dominios (containers, images, volumes, builds, Kubernetes)
-- Resource controls: CPU, memoria, swap, disco, red
-- Docker Extensions Marketplace
-- Resource Saver: apaga VM cuando está idle
-- Synchronized File Shares para monorepos
-- Enhanced Container Isolation (ECI) con Sysbox
-
-#### Patrones UI/UX
-- Preferencias muy detalladas agrupadas por función
-- Acciones rápidas desde listado: logs, terminal, debug, inspect
-- Estados visibles en footer/tray
-- Marketplace integrado
-
-#### Seguridad (ECI)
-- User namespaces para mapear root contenedor a usuarios no privilegiados
-- Bloqueo de mounts sensibles (`/var/run/docker.sock`)
-- Sysbox intercepta syscalls peligrosos
-
-#### Lección Clave
-> **Resource Saver** y **Enhanced Container Isolation** son features que diferencian un tool profesional de un demo. El aislamiento fuerte y la optimización de recursos son requisitos no funcionales críticos.
-
----
-
-### 1.3 Lens / Mirantis Lens
-
-**Tipo**: IDE Desktop para Kubernetes
-**Tech Stack**: Electron + React + TypeScript
-
-#### Arquitectura
-- Monorepo con 150+ paquetes (Turborepo)
-- UI local que lee `kubeconfig`
-- Proxies internos hacia Kubernetes API
-- Kubernetes Watch API para estado reactivo
-- Lens Extension API para extensibilidad
-
-#### Features Clave
-- Navigator: árbol de clusters y workspaces
-- Hotbar: acceso rápido a clusters favoritos
-- Command Palette: navegación tipo IDE
-- Tab Bar: múltiples vistas por cluster
-- Dock: terminal, logs, editor de templates
-- Terminal integrada con `node-pty`
-- Multi-cluster management
-- Lens Teamwork con RBAC por espacios
-
-#### Patrones UI/UX (los más sofisticados)
-- **IDE-like experience**: Lens se comporta como IDE, no como dashboard administrativo
-- Drill Into: foco en sección/cluster
-- Contextual Tab Filtering: filtra pestañas según contexto
-- Preview vs Fixed tab modes
-- Status bar con estado y soporte
-
-#### Comunicación API
-- Lectura de `kubeconfig` local
-- Watch por recurso y namespace seleccionado
-- Un único watch por recurso (no duplicados)
-- Probado con 20k namespaces, 50k pods
-
-#### Lección Clave
-> El patrón **IDE-like** con Navigator + Tabs + Dock transforma la gestión de infraestructura de "administrative task" a "development workflow". La experiencia de usuario debe sentirse como usar VS Code, no phpMyAdmin.
-
----
-
-### 1.4 Okteto
-
-**Tipo**: Plataforma de desarrollo cloud-native
-**Tech Stack**: Go (CLI) + React (UI) + Kubernetes (runtime)
-
-#### Arquitectura
-- **Open Source**: CLI Go que habla con Kubernetes API
-- **Platform**: Helm chart con API, Frontend, BuildKit, Registry, Webhook
-- NGINX Ingress para routing y auto-wake
-- Validation Webhook para enforcement
-
-#### Features Clave
-- Development Containers en Kubernetes
-- Code sync instantáneo (evita rebuild/redeploy)
-- Preview environments por PR
-- Okteto Test (unit/integration/e2e)
-- Resource Manager: calcula requests recomendados
-- Garbage Collector: escala a cero namespaces inactivos
-- Auto-wake mediante ingress
-- Secrets manager
-- Okteto Insights (métricas)
-
-#### Lifecycle Automation
-```yaml
-# Okteto Manifest - ejemplo
-dev:
-  myapp:
-    image: okteto/golang:1.21
-    command: sleep infinity
-    sync:
-      - .:/app
-    forward:
-      - 8080:8080
-    autovars:
-      - API_URL
+```
+mi-proyecto/
+├── .git/                          # Repositorio Git
+├── .bastion/                      # ← Datos de Bastion (como .git para Git)
+│   ├── config.toml                # Configuración del proyecto
+│   ├── project.toml               # Metadatos del proyecto (nombre, tipo, runtime)
+│   ├── providers/                 # Providers del proyecto
+│   │   └── podman.toml
+│   ├── capabilities/              # Capacidades (node-build, rust-build, etc.)
+│   │   └── rust-build.toml
+│   ├── catalog/                   # Catálogos: doctors, advice, assertions
+│   │   ├── advice/
+│   │   ├── doctors/
+│   │   └── assertions/
+│   ├── pipelines/                 # Pipeline definitions
+│   │   └── ci.toml
+│   ├── templates/                 # Sandbox templates
+│   │   └── rust-ci.toml
+│   ├── db/                        # SQLite databases
+│   │   ├── sandboxes.db           # Sandbox state
+│   │   ├── metrics.db             # MetricsHub data
+│   │   └── enrichment.db         # Experience records
+│   ├── runtime/                   # Runtime state (PID, logs)
+│   │   ├── bastion-gateway.pid
+│   │   └── bastion-gateway.log
+│   ├── advice.toml                # Advice configuration
+│   └── .gitignore                 # Ignore DB files, PID files, logs
+├── src/                           # Project source code
+├── Cargo.toml
+└── README.md
 ```
 
-#### Patrones UI/UX
-- Dashboard de administración (resources, namespaces, previews, GC)
-- Enfoque "one-click environment"
-- CLI + Dashboard como experiencia dual
-- Manifiesto declarativo como configuración
+### 1.2 Anatomía de un Proyecto
 
-#### Lección Clave
-> **Resource Manager + Garbage Collector + Auto-wake** forman un trío de automatización que reduce costos drásticamente. No basta con mostrar métricas — hay que actuar automáticamente sobre ellas.
-
----
-
-### 1.5 Tabla Comparativa
-
-| Plataforma | Arquitectura | UI/UX | API | Extensibilidad | Seguridad |
-|------------|--------------|--------|-----|----------------|-----------|
-| **Portainer** | Server + Agents | Admin console | REST + proxy | Stacks, templates | Auth/RBAC, TLS |
-| **Docker Desktop** | VM + Engine + Extensions | Developer dashboard | CLI/contextos | Extensions SDK | VM isolation, ECI |
-| **Lens** | Electron + Kubeconfig | IDE-like | Watch API | Extension API | K8s RBAC, SSO |
-| **Okteto** | CLI + Platform Helm | Dev platform | REST + K8s API | Manifests, Helm | IdP, secrets |
-
----
-
-## 2. Tecnologías Propuestas
-
-### 2.1 Leptos 0.7+ (Frontend WASM)
-
-**Por qué Leptos**:
-- 100% Rust — mismo lenguaje que el backend
-- WASM compilado — bundle pequeño, rendimiento nativo
-- Signals reactivos — modelo mental simple y predecible
-- Server Functions — llamada a Rust server-side sin ceremony
-- Islands Architecture — interactividad solo donde se necesita
-- SSR + CSR + MPA support
-- Integración natural con Tailwind CSS
-
-**Características 0.7+**:
 ```rust
-// Component con signals reactivos
-#[component]
-fn SandboxList() -> impl IntoView {
-    let (filter, set_filter) = signal("".to_string());
-    let sandboxes = create_resource(filter, fetch_sandboxes);
+/// Un proyecto de Bastion — la unidad fundamental del dashboard
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    /// Unique project identifier
+    pub id: ProjectId,
 
-    view! {
-        <input
-            class="px-4 py-2 border rounded-lg"
-            placeholder="Filter sandboxes..."
-            on:input={move |e| set_filter.set(event_target_value(&e))}
-        />
+    /// Human-readable name
+    pub name: String,
 
-        <Transition>
-            <Match bound={sandboxes}>
-                <Pending>"Loading..."</Pending>
-                <Resolved(sandbox_list)>
-                    <For each={sandbox_list}>
-                        {|sandbox| <SandboxCard sandbox={sandbox} />}
-                    </For>
-                </Resolved>
-                <Errored(e)>"Error: {e}"</Errored>
-            </Match>
-        </Transition>
-    }
+    /// Absolute path to project root (where .bastion/ lives)
+    pub path: PathBuf,
+
+    /// Project type (detected or configured)
+    pub kind: ProjectKind,
+
+    /// Git repository info
+    pub git: GitInfo,
+
+    /// Associated sandboxes (active + recent)
+    pub sandboxes: Vec<SandboxSummary>,
+
+    /// Pipeline definitions
+    pub pipelines: Vec<PipelineDef>,
+
+    /// Pool configuration for this project
+    pub pool_config: PoolConfig,
+
+    /// Resource limits for this project
+    pub resource_limits: ResourceLimits,
+
+    /// Last activity timestamp
+    pub last_active: DateTime<Utc>,
+
+    /// Cost attribution
+    pub cost: CostSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ProjectKind {
+    Rust,
+    NodeJs,
+    Python,
+    Java,
+    Go,
+    Container,
+    Custom(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitInfo {
+    pub branch: String,
+    pub commit: String,
+    pub dirty: bool,
+    pub remote_url: Option<String>,
+    pub stash_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceLimits {
+    pub max_sandboxes: usize,
+    pub max_cpu_per_sandbox: f32,
+    pub max_memory_per_sandbox_mb: usize,
+    pub max_sandbox_lifetime: Duration,
+    pub auto_sleep_timeout: Duration,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostSummary {
+    pub sandbox_hours: f32,
+    pub cpu_hours: f32,
+    pub estimated_cost_usd: f32,
+    pub period: DateRange,
 }
 ```
 
-**Server Functions**:
+### 1.3 Sandbox Pertenece a un Proyecto
+
 ```rust
-#[server]
-async fn fetch_sandbox_metrics(id: SandboxId) -> Result<Metrics, ServerError> {
-    let hub = metrics_hub.read().await;
-    hub.get_metrics(id).await.map_err(|e| ServerError::from(e))
+/// Un sandbox SIEMPRE pertenece a un proyecto
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Sandbox {
+    pub id: SandboxId,
+    pub project_id: ProjectId,         // ← Requerido
+
+    /// Why was this sandbox created?
+    pub purpose: SandboxPurpose,
+
+    /// Which pipeline/job created this? (optional)
+    pub pipeline_id: Option<PipelineId>,
+
+    /// Which git commit is this sandbox testing?
+    pub git_commit: Option<String>,
+
+    /// Template used
+    pub template: String,
+
+    /// Runtime type
+    pub runtime: RuntimeType,
+
+    /// Status
+    pub status: SandboxStatus,
+
+    /// Resource usage
+    pub cpu_usage: f32,
+    pub memory_usage_mb: usize,
+    pub disk_usage_mb: usize,
+
+    /// Timing
+    pub created_at: DateTime<Utc>,
+    pub last_active: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+
+    /// Associated test results
+    pub test_results: Vec<TestResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SandboxPurpose {
+    /// Quick ad-hoc testing
+    AdHocTest,
+
+    /// PoC validation
+    ProofOfConcept { description: String },
+
+    /// E2E test run
+    E2eTest { suite: String },
+
+    /// Real test run (unit, integration)
+    RealTest { framework: String },
+
+    /// CI/CD pipeline stage
+    PipelineStage { pipeline: String, stage: String },
+
+    /// Job execution (batch, cron)
+    Job { job_name: String },
 }
 ```
 
-**Integración con Tailwind 4.x**:
-```rust
-// Tailwind funciona directamente en las clases
-view! {
-    <div class="bg-slate-900 text-white rounded-xl p-6 shadow-2xl">
-        <h1 class="text-2xl font-bold text-primary-400">"Bastion Dashboard"</h1>
-    </div>
-}
+### 1.4 Pipeline Asociado a un Proyecto
+
+```toml
+# .bastion/pipelines/ci.toml
+
+[pipeline]
+name = "ci"
+description = "CI pipeline for this project"
+
+[[stages]]
+name = "check"
+template = "rust-ci"
+purpose = "real-test"
+commands = ["cargo check --workspace"]
+on_failure = "stop"
+
+[[stages]]
+name = "test"
+template = "rust-ci"
+purpose = "real-test"
+commands = ["cargo test --workspace"]
+depends_on = ["check"]
+on_failure = "stop"
+
+[[stages]]
+name = "e2e"
+template = "debian-bookworm"
+purpose = "e2e-test"
+commands = ["cargo test -p bastion-gateway --test e2e_test -- --test-threads=1"]
+depends_on = ["test"]
+on_failure = "report"
+
+[[stages]]
+name = "lint"
+template = "rust-ci"
+purpose = "real-test"
+commands = ["cargo clippy --workspace -- -D warnings"]
+depends_on = ["check"]
+parallel_with = ["test"]
+on_failure = "report"
+
+[pipeline.policy]
+max_lifetime = "1h"
+auto_sleep = "15m"
+retry_count = 2
+cleanup_on_success = true
 ```
-
-### 2.2 Tailwind CSS 4.x (Estilos)
-
-**Novedades en 4.x**:
-
-| Aspecto | v3.x | v4.x |
-|---------|------|------|
-| Configuración | `tailwind.config.js` | CSS-first (`@theme`) |
-| Engine | PostCSS + JavaScript | **Rust (Oxide Engine)** |
-| Parser | PostCSS | **Rust custom** |
-| Velocidad build | Medium | **2x+ más rápido** |
-| Dependencias | Muchas (PostCSS, autoprefixer, etc.) | **Solo Lightning CSS** |
-| Tamaño output | Medium | **35% menor** |
-
-**CSS-first config**:
-```css
-/* main.css */
-@import "tailwindcss";
-
-@theme {
-    --color-primary: oklch(70% 0.15 250);
-    --color-secondary: oklch(60% 0.12 180);
-    --color-surface: oklch(15% 0.03 280);
-    --color-muted: oklch(50% 0.05 280);
-    --radius-lg: 1rem;
-    --radius-xl: 1.5rem;
-
-    --font-sans: "Inter", system-ui, sans-serif;
-    --font-mono: "JetBrains Mono", monospace;
-}
-
-body {
-    background: var(--color-surface);
-    color: white;
-    font-family: var(--font-sans);
-}
-```
-
-**Dark mode mejorado**:
-```css
-@custom-variant dark (&:where(.dark, .dark *));
-
-.button {
-    background: oklch(60% 0.15 250);
-    @dark {
-        background: oklch(70% 0.12 250);
-    }
-}
-```
-
-**Componentes con @apply**:
-```css
-@layer components {
-    .card {
-        @apply bg-white dark:bg-slate-800 rounded-xl p-6 shadow-lg;
-        @apply border border-slate-200 dark:border-slate-700;
-    }
-
-    .btn-primary {
-        @apply bg-primary-600 hover:bg-primary-700 text-white;
-        @apply px-4 py-2 rounded-lg font-medium transition-colors;
-    }
-
-    .stat-card {
-        @apply card flex flex-col gap-2;
-        & .value { @apply text-3xl font-bold text-primary-400; }
-        & .label { @apply text-sm text-muted; }
-    }
-}
-```
-
-**Performance en Leptos**:
-- Trunk (build tool) compila WASM + CSS en paralelo
-- Lightning CSS (Rust) parsea CSS 2x más rápido que PostCSS
-- Hot reload para desarrollo
-- Tree-shaking automático de clases no usadas
 
 ---
 
-## 3. Arquitectura Propuesta para Bastion Dashboard
+## 2. Research de Reference Technologies
+
+*(Resumen ejecutivo — ver sección 1 del documento original para detalle completo)*
+
+| Plataforma | Lección Clave para Bastion |
+|------------|---------------------------|
+| **Portainer** | Edge agent con conectividad invertida (outbound TLS). Agentes stateless, server con estado. |
+| **Docker Desktop** | Resource Saver (idle → sleep → wake). Enhanced Container Isolation. Extensions SDK. |
+| **Lens** | UI tipo IDE: Navigator + Tabs + Dock + Command Palette. Watch API en vez de polling. |
+| **Okteto** | Lifecycle automation: GC, sleep/wake, Resource Manager. Manifiestos declarativos. Dev containers. |
+
+**Lo que diferencia a Bastion**: las 4 plataformas gestionan **infraestructura**. Bastion gestiona **proyectos de software**. El sandbox no es un contenedor genérico — es un ambiente efímero al servicio de un proyecto específico.
+
+---
+
+## 3. Arquitectura Project-Centric
 
 ### 3.1 Arquitectura General
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Bastion Dashboard (Leptos WASM)              │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────────┐│
-│  │ Navigator   │  │   Workspace  │  │       Dock             ││
-│  │ (sidebar)   │  │   (main)     │  │  (terminal/logs/details)││
-│  └─────────────┘  └──────────────┘  └─────────────────────────┘│
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ HTTP/SSE/WebSocket
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Bastion Gateway (Axum)                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────────┐│
-│  │ MCP Tools    │  │ REST API     │  │  SSE Event Stream       ││
-│  │ (existing)   │  │ /api/v1     │  │  /api/v1/events        ││
-│  └──────────────┘  └──────────────┘  └─────────────────────────┘│
-└─────────────────────────────────────────────────────────────────┘
-                              │
-         ┌────────────────────┼────────────────────┐
-         ▼                    ▼                    ▼
-┌─────────────────┐  ┌───────────────┐  ┌─────────────────┐
-│  Podman Worker  │  │ Firecracker   │  │  MetricsHub     │
-│  (sandbox)     │  │ (sandbox)    │  │  (SQLite)       │
-└─────────────────┘  └───────────────┘  └─────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                    Bastion Dashboard (Leptos WASM)                  │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │                     PROJECT NAVIGATOR                         │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐                  │  │
+│  │  │ Project A│  │ Project B│  │ Project C│  [+ New Project]    │  │
+│  │  │ Rust     │  │ Node.js  │  │ Python   │                    │  │
+│  │  │ 3 active │  │ 1 active │  │ 0 active │                    │  │
+│  │  └──────────┘  └──────────┘  └──────────┘                    │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │                     WORKSPACE (Selected Project)               │  │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐   │  │
+│  │  │Sandboxes │ │ Pipelines│ │ Tests    │ │ Metrics      │   │  │
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘   │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │                     DOCK (Terminal/Logs/Details)               │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ REST API + SSE + WebSocket
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                     Bastion Gateway (Axum)                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
+│  │ MCP Tools    │  │ REST API v1  │  │  SSE Event Stream       │  │
+│  │ (existing)  │  │ /api/v1/*    │  │  /api/v1/events          │  │
+│  └──────────────┘  └──────────────┘  └──────────────────────────┘  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │
+│  │ Project Mgr │  │ .bastion/    │  │  MetricsHub (SQLite)     │  │
+│  │ (new)        │  │ config loader│  │  (per-project DB)        │  │
+│  └──────────────┘  └──────────────┘  └──────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
+         │                    │                    │
+    ┌────┘────┐         ┌────┘────┐         ┌─────┘─────┐
+    │ Podman  │         │Firecracker│        │   WASM    │
+    │ Worker  │         │  Worker   │        │  Worker   │
+    └─────────┘         └──────────┘        └───────────┘
 ```
 
-### 3.2 Arquitectura de Componentes
-
-```
-bastion-dashboard/
-├── crate/
-│   ├── bastion-dashboard-core/      # Lógica de UI, components
-│   │   ├── components/
-│   │   │   ├── layout/             # Navigator, Dock, Workspace
-│   │   │   ├── sandbox/            # SandboxCard, SandboxList, SandboxDetail
-│   │   │   ├── metrics/            # Charts, Gauges, Stats
-│   │   │   ├── terminal/           # XTerm integration
-│   │   │   └── common/             # Button, Card, Modal, Table
-│   │   ├── pages/
-│   │   │   ├── dashboard.rs        # Overview page
-│   │   │   ├── sandboxes.rs        # Sandbox list/detail
-│   │   │   ├── pools.rs            # Pool management
-│   │   │   ├── templates.rs        # Template catalog
-│   │   │   ├── settings.rs         # User/Admin settings
-│   │   │   └── docs.rs             # Documentation
-│   │   ├── state/                  # Global state, signals
-│   │   ├── api/                    # Server function clients
-│   │   └── i18n/                   # Internationalization
-│   │
-│   ├── bastion-dashboard-server/   # Axum server, SSR, API
-│   │   ├── handlers/
-│   │   │   ├── api.rs              # REST API v1
-│   │   │   ├── sse.rs              # Server-Sent Events
-│   │   │   └── ws.rs               # WebSocket (optional)
-│   │   ├── auth/                   # JWT, sessions
-│   │   ├── middleware/              # Logging, cors, rate limit
-│   │   └── static/                 # WASM + assets
-│   │
-│   └── bastion-dashboard-cli/       # CLI companion
-│       └── main.rs
-│
-├── frontend/                        # Build output (WASM + CSS)
-├── tailwind.config.js              # Tailwind 4.x config
-└── package.json
-```
-
-### 3.3 Modelo de Datos
+### 3.2 Project Manager — El Nuevo Componente Central
 
 ```rust
-// Entidades core del dashboard
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DashboardState {
-    pub sandboxes: Vec<SandboxSummary>,
-    pub pools: Vec<PoolStatus>,
-    pub metrics: DashboardMetrics,
-    pub templates: Vec<TemplateInfo>,
-    pub user: UserInfo,
+/// ProjectManager: gestiona la relación entre proyectos y sandboxes
+pub struct ProjectManager {
+    /// Active projects in memory
+    projects: DashMap<ProjectId, Project>,
+
+    /// Project → Sandboxes mapping
+    project_sandboxes: DashMap<ProjectId, Vec<SandboxId>>,
+
+    /// .bastion/ config loader
+    config_loader: ConfigLoader,
+
+    /// Git integration
+    git: GitIntegration,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SandboxSummary {
-    pub id: SandboxId,
-    pub name: String,
-    pub status: SandboxStatus,
-    pub runtime: RuntimeType,
-    pub template: String,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub cpu_usage: f32,
-    pub memory_usage: f32,
-}
+impl ProjectManager {
+    /// Open a project from a directory containing .bastion/
+    pub async fn open_project(&self, path: &Path) -> Result<Project> {
+        let bastion_dir = path.join(".bastion");
+        if !bastion_dir.exists() {
+            return Err(ProjectError::NotABastionProject(path.to_path_buf()));
+        }
+        // Load config.toml, project.toml, etc.
+        let config = self.config_loader.load(&bastion_dir).await?;
+        let git_info = self.git.info(path)?;
+        // Discover sandboxes for this project
+        let sandboxes = self.discover_sandboxes(&config).await?;
+        Ok(Project { path: path.into(), git: git_info, .. })
+    }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SandboxStatus {
-    Creating,
-    Starting,
-    Ready,
-    Sleeping,
-    Stopping,
-    Failed { error: String },
-    Terminated,
-}
+    /// Initialize .bastion/ in a directory (like git init)
+    pub async fn init_project(&self, path: &Path, kind: ProjectKind) -> Result<Project> {
+        let bastion_dir = path.join(".bastion");
+        // Create directory structure
+        self.create_bastion_structure(&bastion_dir, kind).await?;
+        // Generate initial config
+        self.write_default_configs(&bastion_dir, kind).await?;
+        // Add .gitignore
+        self.write_gitignore(&bastion_dir).await?;
+        self.open_project(path).await
+    }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PoolStatus {
-    pub name: String,
-    pub runtime: RuntimeType,
-    pub active: usize,
-    pub idle: usize,
-    pub total: usize,
-    pub min_idle: usize,
-    pub max_idle: usize,
-}
+    /// Create a sandbox for a specific project and purpose
+    pub async fn create_sandbox(
+        &self,
+        project_id: &ProjectId,
+        purpose: SandboxPurpose,
+        template: &str,
+    ) -> Result<Sandbox> {
+        let project = self.projects.get(project_id)
+            .ok_or(ProjectError::ProjectNotFound(project_id.clone()))?;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DashboardMetrics {
-    pub sandboxes_created_total: u64,
-    pub sandboxes_active: u64,
-    pub commands_executed_total: u64,
-    pub error_rate: f32,
-    pub avg_command_duration_ms: f64,
+        // Check resource limits
+        self.check_limits(project_id).await?;
+
+        // Create sandbox with project context
+        let sandbox = self.provider.create(
+            template,
+            &project.resource_limits,
+        ).await?;
+
+        // Store association
+        self.project_sandboxes
+            .entry(project_id.clone())
+            .or_default()
+            .push(sandbox.id.clone());
+
+        // Persist to project's .bastion/db/sandboxes.db
+        self.persist_sandbox(project_id, &sandbox).await?;
+
+        Ok(sandbox)
+    }
 }
 ```
+
+### 3.3 `.bastion/` como Contract — Integración con Componentes Existentes
+
+El directorio `.bastion/` ya existe y es funcional. El dashboard lo **lee y escribe** como fuente de verdad:
+
+| Componente Existente | `.bastion/` Path | Dashboard Action |
+|----------------------|-------------------|-----------------|
+| Provider configs | `.bastion/providers/*.toml` | Leer, crear, editar templates |
+| Capabilities | `.bastion/capabilities/*.toml` | Leer, crear nuevas capabilities |
+| Doctors/Advice | `.bastion/catalog/**/*.toml` | Leer, toggle enable/disable |
+| Advice config | `.bastion/advice.toml` | Leer, editar |
+| Runtime state | `.bastion/runtime/` | Leer PID, logs |
+| SQLite DBs | `.bastion/db/*.db` | Consultar métricas, historial |
+| **NUEVO** Pipelines | `.bastion/pipelines/*.toml` | Leer, crear, editar, ejecutar |
+| **NUEVO** Project config | `.bastion/project.toml` | Leer, editar |
+| **NUEVO** Dashboard state | `.bastion/dashboard.json` | Filtros, vistas preferidas |
 
 ---
 
-## 4. Patrones UI/UX Propuestos
+## 4. Layout del Dashboard (Project-Centric)
 
-### 4.1 Layout Principal (Patrón Lens)
+### 4.1 Vista Principal — Project Selector
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ ▸ Bastion    │ Dashboard │ Sandboxes │ Pools │ Templates │ Settings │
-│              │                              [Search...] [User ▾]   │
-├─────────────┬────────────────────────────────────────────────────────┤
-│ NAVIGATOR   │ WORKSPACE                                              │
-│             │                                                        │
-│ ▼ Clusters  │ ┌──────────────────────────────────────────────────┐  │
-│   └ prod    │ │ Metric Cards Row                                   │  │
-│   └ staging │ │ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ │  │
-│             │ │ │ Active  │ │ Created │ │ Errors  │ │ Latency │ │  │
-│ ▼ Sandboxes │ │ │   12    │ │  1,234  │ │   0.2%  │ │  145ms  │ │  │
-│   └ running │ │ └─────────┘ └─────────┘ └─────────┘ └─────────┘ │  │
-│   └ stopped │ └──────────────────────────────────────────────────┘  │
-│             │                                                        │
-│ ▼ Templates │ ┌──────────────────────────────────────────────────┐  │
-│   └ debian  │ │ Sandbox List / Grid                               │  │
-│   └ rust    │ │ ┌──────────────────────────────────────────────┐ │  │
-│             │ │ │ 🔴 sandbox-abc123  │ Running │ 2h │ CPU: 5%   │ │  │
-│ ▼ History   │ │ │ 🟡 sandbox-def456  │ Idle    │ 30m│ CPU: 1%   │ │  │
-│             │ │ │ 🟢 sandbox-ghi789  │ Ready   │ 5m │ CPU: 12%  │ │  │
-│             │ │ └──────────────────────────────────────────────┘ │  │
-│             │ └──────────────────────────────────────────────────┘  │
-├─────────────┴────────────────────────────────────────────────────────┤
-│ DOCK (collapsible)                                                  │
-│ ┌──────────────────────────────────────────────────────────────────┐│
-│ │ [Terminal] [Logs] [Details] [Metrics]                            ││
-│ │ ┌──────────────────────────────────────────────────────────────┐ ││
-│ │ │ $ bastion run --sandbox sandbox-abc123                      │ ││
-│ │ │ > Compiling sandbox-core v0.1.0...                           │ ││
-│ │ │ > Finished dev [unoptimized] in 12.3s                       │ ││
-│ │ └──────────────────────────────────────────────────────────────┘ ││
-│ └──────────────────────────────────────────────────────────────────┘│
+│ ▸ Bastion                                           [+ New Project]│
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  📂 Recent Projects                                            [🔍] │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ 🦀 Bastion                                    3 sandboxes   │   │
+│  │ ~/Proyectos/rust/Bastion                      branch: main  │   │
+│  │ Rust · 2 tests running · 1 pool active · CPU 12%          │   │
+│  │ Last activity: 2 min ago                                    │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ 🐍 DataPipeline                               0 sandboxes   │   │
+│  │ ~/Proyectos/python/datapipeline               branch: dev   │   │
+│  │ Python · idle · no active sandboxes                         │   │
+│  │ Last activity: 3 days ago                                   │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ ☕ PetClinic                                   1 sandbox    │   │
+│  │ ~/Proyectos/java/spring-petclinic              branch: feat  │   │
+│  │ Java · 1 e2e-test running · CPU 45%                         │   │
+│  │ Last activity: 30 sec ago                                    │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ 📋 Quick Actions                                             │   │
+│  │ [New Sandbox] [Run Pipeline] [New Project] [Import Config]   │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  💡 1 sandbox sleeping for >24h in Bastion. Consider terminating? │
+│                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 Componentes Clave
+### 4.2 Vista de Proyecto — Workspace Principal
 
-#### MetricCard
-```rust
-#[component]
-pub fn MetricCard(
-    title: &'static str,
-    value: impl IntoView,
-    trend: Option<f32>,
-    icon: &'static str,
-) -> impl IntoView {
-    view! {
-        <div class="stat-card">
-            <div class="flex items-center justify-between">
-                <span class="text-muted text-sm">{title}</span>
-                <span class="text-2xl">{icon}</span>
-            </div>
-            <div class="value">{value}</div>
-            {match trend {
-                Some(t) if t > 0.0 => view! { <span class="text-green-400">+"{}%"</span> },
-                Some(t) if t < 0.0 => view! { <span class="text-red-400">"{}%"</span> },
-                _ => view! { <span class="text-muted">"-"</span> },
-            }}
-        </div>
-    }
-}
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ ▸ Bastion > 🦀 Bastion                                    [⚙️] [🔔]│
+├──────────────────────────────────────────────────────────────────────┤
+│ OVERVIEW │ SANDBOXES │ PIPELINES │ TESTS │ METRICS │ CONFIG │ DOCS │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────────┐   │
+│  │ Active     │ │ Created    │ │ Failed     │ │ Avg Latency   │   │
+│  │    3       │ │  1,234     │ │   0.2%     │ │   145ms       │   │
+│  │ ▴ 2 from  │ │ today: 42  │ │ ▾ 0.1%     │ │ ▴ -12ms       │   │
+│  │   pool     │ │            │ │            │ │                │   │
+│  └────────────┘ └────────────┘ └────────────┘ └────────────────┘   │
+│                                                                      │
+│  🏗️ Active Sandboxes                                           [+]   │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ 🟢 sb-bast-abc123  │ E2e Test  │ 42m │ CPU 5% │ MEM 120MB │   │
+│  │    rust-ci template · branch:main · commit:a1b2c3           │   │
+│  │    [Terminal] [Logs] [Details] [Sleep] [Terminate]         │   │
+│  ├──────────────────────────────────────────────────────────────┤   │
+│  │ 🟢 sb-bast-def456  │ Pool      │ 2h  │ CPU 1% │ MEM 80MB  │   │
+│  │    debian:bookworm · idle · ready for use                  │   │
+│  │    [Terminal] [Assign] [Details] [Sleep] [Terminate]      │   │
+│  ├──────────────────────────────────────────────────────────────┤   │
+│  │ 🟡 sb-bast-ghi789  │ AdHoc PoC │ 5m  │ CPU 12% │ MEM 200MB │   │
+│  │    rust:latest · testing new tokio patterns                 │   │
+│  │    [Terminal] [Logs] [Details] [Sleep] [Terminate]        │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  📋 Recent Pipelines                                           [▶ ▌]  │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │ CI Pipeline  #1247 · main · a1b2c3                     ✅   │   │
+│  │ ├─ check ── ✅ (12s)                                       │   │
+│  │ ├─ test  ── ✅ (3m 42s)                                    │   │
+│  │ ├─ lint  ── ✅ (28s)   ║ parallel with test               │   │
+│  │ └─ e2e   ── ✅ (1m 12s)                                    │   │
+│  │ Total: 4m 34s · Cost: $0.02                                 │   │
+│  ├──────────────────────────────────────────────────────────────┤   │
+│  │ CI Pipeline  #1246 · main · e4d5f6                     ❌   │   │
+│  │ ├─ check ── ✅ (11s)                                       │   │
+│  │ └─ test  ── ❌ (2m 15s) · 3 tests failed                 │   │
+│  │    sandbox_run: exit code 1                                │   │
+│  │ Total: 2m 26s · [View Logs] [Rerun]                        │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  💡 1 sandbox sleeping for >24h. [Terminate] [Wake] [Ignore]      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-#### SandboxCard
+### 4.3 Componentes Leptos — Project-Centric
+
 ```rust
 #[component]
-pub fn SandboxCard(sandbox: SandboxSummary) -> impl IntoView {
-    let status_color = match sandbox.status {
-        SandboxStatus::Ready => "bg-green-500",
-        SandboxStatus::Running => "bg-green-500",
-        SandboxStatus::Sleeping => "bg-yellow-500",
-        SandboxStatus::Creating | SandboxStatus::Starting => "bg-blue-500 animate-pulse",
-        SandboxStatus::Failed { .. } | SandboxStatus::Stopping => "bg-red-500",
-        SandboxStatus::Terminated => "bg-slate-500",
+pub fn ProjectCard(project: Project) -> impl IntoView {
+    let active_count = project.sandboxes.iter()
+        .filter(|s| matches!(s.status, SandboxStatus::Ready | SandboxStatus::Running))
+        .count();
+
+    let kind_icon = match project.kind {
+        ProjectKind::Rust => "🦀",
+        ProjectKind::NodeJs => "🟢",
+        ProjectKind::Python => "🐍",
+        ProjectKind::Java => "☕",
+        ProjectKind::Go => "🔵",
+        _ => "📦",
     };
 
     view! {
-        <div class="card hover:border-primary-500 transition-colors cursor-pointer">
-            <div class="flex items-center gap-3">
-                <div class=format!("w-3 h-3 rounded-full {}", status_color)></div>
-                <div class="flex-1">
-                    <div class="font-mono text-sm">{sandbox.id.to_string()}</div>
-                    <div class="text-muted text-xs">{sandbox.template}</div>
-                </div>
-                <div class="text-right">
-                    <div class="text-sm">{format_duration(sandbox.created_at)}</div>
-                    <div class="text-xs text-muted">"CPU: {}%"</div>
-                </div>
-            </div>
+        <div class="card hover:border-primary-500 transition-colors cursor-pointer
+                    group relative overflow-hidden">
+            // Subtle gradient on hover
+            <div class="absolute inset-0 bg-gradient-to-r from-primary-500/5 to-transparent
+                        opacity-0 group-hover:opacity-100 transition-opacity"></div>
 
-            <div class="mt-4 flex gap-2">
-                <button class="btn-primary flex-1">"Terminal"</button>
-                <button class="btn-secondary flex-1">"Logs"</button>
-                <button class="btn-secondary">"⋮"</button>
+            <div class="relative">
+                <div class="flex items-center gap-3">
+                    <span class="text-2xl">{kind_icon}</span>
+                    <div class="flex-1 min-w-0">
+                        <h3 class="font-semibold text-white truncate">{project.name}</h3>
+                        <p class="text-sm text-muted truncate">{project.path.display()}</p>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-sm font-medium text-primary-400">
+                            {active_count} " sandbox" {if active_count != 1 { "es" } else { "" }}
+                        </span>
+                        <p class="text-xs text-muted">{format_ago(project.last_active)}</p>
+                    </div>
+                </div>
+
+                <div class="mt-2 flex gap-2 text-xs text-muted">
+                    <span class="px-2 py-0.5 bg-slate-700/50 rounded">
+                        {project.git.branch}
+                    </span>
+                    {if project.git.dirty {
+                        view! { <span class="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 rounded">"dirty"</span> }
+                    } else {
+                        view! { <span class="px-2 py-0.5 bg-green-500/20 text-green-400 rounded">"clean"</span> }
+                    }}
+                </div>
             </div>
         </div>
     }
 }
 ```
 
-#### Terminal Component (xterm.js integration)
 ```rust
 #[component]
-pub fn Terminal(sandbox_id: SandboxId) -> impl IntoView {
-    let terminal_ref = NodeRef::<web_sys::HtmlElement>::default();
-
-   Effect::once(move || {
-        if let Some(el) = terminal_ref.get() {
-            let term = xterm::Terminal::new();
-            term.open(el);
-            // Connect to backend stream
-            spawn_local(async move {
-                let stream = connect_terminal(sandbox_id).await;
-                stream.for_each(|chunk| {
-                    term.write(chunk);
-                }).await;
-            });
-        }
-    });
-
+pub fn PipelineVisualization(pipeline: PipelineExecution) -> impl IntoView {
     view! {
-        <div ref={terminal_ref} class="h-full w-full bg-black text-white"></div>
+        <div class="card">
+            <div class="flex items-center justify-between mb-3">
+                <div>
+                    <h3 class="font-semibold">{pipeline.name}</h3>
+                    <p class="text-xs text-muted">
+                        "#" {pipeline.number} " · "
+                        {pipeline.git_branch} " · "
+                        {pipeline.git_commit[..7]}
+                    </p>
+                </div>
+                <PipelineStatusBadge status={pipeline.status} />
+            </div>
+
+            // Stage graph
+            <div class="flex items-center gap-1 flex-wrap">
+                <For each={pipeline.stages}>
+                    {stage| view! {
+                        <StageNode
+                            name={stage.name}
+                            status={stage.status}
+                            duration={stage.duration}
+                            depends_on={stage.depends_on}
+                        />
+                    }}
+                </For>
+            </div>
+
+            <div class="mt-3 flex items-center justify-between text-sm text-muted">
+                <span>"Total: " {format_duration(pipeline.total_duration)}</span>
+                <span>"Cost: $" {format!("{:.2}", pipeline.cost_usd)}</span>
+            </div>
+        </div>
     }
-}
-```
-
-### 4.3 Estados y Animaciones
-
-```css
-/* Loading state */
-.skeleton {
-    @apply animate-pulse bg-slate-700 rounded;
-}
-
-/* Status transitions */
-.status-badge {
-    @apply px-2 py-1 rounded-full text-xs font-medium transition-colors;
-    &.creating { @apply bg-blue-500/20 text-blue-400; }
-    &.ready { @apply bg-green-500/20 text-green-400; }
-    &.sleeping { @apply bg-yellow-500/20 text-yellow-400; }
-    &.failed { @apply bg-red-500/20 text-red-400; }
-}
-
-/* Hover effects */
-.hover-lift {
-    @apply transition-transform hover:-translate-y-0.5;
-}
-
-/* Focus states */
-.focus-ring {
-    @apply focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 focus:ring-offset-slate-900;
 }
 ```
 
 ---
 
-## 5. Modelo de Extensibilidad
+## 5. API REST — Project-Centric
 
-### 5.1 Extensiones Declarativas
+### 5.1 Endpoints
 
-Inspirado en Okteto manifests y Docker Extensions:
+```
+# Projects
+GET    /api/v1/projects                              # List projects
+POST   /api/v1/projects                              # Open/init project
+GET    /api/v1/projects/:id                          # Get project detail
+GET    /api/v1/projects/:id/status                  # Project status summary
+GET    /api/v1/projects/:id/costs                   # Cost attribution
 
-```yaml
-# bastion-extension.yaml
-name: bastion-prometheus
-version: 1.0.0
-description: Prometheus metrics integration
+# Sandboxes (scoped to project)
+GET    /api/v1/projects/:id/sandboxes                # List project sandboxes
+POST   /api/v1/projects/:id/sandboxes                # Create sandbox for project
+GET    /api/v1/projects/:id/sandboxes/:sid           # Get sandbox detail
+DELETE /api/v1/projects/:id/sandboxes/:sid           # Terminate sandbox
+POST   /api/v1/projects/:id/sandboxes/:sid/sleep     # Sleep sandbox
+POST   /api/v1/projects/:id/sandboxes/:sid/wake      # Wake sandbox
+GET    /api/v1/projects/:id/sandboxes/:sid/terminal   # Terminal WS
+GET    /api/v1/projects/:id/sandboxes/:sid/logs      # Logs SSE
 
-runtime: podman
+# Pipelines (scoped to project)
+GET    /api/v1/projects/:id/pipelines                # List pipeline definitions
+POST   /api/v1/projects/:id/pipelines                # Create pipeline def
+GET    /api/v1/projects/:id/pipelines/:pid            # Get pipeline definition
+POST   /api/v1/projects/:id/pipelines/:pid/run        # Run a pipeline
+GET    /api/v1/projects/:id/pipelines/:pid/runs       # List pipeline runs
+GET    /api/v1/projects/:id/pipelines/:pid/runs/:rid  # Get run detail
 
-extension:
-  views:
-    - path: /metrics
-      component: PrometheusDashboard
-      icon: chart-bar
+# Tests (scoped to project)
+GET    /api/v1/projects/:id/tests                    # List test definitions
+POST   /api/v1/projects/:id/tests/run                # Run tests
 
-  hooks:
-    - event: sandbox_created
-      action: notify_prometheus
+# Metrics (scoped to project)
+GET    /api/v1/projects/:id/metrics                  # Project metrics
+GET    /api/v1/projects/:id/metrics/historical        # Historical metrics
 
-  resources:
-    memory: 128Mi
-    cpu: 0.25
+# Config (scoped to project, reads/writes .bastion/)
+GET    /api/v1/projects/:id/config                   # Read .bastion/config.toml
+PUT    /api/v1/projects/:id/config                   # Update config
+GET    /api/v1/projects/:id/providers                # List provider configs
+GET    /api/v1/projects/:id/capabilities              # List capability configs
 
-dependencies:
-  - prometheus-operator
+# Events (SSE)
+GET    /api/v1/events                                 # All events
+GET    /api/v1/projects/:id/events                    # Project-scoped events
 ```
 
-### 5.2 Plugin System
+### 5.2 Server Functions (Leptos)
 
 ```rust
-// Plugin trait
-#[async_trait]
-pub trait DashboardPlugin: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn version(&self) -> semver::Version;
-
-    // Lifecycle
-    async fn on_load(&self, registry: &mut PluginRegistry) -> Result<()>;
-    async fn on_unload(&self) -> Result<()>;
-
-    // Extension points
-    fn views(&self) -> Vec<ViewRegistration>;
-    fn actions(&self) -> Vec<ActionRegistration>;
-    fn middleware(&self) -> Vec<MiddlewareFn>;
-}
-
-// Registration
-impl PluginRegistry {
-    pub fn register<P: DashboardPlugin + 'static>(&mut self, plugin: P) {
-        let name = plugin.name().to_string();
-        self.plugins.insert(name, Box::new(plugin));
-    }
-}
-```
-
-### 5.3 Templates como extensibilidad
-
-```yaml
-# templates/nginx-template.yaml
-name: nginx-development
-description: Nginx for web development
-image: nginx:alpine
-
-resources:
-  cpu: "0.5"
-  memory: "256Mi"
- ephemeral_storage: "1Gi"
-
-network:
-  ports:
-    - 80:8080
-    - 443:8443
-
-files:
-  - path: /etc/nginx/nginx.conf
-    content: |
-      worker_processes 1;
-      events { worker_connections 1024; }
-
-startup:
-  command: ["/docker-entrypoint.sh", "nginx", "-g", "daemon off;"]
-
-policies:
-  max_lifetime: 24h
-  auto_sleep: 30m
-  allow_privileged: false
-```
-
----
-
-## 6. Pensamiento Lateral — Diferenciadores
-
-### 6.1 AI-Native Dashboard
-
-**Innovación**: El dashboard que administra sandboxes PARA AGENTES AI, podría ser usado POR AGENTES AI.
-
-```rust
-// MCP tool que el dashboard expone
 #[server]
-pub async fn dashboard_query(query: String) -> Result<DashboardQueryResponse, ServerError> {
-    // El dashboard tiene acceso completo al estado
-    // Un agente AI podría consultar: "¿qué sandboxes están inactivos hace más de 1 hora?"
-    // Y pedir recomendaciones de cleanup
-
-    let state = dashboard_state.read().await;
-    let recommendations = generate_recommendations(&state, &query).await;
-
-    Ok(DashboardQueryResponse {
-        answer: recommendations.narrative,
-        affected_sandboxes: recommendations.ids,
-        suggested_actions: recommendations.actions,
-        confidence: recommendations.confidence,
-    })
-}
-```
-
-**UI**: Los agentes podrían usar el dashboard via MCP, no solo humanos.
-
-### 6.2 Cost Attribution Multi-Tenant
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CostAttribution {
-    pub project_id: ProjectId,
-    pub user_id: UserId,
-    pub sandbox_hours: f32,
-    pub compute_cost_usd: f32,
-    pub storage_cost_usd: f32,
-    pub egress_cost_usd: f32,
-    pub total_cost_usd: f32,
+pub async fn list_projects() -> Result<Vec<Project>, ServerError> {
+    let state = use_axum_state()?;
+    state.project_manager.list_projects().await.map_err(Into::into)
 }
 
 #[server]
-pub async fn get_project_costs(
+pub async fn open_project(path: String) -> Result<Project, ServerError> {
+    let state = use_axum_state()?;
+    state.project_manager.open_project(Path::new(&path)).await.map_err(Into::into)
+}
+
+#[server]
+pub async fn create_sandbox_for_project(
+    project_id: ProjectId,
+    purpose: SandboxPurpose,
+    template: String,
+) -> Result<Sandbox, ServerError> {
+    let state = use_axum_state()?;
+    state.project_manager
+        .create_sandbox(&project_id, purpose, &template)
+        .await
+        .map_err(Into::into)
+}
+
+#[server]
+pub async fn run_pipeline(
+    project_id: ProjectId,
+    pipeline_name: String,
+) -> Result<PipelineRun, ServerError> {
+    let state = use_axum_state()?;
+    state.pipeline_executor
+        .run(&project_id, &pipeline_name)
+        .await
+        .map_err(Into::into)
+}
+
+#[server]
+pub async fn get_project_metrics(
     project_id: ProjectId,
     range: DateRange,
-) -> Result<Vec<CostAttribution>, ServerError> {
-    // Aggregación por proyecto, usuario, sandbox
-    // Integración futura con cloud billing APIs
-}
-```
-
-### 6.3 GitOps Integration
-
-```yaml
-# bastion-gitops.yaml en repositorio
-apiVersion: bastion.rs/v1
-kind: SandboxPolicy
-metadata:
-  name: production-policy
-spec:
-  match:
-    branch: main
-    paths:
-      - "services/**"
-  sandbox:
-    template: rust-production
-    resources:
-      cpu: "4"
-      memory: "8Gi"
-    policies:
-      max_lifetime: 2h
-      auto_sleep: 15m
-      require_approval: true
-```
-
-El dashboard lee políticas GitOps y aplica automáticamente.
-
-### 6.4 Sandbox Pipelines Visual
-
-Inspirado en CI/CD pipelines, pero para ejecución distribuida:
-
-```rust
-// Representación visual de un pipeline
-#[derive(Debug, Clone)]
-pub struct PipelineStage {
-    pub id: StageId,
-    pub name: String,
-    pub sandbox_id: Option<SandboxId>,
-    pub status: StageStatus,
-    pub parallel_tasks: Vec<Task>,
-    pub depends_on: Vec<StageId>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PipelineExecution {
-    pub id: ExecutionId,
-    pub stages: Vec<PipelineStage>,
-    pub total_duration_ms: u64,
-    pub created_at: DateTime<Utc>,
-}
-```
-
-**UI**: Visualización tipo pipeline de GitHub Actions, pero ejecutando en sandboxes distribuidos.
-
-### 6.5 Collaborative Debugging
-
-```rust
-// Sesión compartida de debugging
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DebugSession {
-    pub id: SessionId,
-    pub sandbox_id: SandboxId,
-    pub participants: Vec<UserId>,
-    pub cursor_positions: HashMap<UserId, CursorPosition>,
-    pub terminal_input: Vec<SharedTerminalEvent>,
-    pub created_at: DateTime<Utc>,
-}
-
-#[server]
-pub async fn create_debug_session(
-    sandbox_id: SandboxId,
-) -> Result<DebugSession, ServerError> {
-    // Crea sesión colaborativa
-    // Participantes ven terminal compartido
-    // Cursor colors identifican cada usuario
+) -> Result<ProjectMetrics, ServerError> {
+    let state = use_axum_state()?;
+    state.metrics_hub
+        .get_project_metrics(&project_id, range)
+        .await
+        .map_err(Into::into)
 }
 ```
 
 ---
 
-## 7. API y Comunicación
-
-### 7.1 REST API v1
-
-```
-GET    /api/v1/sandboxes                    # List sandboxes
-GET    /api/v1/sandboxes/:id               # Get sandbox detail
-POST   /api/v1/sandboxes                   # Create sandbox
-DELETE /api/v1/sandboxes/:id               # Terminate sandbox
-POST   /api/v1/sandboxes/:id/sleep         # Sleep sandbox
-POST   /api/v1/sandboxes/:id/wake          # Wake sandbox
-
-GET    /api/v1/pools                        # List pools
-GET    /api/v1/pools/:name/stats            # Pool statistics
-
-GET    /api/v1/metrics                     # Dashboard metrics
-GET    /api/v1/metrics/historical           # Historical data
-
-GET    /api/v1/templates                    # List templates
-POST   /api/v1/templates                    # Register template
-
-GET    /api/v1/users/me                    # Current user
-GET    /api/v1/users/:id/costs             # User cost attribution
-
-WS     /api/v1/events                      # Real-time events
-SSE    /api/v1/stream/:resource            # Resource streaming
-```
-
-### 7.2 Server-Sent Events
-
-```rust
-// Server: emisión de eventos
-async fn sse_handler(
-    axum::extract::Path(resource): Path<String>,
-    axum::extract::State(state): State<Arc<AppState>>,
-    stream: Sse,
-) -> impl axum::response::IntoResponse {
-    let event_stream = state.subscribe(resource).map(|event| {
-        Event::default()
-            .event(event.kind.as_str())
-            .data(serde_json::to_string(&event.payload).unwrap())
-    });
-
-    stream::channel(32, event_stream)
-        .map(Ok::<_, Infallible>)
-}
-
-// Client: suscripción en Leptos
-#[server]
-pub async fn subscribe_to_events(
-    resource: String,
-) -> Result<SseConsumer, ServerError> {
-    let url = format!("/api/v1/stream/{}", resource);
-    Ok(SseConsumer::new(&url))
-}
-```
-
-### 7.3 Tipos de Eventos
+## 6. Eventos en Tiempo Real — Project-Scoped
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum DashboardEvent {
-    SandboxCreated { id: SandboxId },
-    SandboxReady { id: SandboxId },
-    SandboxSleeping { id: SandboxId },
-    SandboxTerminated { id: SandboxId },
-    SandboxMetricsUpdated { id: SandboxId, cpu: f32, memory: f32 },
-    PoolScaleUp { name: String, new_size: usize },
-    PoolScaleDown { name: String, new_size: usize },
-    CommandCompleted { sandbox_id: SandboxId, command_id: CommandId, exit_code: i32 },
-    Error { component: String, message: String },
+pub enum ProjectEvent {
+    // Project lifecycle
+    ProjectOpened { id: ProjectId, name: String, kind: ProjectKind },
+    ProjectClosed { id: ProjectId },
+
+    // Sandbox lifecycle (scoped to project!)
+    SandboxCreated { project_id: ProjectId, sandbox_id: SandboxId, purpose: SandboxPurpose },
+    SandboxReady { project_id: ProjectId, sandbox_id: SandboxId },
+    SandboxSleeping { project_id: ProjectId, sandbox_id: SandboxId },
+    SandboxTerminated { project_id: ProjectId, sandbox_id: SandboxId, reason: TerminateReason },
+    SandboxFailed { project_id: ProjectId, sandbox_id: SandboxId, error: String },
+
+    // Resource updates
+    SandboxMetricsUpdated { project_id: ProjectId, sandbox_id: SandboxId, cpu: f32, memory_mb: u32 },
+
+    // Pipeline events
+    PipelineStarted { project_id: ProjectId, pipeline_id: PipelineId, run_id: RunId },
+    PipelineStageCompleted { project_id: ProjectId, run_id: RunId, stage: String, result: StageResult },
+    PipelineCompleted { project_id: ProjectId, pipeline_id: PipelineId, run_id: RunId, result: PipelineResult },
+
+    // Pool events
+    PoolScaleUp { project_id: ProjectId, runtime: RuntimeType, new_size: usize },
+    PoolScaleDown { project_id: ProjectId, runtime: RuntimeType, new_size: usize },
+
+    // Cost events
+    CostThresholdReached { project_id: ProjectId, current_usd: f32, threshold_usd: f32 },
+
+    // Recommendations
+    IdleSandboxNotice { project_id: ProjectId, sandbox_id: SandboxId, idle_minutes: u32 },
+    CostOptimizationTip { project_id: ProjectId, tip: String, potential_savings_usd: f32 },
 }
 ```
 
 ---
 
-## 8. Seguridad
+## 7. Integración con Componentes Existentes
 
-### 8.1 Modelo de Seguridad en Capas
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 1: Network                                            │
-│ - mTLS entre agentes y gateway                              │
-│ - TLS 1.3 para UI                                          │
-│ - WebSocket secure (wss://)                                 │
-│ - Firewall rules para flujos específicos                     │
-└─────────────────────────────────────────────────────────────┘
-                           │
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 2: Authentication                                       │
-│ - JWT para API y dashboard                                   │
-│ - API keys para CI/automation                               │
-│ - OAuth2/OIDC para SSO (futuro)                             │
-│ - Session management con refresh tokens                      │
-└─────────────────────────────────────────────────────────────┘
-                           │
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 3: Authorization (RBAC)                               │
-│ - Roles: viewer, operator, admin                            │
-│ - viewer: solo lectura                                      │
-│ - operator: puede crear/destruir sandboxes propios           │
-│ - admin: acceso total, gestión de usuarios, políticas        │
-│ - Attribute-based: por proyecto, namespace, sandbox type    │
-└─────────────────────────────────────────────────────────────┘
-                           │
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 4: Sandbox Isolation                                   │
-│ - gVisor/Firecracker como runtime options                   │
-│ - No privileged containers                                  │
-│ - Read-only rootfs por defecto                              │
-│ - Seccomp profiles restrictivos                             │
-│ - Capabilities mínimas (CAP_NET_RAW, etc.)                   │
-│ - Network policies (egress allowlist)                       │
-└─────────────────────────────────────────────────────────────┘
-                           │
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 5: Audit & Compliance                                 │
-│ - Every action logged with timestamp, user, action, result  │
-│ - Audit log inmutable                                       │
-│ - Integration con SIEM (Splunk, Elastic)                    │
-│ - Retention policies configurables                           │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 8.2 RBAC Implementation
+### 7.1 MetricsHub → Project-Scoped
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Role {
+// Current: MetricsHub is global
+// Proposed: MetricsHub becomes project-scoped
+
+pub struct ProjectMetricsHub {
+    /// Per-project SQLite connections
+    hubs: DashMap<ProjectId, Arc<tokio::sync::Mutex<MetricsHub>>>,
+
+    /// Base directory for project databases
+    base_path: PathBuf,  // defaults to project_path/.bastion/db/
+}
+
+impl ProjectMetricsHub {
+    pub async fn get_hub(&self, project_id: &ProjectId) -> Result<Arc<tokio::sync::Mutex<MetricsHub>>> {
+        if let Some(hub) = self.hubs.get(project_id) {
+            return Ok(Arc::clone(hub.value()));
+        }
+
+        // Lazy init: open project's .bastion/db/metrics.db
+        let project = self.project_manager.get(project_id).await?;
+        let db_path = project.path.join(".bastion/db/metrics.db");
+
+        let hub = MetricsHub::new(&db_path).await?;
+        let arc = Arc::new(tokio::sync::Mutex::new(hub));
+        self.hubs.insert(project_id.clone(), Arc::clone(&arc));
+
+        Ok(arc)
+    }
+}
+```
+
+### 7.2 HeartbeatBridge → Project-Scoped
+
+```rust
+// Resource data flows from Worker → RegistryService → Dashboard per project
+pub struct ProjectResourceTracker {
+    /// Per-project resource snapshots
+    resources: DashMap<ProjectId, DashMap<SandboxId, SandboxResources>>,
+}
+
+impl ProjectResourceTracker {
+    pub fn update(&self, project_id: &ProjectId, sandbox_id: &SandboxId, resources: SandboxResources) {
+        self.resources
+            .entry(project_id.clone())
+            .or_default()
+            .insert(sandbox_id.clone(), resources);
+    }
+
+    pub fn get_project_total(&self, project_id: &ProjectId) -> ProjectResourceSummary {
+        let resources = self.resources.get(project_id);
+        let mut summary = ProjectResourceSummary::default();
+        if let Some(res) = resources {
+            for (_, r) in res.iter() {
+                summary.total_cpu += r.cpu_usage;
+                summary.total_memory_mb += r.memory_usage_mb;
+                summary.sandbox_count += 1;
+            }
+        }
+        summary
+    }
+}
+```
+
+### 7.3 Enrichment Engine → Project-Scoped
+
+El enrichment engine ya usa `.bastion/catalog/` — el dashboard lo integra:
+
+```rust
+#[server]
+pub async fn get_project_catalog(project_id: ProjectId) -> Result<ProjectCatalog, ServerError> {
+    let project = get_project(&project_id).await?;
+    let catalog_dir = project.path.join(".bastion/catalog");
+
+    Ok(ProjectCatalog {
+        advice: load_toml_dir(&catalog_dir.join("advice")).await?,
+        doctors: load_toml_dir(&catalog_dir.join("doctors")).await?,
+        assertions: load_toml_dir(&catalog_dir.join("assertions")).await?,
+    })
+}
+
+#[server]
+pub async fn toggle_advice(
+    project_id: ProjectId,
+    advice_id: String,
+    enabled: bool,
+) -> Result<(), ServerError> {
+    let project = get_project(&project_id).await?;
+    let advice_path = project.path.join(".bastion/advice.toml");
+
+    // Read, modify, write advice config
+    let mut config: AdviceConfig = read_toml(&advice_path).await?;
+    if enabled {
+        config.advice.disabled.retain(|id| id != &advice_id);
+    } else {
+        config.advice.disabled.push(advice_id);
+    }
+    write_toml(&advice_path, &config).await?;
+
+    Ok(())
+}
+```
+
+---
+
+## 8. Pensamiento Lateral — Innovaciones Project-Centric
+
+### 8.1 `bastion init` — Como `git init`
+
+```bash
+# Inicializar un proyecto de Bastion (como git init)
+cd ~/Proyectos/rust/Bastion
+bastion init --kind rust
+
+# Output:
+# ✔ Created .bastion/ directory structure
+# ✔ Detected Rust project (Cargo.toml)
+# ✔ Generated .bastion/project.toml
+# ✔ Generated .bastion/providers/podman.toml
+# ✔ Generated .bastion/capabilities/rust-build.toml
+# ✔ Generated .bastion/pipelines/ci.toml
+# ✔ Generated .bastion/.gitignore
+# ✔ Project "Bastion" initialized at /home/user/Proyectos/rust/Bastion
+```
+
+### 8.2 `bastion dashboard` — Servir la UI
+
+```bash
+# Abrir el dashboard para un proyecto
+cd ~/Proyectos/rust/Bastion
+bastion dashboard
+
+# Output:
+# ✔ Starting Bastion Dashboard for "Bastion"
+# ✔ Gateway running on :50051
+# ✔ Dashboard available at http://localhost:3000
+# ✔ Connected to .bastion/ at /home/user/Proyectos/rust/Bastion/.bastion
+# ✔ 3 sandboxes active
+```
+
+### 8.3 Git Hooks Integration
+
+```bash
+# .bastion/hooks/pre-commit
+bastion sandbox run --purpose real-test --template rust-ci -- cargo test --workspace
+
+# .bastion/hooks/pre-push
+bastion pipeline run ci
+
+# .bastion/hooks/post-merge
+bastion sandbox cleanup --stale
+```
+
+### 8.4 Cost Attribution por Branch
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchCost {
+    pub branch: String,
+    pub commit: String,
+    pub sandbox_hours: f32,
+    pub cpu_hours: f32,
+    pub estimated_cost_usd: f32,
+    pub period: DateRange,
+}
+
+#[server]
+pub async fn get_branch_costs(
+    project_id: ProjectId,
+    branch: String,
+    range: DateRange,
+) -> Result<Vec<BranchCost>, ServerError> {
+    // Each sandbox knows which git branch/commit it was created for
+    // Aggregate cost by branch
+}
+```
+
+### 8.5 Estado del Proyecto en `.bastion/`
+
+El dashboard lee y escribe el estado del proyecto en `.bastion/`:
+
+```json
+// .bastion/dashboard.json (gitignored)
+{
+  "last_opened": "2026-05-12T10:30:00Z",
+  "preferred_view": "sandboxes",
+  "filters": {
+    "status": ["running", "sleeping"],
+    "purpose": null
+  },
+  "columns": ["id", "purpose", "template", "status", "cpu", "age"],
+  "pinned_sandboxes": ["sb-bast-abc123"],
+  "collapsed_sections": []
+}
+```
+
+---
+
+## 9. Seguridad — Project-Scoped
+
+### 9.1 Modelo RBAC por Proyecto
+
+```rust
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum ProjectRole {
+    /// Solo lectura: ver sandboxes, métricas, logs
     Viewer,
+
+    /// Puede crear/destruir sandboxes, ejecutar pipelines
     Operator,
+
+    /// Puede editar config, templates, policies
+    Maintainer,
+
+    /// Control total: managing users, policies, costs
     Admin,
 }
 
 #[derive(Debug, Clone)]
-pub struct Permission {
-    pub action: Action,
-    pub resource_scope: ResourceScope,
-}
-
-pub enum Action {
-    SandboxCreate,
-    SandboxRead,
-    SandboxUpdate,
-    SandboxDelete,
-    SandboxExecute,
-    PoolManage,
-    TemplateManage,
-    UserManage,
-    PolicyManage,
-}
-
-#[derive(Debug, Clone)]
-pub enum ResourceScope {
-    All,
-    Project(ProjectId),
-    Sandbox(SandboxId),
-    Own,  // Only own resources
-}
-
-#[async_trait]
-impl Authorization for AppState {
-    async fn authorize(
-        &self,
-        user: &User,
-        action: Action,
-        resource: Resource,
-    ) -> Result<bool, AuthError> {
-        let role = self.get_user_role(user).await?;
-        let permissions = ROLE_PERMISSIONS.get(&role)?;
-
-        Ok(permissions.iter().any(|p| {
-            p.action == action && p.resource_scope.matches(&resource)
-        }))
-    }
+pub struct ProjectPermission {
+    pub project_id: ProjectId,
+    pub user_id: UserId,
+    pub role: ProjectRole,
 }
 ```
+
+### 9.2 Aislamiento entre Proyectos
+
+```
+Proyecto A (.bastion/)          Proyecto B (.bastion/)
+├── db/                         ├── db/
+│   ├── sandboxes.db            │   ├── sandboxes.db        ← BBDD separada
+│   ├── metrics.db              │   ├── metrics.db
+│   └── enrichment.db           │   └── enrichment.db
+├── providers/                  ├── providers/
+│   └── podman.toml             │   └── podman.toml
+├── pipelines/                  ├── pipelines/
+│   └── ci.toml                 │   └── ci.toml
+└── dashboard.json              └── dashboard.json
+
+           │                                │
+           ▼                                ▼
+    Gateway (shared)                Gateway (shared)
+    ├── Pool A (3 sandboxes)       ├── Pool B (2 sandboxes)
+    └── MetricsHub A               └── MetricsHub B
+```
+
+Cada proyecto tiene:
+- Su propia BBDD SQLite en `.bastion/db/`
+- Sus propias configuraciones en `.bastion/providers/`, `capabilities/`
+- Sus propios pipelines en `.bastion/pipelines/`
+- Sus propias métricas en `.bastion/db/metrics.db`
+- Su propia configuración de dashboard en `.bastion/dashboard.json`
+
+El Gateway es compartido pero los datos están **aislados por proyecto**.
 
 ---
 
-## 9. Rendimiento y Optimización
+## 10. Stack Tecnológico Final (Actualizado)
 
-### 9.1 Patrones de Rendimiento
-
-**Lazy Loading de Vistas**:
-```rust
-#[component]
-pub fn DashboardPage() -> impl IntoView {
-    // Solo carga HeavyChart cuando el usuario hace scroll
-    let show_charts = create_signal(false);
-
-    view! {
-        <div>
-            <MetricCards />
-
-            <Show when={show_charts.get()}>
-                <HeavyCharts lazy_loaded=true />
-            </Show>
-
-            <button on:click=|_| show_charts.set(true)>
-                "Load Charts"
-            </button>
-        </div>
-    }
-}
-```
-
-**Virtual Scrolling para Listas Grandes**:
-```rust
-#[component]
-pub fn VirtualSandboxList(
-    sandboxes: Vec<SandboxSummary>,
-) -> impl IntoView {
-    // Virtualize huge lists (10k+ items)
-    view! {
-        <VirtualList
-            items={sandboxes}
-            item_height={72}
-            overscan={5}
-            renderer=|sandbox| view! { <SandboxCard {sandbox} /> }
-        />
-    }
-}
-```
-
-**Memoización de Queries**:
-```rust
-#[component]
-pub fn SandboxMetrics(id: SandboxId) -> impl IntoView {
-    // create_resource memoriza el resultado
-    // No re-fetch si id no cambia
-    let metrics = create_resource(
-        move || id,
-        |id| async move { fetch_metrics(id).await },
-    );
-
-    view! {
-        <Suspense fallback={() => view! { <Skeleton /> }>
-            <ErrorBoundary fallback=|e| view! { <Error error={e} /> }>
-                <MetricsChart data={metrics} />
-            </ErrorBoundary>
-        </Suspense>
-    }
-}
-```
-
-### 9.2 Caching Strategy
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Client Cache (Leptos State)                                 │
-│ - Signals con valores recent                                │
-│ - invalidar en eventos SSE                                 │
-│ - TTL configurable por tipo de dato                        │
-└─────────────────────────────────────────────────────────────┘
-                           │
-┌─────────────────────────────────────────────────────────────┐
-│ Edge Cache (futuro: Redis)                                  │
-│ - /api/v1/templates (1h TTL)                                │
-│ - /api/v1/metrics/historical (5m TTL)                       │
-│ - /api/v1/pools/stats (10s TTL)                             │
-└─────────────────────────────────────────────────────────────┘
-                           │
-┌─────────────────────────────────────────────────────────────┐
-│ Database (SQLite -> PostgreSQL)                            │
-│ - MetricsHub SQLite actual                                  │
-│ - Sharding por tenant/project (futuro)                     │
-└─────────────────────────────────────────────────────────────┘
-```
+| Componente | Tecnología | Versión | Rol |
+|------------|------------|---------|-----|
+| Frontend | Leptos | 0.7+ | UI reactiva WASM |
+| CSS | Tailwind CSS | 4.x | Estilos con Oxide engine |
+| CSS Engine | Lightning CSS | bundled | Build rápido |
+| WASM Bundler | Trunk / cargo-leptos | 0.3+ | Build tool |
+| Backend HTTP | Axum | 0.7+ | REST API + SSE |
+| MCP | rmcp | 1.5+ | Protocolo MCP existente |
+| Serialization | serde | 1.0 | JSON/TOML |
+| Auth | jsonwebtoken | 9.x | JWT |
+| DB | SQLite (rusqlite) | bundled | Per-project |
+| Terminal | xterm.js | 5.x | Emulador terminal |
+| Charts | uPlot | - | Gráficos rápidos |
+| Icons | Lucide | - | Iconos |
+| Git | git2 | 0.19+ | Integración Git |
+| Project Config | toml | 0.8 | Config TOML |
 
 ---
 
-## 10. Roadmap de Implementación
+## 11. Roadmap de Implementación (Actualizado)
 
-### Fase 1: Dashboard Core (2 semanas)
+### Fase 1: Project Core (2 semanas)
 
-- [ ] Setup proyecto Leptos + Tailwind 4.x
-- [ ] Layout base: Navigator + Workspace + Dock
-- [ ] Sandbox list con estado y acciones básicas
-- [ ] Conexión a gateway via REST API
+- [ ] `bastion-dashboard-core` crate con tipos Project, SandboxPurpose, PipelineDef
+- [ ] `ProjectManager` con `open_project()`, `init_project()`
+- [ ] `ProjectConfigLoader` que lee `.bastion/`
+- [ ] Server function: `list_projects()`, `open_project()`
+- [ ] UI: Project selector con Leptos + Tailwind 4.x
+- [ ] Setup Tailwind 4.x con Oxide engine
+
+### Fase 2: Sandbox Management (2 semanas)
+
+- [ ] Sandbox list/detail scoped a proyecto
+- [ ] Crear sandbox con purpose (adhoc, poc, e2e-test, real-test, pipeline)
+- [ ] Asociar sandbox a git branch/commit
+- [ ] Acciones: terminal, logs, sleep, wake, terminate
 - [ ] SSE para actualizaciones en tiempo real
-- [ ] Metric cards estáticos
 
-### Fase 2: Interactividad (2 semanas)
+### Fase 3: Pipeline Visualization (1 semana)
 
-- [ ] Crear/terminar sandboxes desde UI
-- [ ] Terminal integrado (xterm.js)
-- [ ] Vista de logs
-- [ ] Sandbox detail con métricas
-- [ ] Pool management UI
+- [ ] Parser de `.bastion/pipelines/*.toml`
+- [ ] Ejecución de pipelines via MCP tools
+- [ ] Visualización tipo CI/CD (stage graph)
+- [ ] Cost attribution por pipeline
 
-### Fase 3: Observabilidad (1 semana)
+### Fase 4: Observabilidad por Proyecto (1 semana)
 
-- [ ] Gráficos de métricas (Chart.js o similar)
-- [ ] Historial de comandos
-- [ ] Dashboard overview con KPIs
-- [ ] Filtros y búsqueda
+- [ ] MetricsHub project-scoped (`.bastion/db/metrics.db`)
+- [ ] Dashboard overview con KPIs por proyecto
+- [ ] Gráficos de métricas (uPlot)
+- [ ] Cost summary por proyecto/branch
 
-### Fase 4: Templates y Policies (1 semana)
+### Fase 5: Config Editor (1 semana)
 
-- [ ] Catálogo de templates
-- [ ] Editor visual de policies
-- [ ] Import/export de configuraciones
+- [ ] Editor visual de `.bastion/providers/*.toml`
+- [ ] Toggle de advice/doctors/assertions
+- [ ] Pipeline editor visual
+- [ ] Template management
 
-### Fase 5: Multi-tenant y Seguridad (2 semanas)
+### Fase 6: Multi-Project + Seguridad (2 semanas)
 
-- [ ] Sistema de autenticación
-- [ ] RBAC
-- [ ] Audit log
-- [ ] Cost attribution
-
-### Fase 6: Extensibilidad (2 semanas)
-
-- [ ] Plugin system
-- [ ] Extension registry
-- [ ] Custom dashboards
+- [ ] Autenticación JWT
+- [ ] RBAC por proyecto
+- [ ] Audit log por proyecto
+- [ ] Multi-project switching
+- [ ] Cost attribution multi-tenant
 
 ---
 
-## 11. Stack Tecnológico Final
+## 12. Conclusión
 
-| Componente | Tecnología | Versión |
-|------------|------------|---------|
-| Frontend Framework | Leptos | 0.7+ |
-| WASM Bundler | Trunk / cargo-leptos | 0.3+ |
-| CSS Framework | Tailwind CSS | 4.x |
-| CSS Engine | Lightning CSS (Rust) | bundled |
-| Backend HTTP | Axum | 0.7+ |
-| Serialization | serde | 1.0 |
-| Auth | jsonwebtoken | 9.x |
-| Database (metrics) | SQLite (MetricsHub) | - |
-| Terminal | xterm.js | 5.x |
-| Charts | Chart.js o uPlot | - |
-| Icons | Lucide | - |
-| Build Tool | Cargo + Trunk | - |
+El insight clave es que **Bastion no gestiona infraestructura — gestiona proyectos de software**. Cada sandbox existe para un propósito dentro de un proyecto: PoC, testing, e2e, pipelines. El directorio `.bastion/` (como `.git/`) es el contracto entre el proyecto y la orquestación.
 
----
+**Diferenciadores versus Portainer/Lens/Docker Desktop:**
 
-## 12. Conclusiones y Próximos Pasos
+| Plataforma | Unidad Fundamental | Bastion |
+|------------|---------------------|---------|
+| Portainer | Environment (Docker/K8s cluster) | **Proyecto** (git repo + `.bastion/`) |
+| Docker Desktop | Local Docker Engine | **Proyecto** con BBDD propia |
+| Lens | Kubernetes Cluster | **Proyecto** con pipelines y tests |
+| Okteto | Namespace/Environment | **Proyecto** con cost attribution |
 
-### Conclusiones
-
-1. **Leptos + Tailwind 4.x** es la combinación tecnológica correcta:
-   - 100% Rust end-to-end
-   - WASM para rendimiento nativo
-   - Tailwind 4.x con engine Rust (Oxide) para builds rápidas
-   - Signals reactivos para UX fluida
-
-2. **Patrones probados** de las 4 plataformas de referencia:
-   - Lens: IDE-like UX con Navigator + Tabs + Dock
-   - Portainer: Edge agents con conectividad invertida
-   - Docker Desktop: Resource optimization + isolation
-   - Okteto: Lifecycle automation + cost management
-
-3. **Diferenciadores propuesta**:
-   - AI-native: dashboard expose MCP tools para agentes
-   - Cost attribution multi-tenant
-   - GitOps integration
-   - Pipeline visualization
-   - Collaborative debugging
-
-### Próximos Pasos
-
-1. **Validar propuesta** con stakeholders
-2. **Crear SDD** (Spec-Driven Development) para el dashboard
-3. **Prototipo rápido** con Leptos + Tailwind 4.x
-4. **Iterar** basándose en feedback
-
----
-
-## Referencias
-
-- Portainer Architecture: https://docs.portainer.io/start/architecture
-- Lens IDE: https://github.com/lensapp/lens
-- Okteto Platform: https://www.okteto.com/docs/
-- Docker Desktop: https://docs.docker.com/desktop/
-- Leptos Framework: https://leptos.dev/
-- Tailwind CSS 4.0: https://tailwindcss.com/blog/tailwindcss-v4-alpha
-- Oxide Engine: https://tailwindcss.com/blog/tailwindcss-v4-alpha#a-rust-powered-engine
+El dashboard project-centric permite:
+1. **Cost attribution** natural por proyecto/branch/commit
+2. **Pipelines declarativos** en `.bastion/pipelines/`
+3. **Tests organizados** por propósito (adhoc, PoC, e2e, real)
+4. **Git hooks** integrados con el flujo de desarrollo
+5. **Auto-cleanup** por proyecto (sandbox sleeping >24h → sugerir terminate)
+6. **Sandbox purposes** que dan contexto al por qué existe cada sandbox
 
 ---
 
 *Documento creado como parte de la investigación para el Dashboard de Bastion*
-*2026-05-12*
+*2026-05-12 — v2 Project-Centric*
