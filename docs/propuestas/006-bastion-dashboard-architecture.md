@@ -1078,6 +1078,206 @@ El Gateway es compartido pero los datos están **aislados por proyecto**.
 
 ---
 
+## 13. Research: GISS + Pipeliner Pipeline Architectures
+
+*Investigación completada: 2026-05-12*
+
+### 13.1 GISS Framework (Groovy Modular)
+
+**Ubicación**: `/home/rubentxu/Proyectos/groovy/giss/framework_modular/`
+
+**Arquitectura**:
+- Jenkinsfiles centralizados en repositorio DevOps (mejora gobernanza, reuse, estandarización)
+- Módulos organizados por responsabilidad: `core`, `maven`, `gradle`, `container`, `cache`, `monitoring`, `policies`, `artifact_repository`, `notification`
+- `pipeline.gdsl` — Jenkins DSL definition para soporte IDE
+- Shared library steps en `vars/` (pasos reutilizables entre pipelines)
+- BDD testing con Groovy + Jenkins (CodeNarc, GroovyLint)
+- Cache system para CI/CD (Nexus proxy, deduplicación)
+- Prometheus/Elastic monitoring integration
+- Sistema de caché en 3 niveles: local, Nexus, remote registry
+
+**Lecciones para Bastion**:
+- ✅ Patrón de pipelines centralizados en DevOps repo
+- ✅ Shared library steps (reusabilidad)
+- ✅ Módulos separados por responsabilidad
+- ⚠️ Groovy DSL — no aplicable a Bastion (Rust)
+
+### 13.2 Pipeliner / Rustline (Rust Jenkins DSL)
+
+**Ubicación**: `/home/rubentxu/Proyectos/rust/pipeliner/src/pipeline/`
+
+**Tipos clave** (`Pipeline`, `Stage`, `Step`, `StepType`):
+
+| Tipo | Descripción |
+|------|-------------|
+| `StepType` | Shell, Echo, Retry, Timeout, Stash, Unstash, Input, Dir, Wait |
+| `Step` | Wrapper alrededor de StepType con name y timeout opcional |
+| `Stage` | Colección de Steps + when conditions + post-conditions |
+| `Pipeline` | Top-level con agents, environment, parameters, stages |
+| `Environment` | Variables de entorno con resolución `${VAR}` / `$VAR` |
+| `Parameters` | boolean, string, choice (enumeración) |
+| `MatrixConfig` | Axis/values combinations + exclusions |
+| `ParallelBranch` | Named parallel execution branches |
+| `AgentType` | Local, Docker, Kubernetes, Podman |
+| `PostCondition` | always, success, failure, cleanup |
+| `WhenCondition` | Conditional stage execution |
+| `Trigger` | Pipeline triggers |
+
+**Lecciones para Bastion**:
+- ✅ StepType completo (Wait, stash/unstash, input, retry, timeout)
+- ✅ Environment con variable expansion
+- ✅ Parameters (boolean, string, choice)
+- ✅ Matrix execution (axis-based parallel combos)
+- ✅ Parallel branches
+- ✅ When conditions (conditional execution)
+- ✅ Post-conditions (always, success, failure)
+- ⚠️ Es una biblioteca Rust — requiere evaluar como dependencia
+
+### 13.3 Gap Analysis: Bastion PipelineDef vs Pipeliner
+
+**PipelineDef actual en Bastion** (`crates/bastion-domain/src/project/types.rs`):
+
+```rust
+pub struct PipelineDef {
+    pub name: String,
+    pub description: String,
+    pub stages: Vec<PipelineStage>,
+}
+
+pub struct PipelineStage {
+    pub name: String,
+    pub image: String,
+    pub command: String,
+    pub timeout_ms: u64,
+}
+```
+
+**Gaps identificados** (ordenados por prioridad):
+
+| Gap | Descripción | Prioridad |
+|-----|-------------|----------|
+| `depends_on` | Dependencias entre stages (DAG) | P1 |
+| `parallel_with` | Stages que corren en paralelo | P1 |
+| `environment` | Variables de entorno por stage/pipeline | P1 |
+| `on_failure` | Comportamiento al fallar un stage | P1 |
+| `when` | Condiciones para ejecutar un stage | P2 |
+| `parameters` | Parámetros de input (boolean, string, choice) | P2 |
+| `stash/unstash` | Compartir artifacts entre stages | P2 |
+| `matrix` | Ejecución matrix (axis-based) | P3 |
+| `parallel_branch` | Multi-branch parallel execution | P3 |
+| `post_conditions` | always, success, failure handlers | P3 |
+| `triggers` | Cron, webhooks, etc. | P3 |
+| `Wait` step | Gates manuales / delays | P3 |
+
+**El PipelineDef actual es funcional pero mínimo** — cubre el caso básico (secuencia de stages) pero no maneja:
+- Ejecución paralela
+- Condicionales
+- Artifact sharing
+- Parámetros de pipeline
+- Reintentos automáticos
+- Post-build actions
+
+### 13.4 Decisión: Integrar Pipeliner o extender PipelineDef?
+
+**Opción A: Adoptar Pipeliner como dependencia**
+- ✅ Implementación completa de Jenkins DSL en Rust
+- ✅ Tipos bien diseñados (Step, Stage, Pipeline, Environment, Parameters, Matrix, etc.)
+- ✅ Soporta múltiples ejecutores (Local, Docker, K8s, Podman)
+- ✅ 40+ contributors activos
+- ⚠️ Coupling con dependencia externa
+- ⚠️ Breaking changes potenciales
+- ⚠️ Evaluación de API surface necesaria
+
+**Opción B: Extender PipelineDef incrementalmente**
+- ✅ Control total sobre tipos
+- ✅ Sin dependencias externas
+- ✅ Evolución gradual según necesidades
+- ⚠️ Más trabajo de implementación
+- ⚠️ Riesgo de diseño inconsistente
+
+**Recomendación**: Opción B a corto plazo (extender PipelineDef con depends_on, parallel_with, environment, on_failure). Evaluar Pipeliner como dependencia en P3 si hay necesidad de matrix execution, parallel branches, o stash/unstash.
+
+### 13.5 TOML Schema Propuesto (Extensión)
+
+```toml
+# .bastion/pipelines/ci.toml
+
+[pipeline]
+name = "ci"
+description = "CI pipeline for this project"
+
+[Pipeline.environment]
+RUST_BACKTRACE = "1"
+CARGO_TERM_PROGRESS_WIDTH = "80"
+
+[pipeline.parameters]
+boolean.skip_tests = false
+string.target_branch = ""
+choice.log_level = ["info", "debug", "trace"]
+
+[pipeline.triggers]
+on_push = ["main", "develop"]
+on_pr = ["*"]
+
+[[stages]]
+name = "check"
+template = "rust-ci"
+purpose = "real-test"
+environment = { RUSTFLAGS = "-D warnings" }
+commands = ["cargo check --workspace"]
+on_failure = "stop"
+when = { branch = ["main", "develop"] }
+
+[[stages]]
+name = "test"
+template = "rust-ci"
+purpose = "real-test"
+commands = ["cargo test --workspace"]
+depends_on = ["check"]
+on_failure = "stop"
+parallel_with = ["lint"]  # lint corre en paralelo con test
+
+[[stages]]
+name = "lint"
+template = "rust-ci"
+purpose = "real-test"
+commands = ["cargo clippy --workspace -- -D warnings"]
+depends_on = ["check"]
+parallel_with = ["test"]  # test corre en paralelo con lint
+on_failure = "report"
+
+[[stages]]
+name = "e2e"
+template = "debian-bookworm"
+purpose = "e2e-test"
+commands = ["cargo test -p bastion-gateway --test e2e_test"]
+depends_on = ["test", "lint"]
+on_failure = "report"
+when = { event = "push" }  # Solo en push, no en PR
+
+[stages.e2e.post]
+always = ["echo 'Cleanup...'"]
+success = ["echo 'E2E passed!'"]
+failure = ["echo 'E2E failed!'", "slack_notify"]
+
+[pipeline.policy]
+max_lifetime = "1h"
+auto_sleep = "15m"
+retry_count = 2
+cleanup_on_success = true
+
+# Matrix execution example (P3)
+# [pipeline.matrix]
+# [[pipeline.matrix.axes]]
+# name = "target"
+# values = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+#
+# [[pipeline.matrix.excludes]]
+# conditions = [{ target = "aarch64", runner = "local" }]
+```
+
+---
+
 ## 12. Conclusión
 
 El insight clave es que **Bastion no gestiona infraestructura — gestiona proyectos de software**. Cada sandbox existe para un propósito dentro de un proyecto: PoC, testing, e2e, pipelines. El directorio `.bastion/` (como `.git/`) es el contracto entre el proyecto y la orquestación.
