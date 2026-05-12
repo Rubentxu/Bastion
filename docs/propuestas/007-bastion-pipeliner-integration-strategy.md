@@ -63,180 +63,142 @@ Bastion expone un **trait `SandboxUseCase`** que define cómo un caso de uso con
 
 ## 2. Abstracciones Propuestas en Bastion
 
-### 2.1 Trait `SandboxUseCase` — El Contract
+### 2.1 Insight Clave: Pipeliner ya tiene DSL — no lo dupliquemos
+
+Pipeliner ya define:
+
+| Pipeliner | Función |
+|-----------|---------|
+| `Pipeline` (name, agent, stages[], environment, parameters, triggers, options, post) | Pipeline completo |
+| `Stage` (name, agent, steps[], parallel[], matrix, when, post) | Un stage con su lógica |
+| `Step` / `StepType` (Shell, Echo, Retry, Timeout, Stash, Unstash, Input, Dir, Wait) | Pasos atómicos |
+| `PipelineBuilder` | Builder pattern para construir pipelines |
+| `PipelineExecutor` trait | `execute()`, `validate()`, `dry_run()`, `capabilities()`, `health_check()` |
+| `PipelineContext` (env, cwd, pipeline_id, stage_results) | Contexto de ejecución |
+| `AgentType` (Any, Label, Docker, Kubernetes, Podman) | Dónde ejecutar |
+| `WhenCondition` (Branch, Tag, Environment, Expression, AllOf, AnyOf) | Condiciones |
+| `PostCondition` (Always, Success, Failure, Unstable, Changed) | Post-build |
+| `Environment` con `${VAR}` expansion | Variables de entorno |
+| `Parameters` (boolean, string, choice) | Parámetros |
+| `MatrixConfig` (axes, excludes) | Ejecución matrix |
+
+**Pipeliner tiene su propio motor de ejecución.** El `PipelineExecutor` ejecuta `Stage`s con `Step`s en `AgentType`s. Pero Pipeliner ejecuta directamente en Docker/K8s/Podman/local — **no conoce los sandboxes de Bastion**.
+
+**La integración no es un adaptador que traduce tipos. Es más simple:**
+
+> Hacer que Pipeliner delegue la ejecución de Steps a los sandboxes de Bastion, en vez de ejecutar directamente en Docker/K8s.
+
+### 2.2 Dos Capas, No Tres
+
+```
+CAPA 1: BASTION (sandbox infrastructure)
+  - SandboxLifecycle: create, terminate, is_alive, snapshots
+  - TaskExecutor: run_command, run_command_stream, write_file, read_file
+  - SandboxProvider: composición de ambos
+  - SandboxRegistry: registro de sandboxes activos
+
+CAPA 2: PIPELINER (pipeline orchestration)
+  - Pipeline: definición declarativa con stages, environment, parameters
+  - PipelineExecutor: motor que decide QUÉ ejecutar y CUÁNDO (DAG, paralelismo, when, post)
+  - Stage, Step, WhenCondition, PostCondition: lógica del pipeline
+  - PipelineBuilder: construcción programática
+
+PUENTE: BastionPipelineExecutor
+  - impl PipelineExecutor for BastionPipelineExecutor
+  - Traduce AgentType → Sandbox template
+  - Traduce Step::Shell → TaskExecutor::run_command
+  - Traduce Environment → sandbox env_vars
+  - Bastion crea el sandbox, Pipeliner dice qué hacer dentro
+```
+
+**No hay `UseCasePlan`, `UseCaseStep`, ni `UseCaseExecutor`.** Esos son Pipeliner con otro nombre. Usamos Pipeliner directamente.
+
+### 2.3 Trait `SandboxUseCase` — Mínimo, Solo Contract de Acceso
 
 ```rust
 /// Un caso de uso que consume sandboxes de Bastion.
 ///
-/// Este es el punto de extensión de Bastion: cualquier workflow
+/// Este es el PUNTO DE EXTENSIÓN de Bastion: cualquier workflow
 /// que necesite sandboxes implementa este trait.
 ///
-/// Implementaciones: PipelineUseCase, AdHocTestUseCase, PoCUseCase, etc.
+/// El trait es DELIBERADAMENTE mínimo — Bastion solo necesita saber:
+/// 1. Quién eres (kind + name)
+/// 2. Qué sandboxes vas a necesitar (sandbox_requests)
+/// 3. Que te avise cuando termines (on_complete)
+///
+/// Toda la lógica de planificación (DAG, paralelismo, when, post)
+/// la hace el caso de uso internamente, usando su propio motor.
+/// Pipeliner usa su PipelineExecutor. Un job batch usa su propio loop.
 #[async_trait]
 pub trait SandboxUseCase: Send + Sync + std::fmt::Debug {
-    /// Identificador único del tipo de caso de uso.
+    /// Identificador del tipo de caso de uso.
     fn kind(&self) -> &UseCaseKind;
 
-    /// Nombre legible.
+    /// Nombre legible de esta instancia.
     fn name(&self) -> &str;
 
-    /// Prepara el caso de uso: valida configuración, reserva recursos.
+    /// Ejecuta el caso de uso completo.
     ///
-    /// Retorna un `UseCasePlan` que describe qué sandboxes se necesitan,
-    /// en qué orden, con qué dependencias.
-    async fn plan(&self, context: &UseCaseContext) -> Result<UseCasePlan, UseCaseError>;
-
-    /// Ejecuta un paso del plan en un sandbox dado.
+    /// Recibe acceso al SandboxProvider de Bastion para crear/destruir
+    /// sandboxes según necesite. Toda la lógica interna (DAG, paralelismo,
+    /// reintentos) es responsabilidad del caso de uso.
     ///
-    /// Bastion crea el sandbox, llama a `execute_step` para que el
-    /// caso de uso diga qué hacer dentro del sandbox.
-    async fn execute_step(
+    /// Pipeliner llama a `provider.create()` por cada Stage,
+    /// luego a `executor.run_command()` por cada Step.
+    async fn run(
         &self,
-        sandbox: &Sandbox,
-        step: &UseCaseStep,
-        executor: &dyn TaskExecutor,
-    ) -> Result<StepOutcome, UseCaseError>;
+        provider: &dyn SandboxProvider,
+        context: &UseCaseContext,
+    ) -> Result<UseCaseResult, UseCaseError>;
 
-    /// Maneja el resultado de un paso completado.
-    ///
-    /// Permite al caso de uso decidir: continuar, abortar, reintentar, etc.
-    async fn on_step_completed(
+    /// Limpieza al finalizar (éxito o fracaso).
+    /// Bastion llama esto después de `run()` para asegurar limpieza.
+    async fn cleanup(
         &self,
-        result: &StepResult,
-        plan: &mut UseCasePlan,
-    ) -> StepDecision;
-
-    /// Limpieza al finalizar el caso de uso (éxito o fracaso).
-    async fn cleanup(&self, context: &UseCaseContext) -> Result<(), UseCaseError>;
+        provider: &dyn SandboxProvider,
+    ) -> Result<(), UseCaseError>;
 }
 ```
 
-### 2.2 Tipos de Soporte
+### 2.4 Tipos de Soporte — Mínimos
 
 ```rust
 /// Tipos de casos de uso que Bastion reconoce.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum UseCaseKind {
-    /// Pipeline CI/CD — implementado por Pipeliner
     Pipeline,
-    /// Prueba ad-hoc interactiva
     AdHocTest,
-    /// Prueba de concepto
     ProofOfConcept,
-    /// Pruebas end-to-end
     E2eTest,
-    /// Job batch o cron
     BatchJob,
-    /// Personalizado por el usuario
     Custom(String),
 }
 
-/// Contexto de ejecución de un caso de uso.
+/// Contexto que Bastion proporciona al caso de uso.
 pub struct UseCaseContext {
-    /// Proyecto al que pertenece este caso de uso.
     pub project_id: ProjectId,
-    /// Directorio .bastion/ del proyecto.
     pub bastion_dir: PathBuf,
-    /// Variables de entorno del proyecto.
     pub environment: HashMap<String, String>,
-    /// Configuración del caso de uso (TOML/YAML cargado).
-    pub config: UseCaseConfig,
-    /// Git info del proyecto.
     pub git_info: GitInfo,
 }
 
-/// Plan de ejecución — qué sandboxes se necesitan y en qué orden.
-pub struct UseCasePlan {
-    /// Steps a ejecutar (pueden ser secuenciales o paralelos).
-    pub steps: Vec<UseCaseStep>,
-    /// Dependencias entre steps (DAG).
-    pub dependencies: HashMap<String, Vec<String>>,
-    /// Steps que pueden correr en paralelo.
-    pub parallel_groups: Vec<Vec<String>>,
-    /// Políticas de reintentos, timeouts, cleanup.
-    pub policy: UseCasePolicy,
+/// Resultado genérico de un caso de uso.
+pub struct UseCaseResult {
+    pub status: UseCaseStatus,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
+    pub sandbox_count: usize,
+    pub metadata: HashMap<String, String>,
 }
 
-/// Un paso individual en un caso de uso.
-pub struct UseCaseStep {
-    /// ID único del paso.
-    pub id: String,
-    /// Nombre legible.
-    pub name: String,
-    /// Template de sandbox a usar.
-    pub template: String,
-    /// Recursos necesarios.
-    pub resources: ResourcesSpec,
-    /// Variables de entorno para este paso.
-    pub environment: HashMap<String, String>,
-    /// Timeout en ms.
-    pub timeout_ms: u64,
-    /// Comando a ejecutar (opcional — el caso de uso puede ejecutar múltiples).
-    pub command: Option<CommandSpec>,
-}
-
-/// Resultado de un paso.
-pub enum StepOutcome {
-    /// Paso completado exitosamente.
-    Success { output: String, artifacts: Vec<ArtifactRef> },
-    /// Paso falló.
-    Failure { error: String, exit_code: i32 },
-    /// Paso saltado (condición no cumplida).
-    Skipped { reason: String },
-}
-
-/// Decisión del caso de uso tras completar un paso.
-pub enum StepDecision {
-    /// Continuar con el siguiente paso.
-    Continue,
-    /// Abortar todo el caso de uso.
-    Abort { reason: String },
-    /// Reintentar este paso.
-    Retry { max_attempts: usize, delay_ms: u64 },
-    /// Saltar al paso indicado.
-    JumpTo { step_id: String },
-}
-
-/// Políticas del caso de uso.
-pub struct UseCasePolicy {
-    pub max_lifetime: Duration,
-    pub retry_count: usize,
-    pub cleanup_on_success: bool,
-    pub cleanup_on_failure: bool,
-    pub on_failure: FailurePolicy,
-}
-
-pub enum FailurePolicy {
-    Stop,
-    Continue,
-    Report,
+pub enum UseCaseStatus {
+    Success,
+    Failure { reason: String },
+    Partial { completed: usize, total: usize },
 }
 ```
 
-### 2.3 Trait `UseCaseExecutor` — El Motor de Ejecución
-
-```rust
-/// Motor de ejecución de casos de uso.
-///
-/// Bastion proporciona una implementación por defecto que:
-/// 1. Lee el plan del caso de uso
-/// 2. Crea sandboxes según el plan
-/// 3. Ejecuta steps secuencialmente o en paralelo según el DAG
-/// 4. Notifica al caso de uso de cada resultado
-/// 5. Limpia al finalizar
-#[async_trait]
-pub trait UseCaseExecutor: Send + Sync {
-    /// Ejecuta un caso de uso completo.
-    async fn execute(
-        &self,
-        use_case: &dyn SandboxUseCase,
-        context: UseCaseContext,
-        provider: &dyn SandboxProvider,
-    ) -> Result<UseCaseResult, UseCaseError>;
-}
-```
-
-### 2.4 Registro de Casos de Uso
+### 2.5 Registro de Casos de Uso
 
 ```rust
 /// Registro de casos de uso disponibles.
@@ -244,17 +206,20 @@ pub struct UseCaseRegistry {
     factories: HashMap<UseCaseKind, Box<dyn UseCaseFactory>>,
 }
 
+pub trait UseCaseFactory: Send + Sync {
+    fn kind(&self) -> UseCaseKind;
+    fn create(&self, config: &serde_json::Value) -> Result<Box<dyn SandboxUseCase>, UseCaseError>;
+}
+
 impl UseCaseRegistry {
-    /// Registra un caso de uso.
     pub fn register<F: UseCaseFactory + 'static>(&mut self, factory: F) {
         self.factories.insert(factory.kind(), Box::new(factory));
     }
 
-    /// Crea un caso de uso a partir de configuración.
     pub fn create(
         &self,
         kind: &UseCaseKind,
-        config: &UseCaseConfig,
+        config: &serde_json::Value,
     ) -> Result<Box<dyn SandboxUseCase>, UseCaseError> {
         self.factories
             .get(kind)
@@ -262,178 +227,458 @@ impl UseCaseRegistry {
             .create(config)
     }
 }
-
-/// Factory para crear casos de uso.
-pub trait UseCaseFactory: Send + Sync {
-    fn kind(&self) -> UseCaseKind;
-    fn create(&self, config: &UseCaseConfig) -> Result<Box<dyn SandboxUseCase>, UseCaseError>;
-}
 ```
+
+### 2.6 ¿Por qué no `UseCasePlan` / `UseCaseStep`?
+
+Porque **Pipeliner ya tiene ese modelo** y es completo:
+
+- `Pipeline` = plan (con stages, dependencies implícitas por when/parallel)
+- `Stage` = step (con steps, parallel, matrix, when, post)
+- `Step` = atomic unit (con Shell, Retry, Timeout, Stash, etc.)
+- `PipelineExecutor` = motor que ejecuta el plan
+
+Recrear esto como `UseCasePlan` / `UseCaseStep` es **re-inventar Pipeliner con otro nombre**. Y cuando otro caso de uso (ej: E2e test suite) necesite DAG, re-inventaría OTRA vez.
+
+La solución: cada caso de uso trae SU propio motor de planificación. Pipeliner trae `PipelineExecutor`. Un E2e test suite trae su propio runner. Bastion solo proporciona **los sandboxes**.
 
 ---
 
 ## 3. Pipeliner como Implementación Concreta
 
-### 3.1 Arquitectura de Integración
+### 3.1 El Insight Clave: `PipelineExecutor` es la Costura Natural
+
+Después de leer el código de Pipeliner en profundidad, la integración es más simple y natural de lo que parece. El `PipelineExecutor` de Pipeliner es **el punto exacto de extensión**:
+
+```rust
+// Pipeliner define este trait:
+pub trait PipelineExecutor: Send + Sync {
+    fn execute(&self, pipeline: &Pipeline) -> Result<StageResult, PipelineError>;
+    fn validate(&self, pipeline: &Pipeline) -> Result<(), ValidationError>;
+    fn dry_run(&self, pipeline: &Pipeline) -> Result<StageResult, PipelineError>;
+    fn capabilities(&self) -> ExecutorCapabilities;
+    fn health_check(&self) -> HealthStatus;
+}
+```
+
+`LocalExecutor` lo implementa ejecutando `sh -c <command>` directamente en el host. ¿Qué necesitamos? **Un `BastionExecutor` que implemente `PipelineExecutor` pero delegue la ejecución de comandos a los sandboxes de Bastion.**
+
+El `LocalExecutor` hace esto internamente:
+
+```rust
+// LocalExecutor::execute_shell() — el punto donde ejecuta comandos
+fn execute_shell(&self, command: &str, context: &PipelineContext) -> Result<(), PipelineError> {
+    let shell_config = ShellConfig { cwd: context.cwd.clone(), env: context.env.clone(), ... };
+    let result = ShellCommand::new(&shell_config).execute(command)?;
+    //                         ^^^^ AQUÍ es donde ejecuta en el host
+}
+```
+
+Nosotros reemplazamos ese punto con: `provider.run_command(sandbox_id, command)`.
+
+### 3.2 Arquitectura: Tres Capas, Sin Duplicación
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        BASTION CORE                            │
 │                                                                 │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │ SandboxProvider │ │ UseCaseRegistry │ │ UseCaseExecutor   │  │
-│  │ (Podman, etc)  │ │                │ │ (default impl)      │  │
-│  └──────┬──────┘  └──────┬───────┘  └──────┬─────────────┘  │
-│         │                │                   │                 │
-│         │    ┌───────────┼───────────────────┘                 │
-│         │    │           │                                     │
-└─────────┼────┼───────────┼─────────────────────────────────────┘
-          │    │           │
-          │    ▼           ▼
-          │  ┌─────────────────────────────────────────────────┐
-          │  │              BASTION-PIPELINE (crate)            │
-          │  │                                                  │
-          │  │  ┌──────────────────────────────────────────┐  │
-          │  │  │ PipelineUseCaseFactory                    │  │
-          │  │  │   kind: Pipeline                          │  │
-          │  │  │   create(config) → PipelineUseCase        │  │
-          │  │  └──────────────────────────────────────────┘  │
-          │  │                                                  │
-          │  │  ┌──────────────────────────────────────────┐  │
-          │  │  │ PipelineUseCase                            │  │
-          │  │  │   impl SandboxUseCase for PipelineUseCase │  │
-          │  │  │   - plan() → DAG de steps                 │  │
-          │  │  │   - execute_step() → delega a Pipeliner   │  │
-          │  │  │   - on_step_completed() → flujo del DAG   │  │
-          │  │  └──────────────────────────────────────────┘  │
-          │  │                                                  │
-          │  │  ┌──────────────────────────────────────────┐  │
-          │  │  │ Dependencia: pipeliner (crate externo)    │  │
-          │  │  │   Pipeline, Stage, Step, AgentType       │  │
-          │  │  │   PipelineBuilder, StageBuilder          │  │
-          │  │  │   WhenCondition, PostCondition            │  │
-          │  │  │   Environment, Parameters, Matrix        │  │
-          │  │  └──────────────────────────────────────────┘  │
-          │  └─────────────────────────────────────────────────┘
-          │
-          ▼
-   ┌──────────────┐
-   │ Podman       │
-   │ (sandbox)    │
-   └──────────────┘
+│  SandboxLifecycle ── create, terminate, is_alive, snapshots    │
+│  TaskExecutor     ── run_command, run_command_stream, files     │
+│  SandboxProvider  ── compone Lifecycle + Executor               │
+│  SandboxUseCase   ── trait de extensión para workflows         │
+│  UseCaseRegistry  ── registro de factories                      │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ impl PipelineExecutor
+                           │ (delega a SandboxProvider)
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    BASTION-PIPELINE (crate)                     │
+│                                                                 │
+│  BastionPipelineExecutor ── impl PipelineExecutor               │
+│    ├── por cada Stage: crea sandbox via SandboxLifecycle        │
+│    ├── por cada Step:   ejecuta via TaskExecutor                │
+│    ├── AgentType → template mapping                             │
+│    ├── Environment → sandbox env_vars                           │
+│    ├── WhenCondition → evaluación pre-step                      │
+│    ├── PostCondition → evaluación post-step                     │
+│    └── cleanup: termina sandboxes al final                      │
+│                                                                 │
+│  PipelineUseCase ── impl SandboxUseCase                         │
+│    └── delega a BastionPipelineExecutor.execute(pipeline)       │
+│                                                                 │
+│  PipelineUseCaseFactory ── impl UseCaseFactory                  │
+│    └── lee .bastion/pipelines/*.toml → Pipeline de Pipeliner    │
+│                                                                 │
+│  Dependencia: pipeliner crate (Pipeline, Stage, Step, etc.)     │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 Flujo de Ejecución de Pipeline
+**No hay DAG paralelo. No hay `UseCasePlan`. Pipeliner maneja toda la lógica de planificación. Bastion solo proporciona los sandboxes.**
 
-```
-1. Usuario: `bastion pipeline run ci`
-   ↓
-2. Bastion: lee `.bastion/pipelines/ci.toml`
-   ↓
-3. Bastion: UseCaseRegistry.create(Pipeline, config)
-   → PipelineUseCaseFactory.create(config)
-   → PipelineUseCase { pipeline_def, pipeliner_pipeline }
-   ↓
-4. PipelineUseCase.plan(context)
-   → Convierte TOML → Pipeline (Pipeliner type)
-   → Valida con pipelinerPipeline.validate()`
-   → Genera UseCasePlan con DAG de steps
-   ↓
-5. UseCaseExecutor.execute(pipeline_use_case, context, provider)
-   → Para cada step en el plan (respetando DAG y paralelismo):
-     a. SandboxProvider.create(step.template, step.resources)
-     b. PipelineUseCase.execute_step(sandbox, step, executor)
-        → Ejecuta Step::shell(command) dentro del sandbox
-     c. PipelineUseCase.on_step_completed(result, plan)
-        → Decide: Continue / Abort / Retry
-     d. Evalúa WhenCondition para el siguiente step
-     e. Ejecuta PostCondition si aplica
-   ↓
-6. PipelineUseCase.cleanup(context)
-   → Limpia sandboxes, reporta resultados
-```
-
-### 3.3 Adaptador Pipeliner → Bastion
+### 3.3 `BastionPipelineExecutor` — El Puente
 
 ```rust
-/// Adaptador que convierte tipos de Pipeliner a tipos de Bastion.
+use pipeliner::executor::{PipelineExecutor, ExecutorCapabilities, HealthStatus, PipelineContext};
+use pipeliner::pipeline::{Pipeline, Stage, StageResult, Step, StepType, Validate};
+use bastion_domain::provider::{SandboxLifecycle, TaskExecutor};
+use bastion_domain::shared::id::SandboxId;
+use bastion_domain::execution::command::CommandSpec;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// PipelineExecutor que delega a sandboxes de Bastion.
 ///
-/// Pipeliner define su propio `Pipeline`, `Stage`, `Step` —
-/// Bastion los consume a través de `UseCasePlan` / `UseCaseStep`.
-pub struct PipelineAdapter;
+/// Este es el ÚNICO punto de integración entre Pipeliner y Bastion.
+/// Pipeliner decide QUÉ ejecutar (DAG, when, post, parallel).
+/// Bastion decide DÓNDE ejecutar (sandbox lifecycle, isolation, resources).
+pub struct BastionPipelineExecutor<L, E>
+where
+    L: SandboxLifecycle,
+    E: TaskExecutor,
+{
+    lifecycle: Arc<L>,
+    executor: Arc<E>,
+    /// Mapping de AgentType image → sandbox template name
+    template_map: HashMap<String, String>,
+    /// Sandbox IDs activos (para cleanup)
+    active_sandboxes: tokio::sync::Mutex<Vec<SandboxId>>,
+}
 
-impl PipelineAdapter {
-    /// Convierte un Pipeline de Pipeliner en un UseCasePlan de Bastion.
-    pub fn to_plan(pipeline: &Pipeline) -> Result<UseCasePlan, UseCaseError> {
-        let mut steps = Vec::new();
-        let mut dependencies = HashMap::new();
-        let mut parallel_groups = Vec::new();
+impl<L, E> PipelineExecutor for BastionPipelineExecutor<L, E>
+where
+    L: SandboxLifecycle + 'static,
+    E: TaskExecutor + 'static,
+{
+    fn execute(&self, pipeline: &Pipeline) -> Result<StageResult, pipeliner::pipeline::PipelineError> {
+        // 1. Construir contexto con environment del pipeline
+        let mut context = PipelineContext::new();
+        for (key, value) in &pipeline.environment.vars {
+            context.set_env(key, value);
+        }
 
-        for (i, stage) in pipeline.stages.iter().enumerate() {
-            // Cada Stage de Pipeliner → UseCaseStep de Bastion
-            let step = UseCaseStep {
-                id: stage.name.clone(),
-                name: stage.name.clone(),
-                template: Self::extract_template(&stage.agent),
-                resources: Self::extract_resources(&stage.agent),
-                environment: pipeline.environment.vars.clone(),
-                timeout_ms: pipeline.options.timeout
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(300_000),
-                command: Self::extract_command(stage),
-            };
-            steps.push(step);
-
-            // WhenCondition → dependencias condicionales
+        // 2. Ejecutar cada stage (Pipeliner controla el orden)
+        for stage in &pipeline.stages {
+            // 2a. Evaluar WhenCondition
             if let Some(ref when) = stage.when {
-                // Las condiciones se evalúan en runtime,
-                // pero se registran en el plan como metadatos
+                if !self.eval_when(when, &context) {
+                    context.record_stage_result(&stage.name, StageResult::Skipped);
+                    continue;
+                }
             }
 
-            // Parallel branches → parallel_groups
-            if !stage.parallel.is_empty() {
-                let group: Vec<String> = stage.parallel.iter()
-                    .map(|b| b.name.clone())
-                    .collect();
-                parallel_groups.push(group);
+            // 2b. Crear sandbox para este stage
+            let template = self.resolve_template(&stage.agent);
+            let sandbox_id = SandboxId::generate();
+            let sandbox = self.lifecycle.create(
+                &sandbox_id,
+                &template,
+                &Default::default(),  // ResourcesSpec from AgentType
+                &Default::default(),  // NetworkSpec
+                &context.env,         // Environment → sandbox env_vars
+                pipeline.options.timeout.map(|d| d.as_millis() as u64).unwrap_or(300_000),
+            ).map_err(|e| pipeliner::pipeline::PipelineError::AgentConfig(e.to_string()))?;
+
+            // Track para cleanup
+            self.active_sandboxes.lock().await.push(sandbox_id.clone());
+
+            // 2c. Ejecutar steps dentro del sandbox
+            let result = self.execute_stage_in_sandbox(stage, &sandbox_id, &context);
+
+            // 2d. Ejecutar PostConditions
+            for post in &stage.post {
+                let last = context.get_stage_result(&stage.name).copied();
+                if post.should_execute(result.clone(), last) {
+                    let _ = self.execute_steps_in_sandbox(post.steps(), &sandbox_id, &context);
+                }
+            }
+
+            // 2e. Record y decidir si continuar
+            context.record_stage_result(&stage.name, result.clone());
+            if result.is_failure() {
+                return Ok(result);
             }
         }
 
-        Ok(UseCasePlan {
-            steps,
-            dependencies,
-            parallel_groups,
-            policy: UseCasePolicy {
-                max_lifetime: pipeline.options.timeout
-                    .unwrap_or(Duration::from_secs(3600)),
-                retry_count: pipeline.options.retry.unwrap_or(0),
-                cleanup_on_success: true,
-                cleanup_on_failure: true,
-                on_failure: FailurePolicy::Stop,
-            },
-        })
+        // 3. Pipeline post-conditions
+        for post in &pipeline.post {
+            let last = context.stage_results.values().last().copied();
+            if let Some(last_result) = last {
+                if post.should_execute(last_result, None) {
+                    // Ejecutar en último sandbox o en uno nuevo
+                }
+            }
+        }
+
+        // 4. Cleanup: terminar sandboxes
+        self.cleanup().await;
+
+        Ok(StageResult::Success)
     }
 
-    fn extract_template(agent: &AgentType) -> String {
-        match agent {
-            AgentType::Docker(c) => c.image.clone(),
-            AgentType::Podman(c) => c.image.clone(),
-            AgentType::Kubernetes(c) => c.image.clone(),
-            AgentType::Any => "default".to_string(),
-            AgentType::Label(l) => l.clone(),
+    fn validate(&self, pipeline: &Pipeline) -> Result<(), pipeliner::pipeline::ValidationError> {
+        pipeline.validate()
+    }
+
+    fn dry_run(&self, pipeline: &Pipeline) -> Result<StageResult, pipeliner::pipeline::PipelineError> {
+        pipeline.validate()?;
+        tracing::info!("Dry run: would execute {} stages", pipeline.stages.len());
+        for stage in &pipeline.stages {
+            tracing::info!("  Stage '{}': {} steps", stage.name, stage.steps.len());
+        }
+        Ok(StageResult::Success)
+    }
+
+    fn capabilities(&self) -> ExecutorCapabilities {
+        ExecutorCapabilities {
+            can_execute_shell: true,
+            can_run_docker: true,     // via sandbox (Podman)
+            can_run_kubernetes: false, // futuro
+            supports_parallel: true,
+            supports_caching: false,
+            supports_timeout: true,
+            supports_retry: true,
         }
     }
 
-    fn extract_command(stage: &Stage) -> Option<CommandSpec> {
-        stage.steps.first().and_then(|step| {
+    fn health_check(&self) -> HealthStatus {
+        // Check if sandbox provider is alive
+        HealthStatus::Healthy  // TODO: actual health check
+    }
+}
+
+impl<L, E> BastionPipelineExecutor<L, E>
+where
+    L: SandboxLifecycle,
+    E: TaskExecutor,
+{
+    /// Ejecuta un Stage completo dentro de un sandbox.
+    fn execute_stage_in_sandbox(
+        &self,
+        stage: &Stage,
+        sandbox_id: &SandboxId,
+        context: &PipelineContext,
+    ) -> StageResult {
+        // Parallel branches
+        if !stage.parallel.is_empty() {
+            // TODO: spawn tokio tasks, cada una con su sandbox
+        }
+
+        // Matrix execution
+        if let Some(ref matrix) = stage.matrix {
+            let combinations = matrix.generate_combinations();
+            // TODO: spawn tokio tasks con env_override por combination
+        }
+
+        // Sequential steps
+        match self.execute_steps_in_sandbox(&stage.steps, sandbox_id, context) {
+            Ok(()) => StageResult::Success,
+            Err(e) => StageResult::Failure, // simplificado
+        }
+    }
+
+    /// Ejecuta Steps dentro de un sandbox — el corazón de la integración.
+    ///
+    /// Reemplaza `ShellCommand::execute()` de LocalExecutor
+    /// con `TaskExecutor::run_command()` de Bastion.
+    fn execute_steps_in_sandbox(
+        &self,
+        steps: &[Step],
+        sandbox_id: &SandboxId,
+        context: &PipelineContext,
+    ) -> Result<(), pipeliner::pipeline::PipelineError> {
+        for step in steps {
             match &step.step_type {
-                StepType::Shell { command } => Some(CommandSpec::new(command)),
-                _ => None,
+                StepType::Shell { command } => {
+                    // AQUÍ está la magia: en vez de sh -c, delegamos al sandbox
+                    let cmd = CommandSpec::new(command);
+                    let result = self.executor.run_command(sandbox_id, &cmd)
+                        .map_err(|e| pipeliner::pipeline::PipelineError::Io(e.to_string()))?;
+
+                    if !result.is_success() {
+                        return Err(pipeliner::pipeline::PipelineError::CommandFailed {
+                            code: result.exit_code,
+                            stderr: result.stderr,
+                        });
+                    }
+                }
+                StepType::Echo { message } => {
+                    tracing::info!("[echo] {}", message);
+                }
+                StepType::Retry { count, step } => {
+                    let mut last_err = None;
+                    for attempt in 0..*count {
+                        match self.execute_steps_in_sandbox(&[step.as_ref().clone()], sandbox_id, context) {
+                            Ok(()) => { last_err = None; break; }
+                            Err(e) => {
+                                tracing::warn!("Retry {}/{}", attempt + 1, count);
+                                last_err = Some(e);
+                            }
+                        }
+                    }
+                    if let Some(e) = last_err { return Err(e); }
+                }
+                StepType::Timeout { duration, step } => {
+                    // TODO: tokio::time::timeout wrapper
+                    self.execute_steps_in_sandbox(&[step.as_ref().clone()], sandbox_id, context)?;
+                }
+                StepType::Stash { name, includes } => {
+                    // TODO: leer archivos del sandbox, guardar en .bastion/stash/
+                }
+                StepType::Unstash { name } => {
+                    // TODO: escribir archivos al sandbox desde .bastion/stash/
+                }
+                StepType::Input { message, default } => {
+                    // TODO: emitir evento SSE, esperar respuesta
+                }
+                StepType::Dir { path, steps } => {
+                    // Ejecutar steps en directorio específico del sandbox
+                    // Podemos hacer cd con: CommandSpec::new(&format!("cd {} && ...", path))
+                    self.execute_steps_in_sandbox(steps, sandbox_id, context)?;
+                }
             }
-        })
+        }
+        Ok(())
+    }
+
+    /// Traduce AgentType de Pipeliner a template de Bastion.
+    fn resolve_template(&self, agent: &Option<pipeliner::pipeline::AgentType>) -> String {
+        match agent {
+            Some(pipeliner::pipeline::AgentType::Docker(c)) => {
+                self.template_map.get(&c.image)
+                    .cloned()
+                    .unwrap_or_else(|| c.image.clone())
+            }
+            Some(pipeliner::pipeline::AgentType::Podman(c)) => {
+                self.template_map.get(&c.image)
+                    .cloned()
+                    .unwrap_or_else(|| c.image.clone())
+            }
+            _ => "default".to_string(),
+        }
+    }
+
+    /// Cleanup: termina todos los sandboxes creados.
+    async fn cleanup(&self) {
+        let mut sandboxes = self.active_sandboxes.lock().await;
+        for id in sandboxes.drain(..) {
+            if let Err(e) = self.lifecycle.terminate(&id).await {
+                tracing::warn!("Failed to terminate sandbox {}: {}", id, e);
+            }
+        }
     }
 }
 ```
+
+### 3.4 `PipelineUseCase` — Implementación del Trait de Bastion
+
+```rust
+/// Implementación de SandboxUseCase que usa Pipeliner internamente.
+///
+/// Bastion ve un SandboxUseCase. Dentro, es un PipelineExecutor.
+pub struct PipelineUseCase {
+    pipeline: Pipeline,  // tipo de Pipeliner — el DSL completo
+    executor: Arc<BastionPipelineExecutor<dyn SandboxLifecycle, dyn TaskExecutor>>,
+}
+
+#[async_trait]
+impl SandboxUseCase for PipelineUseCase {
+    fn kind(&self) -> &UseCaseKind { &UseCaseKind::Pipeline }
+    fn name(&self) -> &str {
+        self.pipeline.name.as_deref().unwrap_or("unnamed-pipeline")
+    }
+
+    async fn run(
+        &self,
+        provider: &dyn SandboxProvider,
+        context: &UseCaseContext,
+    ) -> Result<UseCaseResult, UseCaseError> {
+        // Delega TODO al PipelineExecutor de Pipeliner
+        let result = self.executor.execute(&self.pipeline)
+            .map_err(UseCaseError::Pipeline)?;
+
+        Ok(UseCaseResult {
+            status: match result {
+                StageResult::Success => UseCaseStatus::Success,
+                StageResult::Failure => UseCaseStatus::Failure { reason: "Stage failed".into() },
+                StageResult::Skipped => UseCaseStatus::Success, // skipped = ok
+                StageResult::Unstable => UseCaseStatus::Partial { completed: 0, total: 0 },
+            },
+            started_at: Utc::now(),  // TODO: track real times
+            finished_at: Utc::now(),
+            sandbox_count: self.executor.active_sandbox_count().await,
+            metadata: HashMap::new(),
+        })
+    }
+
+    async fn cleanup(
+        &self,
+        provider: &dyn SandboxProvider,
+    ) -> Result<(), UseCaseError> {
+        self.executor.cleanup().await;
+        Ok(())
+    }
+}
+```
+
+### 3.5 Flujo Completo — Cómo se Conecta Todo
+
+```
+Usuario: bastion pipeline run ci
+    │
+    ▼
+CLI parsea "pipeline" → UseCaseKind::Pipeline
+    │
+    ▼
+UseCaseRegistry.get(Pipeline) → PipelineUseCaseFactory
+    │
+    ▼
+Factory lee .bastion/pipelines/ci.toml → Pipeline (Pipeliner type)
+    │  Pipeline { name: "ci", stages: [check, test, lint], environment: {...}, ... }
+    │
+    ▼
+Factory crea PipelineUseCase { pipeline, executor: BastionPipelineExecutor }
+    │  BastionPipelineExecutor { lifecycle: PodmanAdapter, executor: PodmanAdapter }
+    │
+    ▼
+Bastion llama: use_case.run(provider, context)
+    │
+    ▼
+PipelineUseCase delega: executor.execute(pipeline)
+    │
+    ▼
+BastionPipelineExecutor.execute(pipeline):
+    │
+    │  Para cada Stage en pipeline.stages:
+    │    ├── Evalúa WhenCondition? → skip si no aplica
+    │    ├── lifecycle.create(template, resources, env) → Sandbox
+    │    ├── Para cada Step en stage.steps:
+    │    │   └── TaskExecutor.run_command(sandbox_id, command)
+    │    │       (en vez de sh -c, ejecuta dentro del sandbox)
+    │    ├── Evalúa PostCondition → cleanup si aplica
+    │    └── Record result → decide continue/abort
+    │
+    ▼
+Cleanup: lifecycle.terminate() para cada sandbox
+    │
+    ▼
+Result: UseCaseResult { status: Success/Failure, sandbox_count: N, ... }
+```
+
+### 3.6 ¿Qué gana Pipeliner con esto?
+
+Pipeliner actualmente solo ejecuta en **local** (`LocalExecutor`). Con `BastionPipelineExecutor`, Pipeliner gana:
+
+| Antes (LocalExecutor) | Después (BastionPipelineExecutor) |
+|-----------------------|----------------------------------|
+| Ejecuta en el host directamente | Ejecuta en sandboxes aislados |
+| Sin aislamiento | Aislamiento completo (Podman/Firecracker/WASM) |
+| Sin resource limits | Resource limits por sandbox |
+| Sin snapshots | Snapshots para time-travel debugging |
+| Sin gestión de lifecycle | Auto-cleanup, sleep/wake, timeout |
+| Sin project context | Integrado con `.bastion/` |
+| Sin cost attribution | Costos por pipeline/stage/sandbox |
+
+Y Pipeliner no pierde nada — sigue funcionando standalone con `LocalExecutor` para uso simple. `BastionPipelineExecutor` es una implementación alternativa del mismo trait.
 
 ---
 
@@ -814,49 +1059,62 @@ Proyecto: Bastion
 
 ### Fase 0: Preparación (1 semana)
 
-- [ ] Crear `bastion-domain/src/usecase/` module con traits `SandboxUseCase`, `UseCaseExecutor`, `UseCaseRegistry`
-- [ ] Crear tipos de soporte: `UseCasePlan`, `UseCaseStep`, `StepOutcome`, `StepDecision`, `UseCasePolicy`
-- [ ] Mover `PipelineDef` y `PipelineStage` fuera de `bastion-domain/src/project/types.rs` → eliminar de domain core
+- [ ] Crear `bastion-domain/src/usecase/` con trait `SandboxUseCase` (3 métodos: kind, run, cleanup)
+- [ ] Crear tipos mínimos: `UseCaseKind`, `UseCaseContext`, `UseCaseResult`, `UseCaseStatus`
+- [ ] Crear `UseCaseRegistry` + `UseCaseFactory`
+- [ ] Mover `PipelineDef` y `PipelineStage` fuera de `bastion-domain` → eliminar de domain core
 - [ ] Actualizar `Project` aggregate: `pipelines: Vec<PipelineDef>` → `use_cases: Vec<UseCaseConfig>`
 
-### Fase 1: Casos de Uso Core (2 semanas)
-
-- [ ] Implementar `AdHocTestUseCase` — el caso más simple (un sandbox, un comando)
-- [ ] Implementar `PoCUseCase` — sandbox con lifetime extendido, sin comando fijo
-- [ ] Implementar `BatchJobUseCase` — sandbox con comando batch, cleanup automático
-- [ ] Implementar `DefaultUseCaseExecutor` — ejecutor genérico que respeta DAG
-- [ ] Tests: cada caso de uso con mock provider
-
-### Fase 2: Integración Pipeliner (3 semanas)
+### Fase 1: BastionPipelineExecutor (2 semanas)
 
 - [ ] Crear crate `bastion-pipeline` (depende de `bastion-domain` + `pipeliner`)
-- [ ] Implementar `PipelineUseCaseFactory`
-- [ ] Implementar `PipelineUseCase` — adaptador entre Pipeliner types y Bastion traits
-- [ ] Implementar `PipelineAdapter::to_plan()` — convertir Pipeline → UseCasePlan
-- [ ] Implementar `PipelineAdapter::from_toml()` — leer `.bastion/pipelines/*.toml`
-- [ ] Soporte para: environment, parameters, when conditions, post conditions
-- [ ] Soporte para: parallel branches, matrix execution (via DAG en UseCasePlan)
+- [ ] Implementar `BastionPipelineExecutor` — `impl PipelineExecutor`
+- [ ] Mapeo `AgentType` → sandbox template
+- [ ] Implementar `execute_steps_in_sandbox()` — reemplaza `ShellCommand::execute()` con `TaskExecutor::run_command()`
+- [ ] Implementar WhenCondition evaluation
+- [ ] Implementar PostCondition execution
+- [ ] Implementar cleanup de sandboxes
+- [ ] Tests: `BastionPipelineExecutor` con mock provider
 
-### Fase 3: GISS-Inspired Data Models (1 semana)
+### Fase 2: PipelineUseCase (1 semana)
 
-- [ ] Diseñar `project.toml` schema con GISS-inspired fields (tools, strategies, artifacts-repositories)
+- [ ] Implementar `PipelineUseCase` — `impl SandboxUseCase` que delega a `BastionPipelineExecutor`
+- [ ] Implementar `PipelineUseCaseFactory` — lee `.bastion/pipelines/*.toml` → `Pipeline` de Pipeliner
+- [ ] TOML parser: TOML → `Pipeline` (usando serde de Pipeliner)
+- [ ] Registrar `PipelineUseCaseFactory` en `UseCaseRegistry`
+- [ ] Tests: flujo completo TOML → Pipeline → SandboxUseCase → Sandboxes
+
+### Fase 3: StepTypes Avanzados (1 semana)
+
+- [ ] `Stash/Unstash` → leer/escribir archivos via `TaskExecutor::read_file/write_file`
+- [ ] `Retry` → loop con delay en `execute_steps_in_sandbox`
+- [ ] `Timeout` → `tokio::time::timeout` wrapper
+- [ ] `Input` → emitir SSE event, esperar respuesta
+- [ ] `Dir` → prefijo de directorio en CommandSpec
+- [ ] Parallel branches → spawn tokio tasks con sandboxes paralelos
+- [ ] Matrix → generar combinaciones, cada una con su sandbox
+
+### Fase 4: GISS-Inspired Data Models (1 semana)
+
+- [ ] Diseñar `project.toml` schema con tools, strategies, artifacts-repositories
 - [ ] Diseñar `cache.toml` schema (cache persistente entre runs)
 - [ ] Diseñar `releases/` schema (ReleaseDescriptor adaptado)
-- [ ] Parser TOML → tipos Rust en `bastion-domain`
+- [ ] Integrar con Pipeliner: capabilities como Stage templates
 
-### Fase 4: CLI + Dashboard (2 semanas)
+### Fase 5: CLI + Dashboard (2 semanas)
 
-- [ ] CLI: `bastion run --use-case <kind> --config <path>`
-- [ ] CLI: `bastion use-case list` — mostrar casos de uso registrados
-- [ ] Dashboard: UseCase API endpoints (`/api/v1/projects/:id/use-cases/`)
-- [ ] Dashboard: Pipeline visualization (via UseCase events)
-- [ ] Dashboard: UseCase-agnostic metrics (costos por tipo de uso)
+- [ ] CLI: `bastion run --use-case pipeline --config ci.toml`
+- [ ] CLI: `bastion use-case list`
+- [ ] Dashboard: UseCase API endpoints
+- [ ] Dashboard: Pipeline visualization (via Pipeliner stage results)
+- [ ] Dashboard: Cost attribution por use case
 
-### Fase 5: Extensibilidad (ongoing)
+### Fase 6: Extensibilidad (ongoing)
 
+- [ ] Implementar `AdHocTestUseCase` (sandbox + command, el más simple)
+- [ ] Implementar `BatchJobUseCase` (sandbox + command + cleanup)
 - [ ] Documentar cómo crear un `SandboxUseCase` custom
 - [ ] Plugin system: cargar casos de uso desde crates externos
-- [ ] Marketplace conceptual: registry de use-cases compartibles
 
 ---
 
@@ -868,43 +1126,40 @@ Proyecto: Bastion
 // ELIMINAR de project/types.rs:
 pub struct PipelineDef { ... }
 pub struct PipelineStage { ... }
-
-// MOVER a bastion-pipeline crate
+// → Se mueven a bastion-pipeline crate (usa tipos de Pipeliner directamente)
 ```
 
-### 7.2 Añadir a `bastion-domain` (core)
+### 7.2 Añadir a `bastion-domain` (core) — Mínimo
 
 ```rust
-// NUEVO module: usecase/
-pub trait SandboxUseCase { ... }
-pub trait UseCaseExecutor { ... }
-pub trait UseCaseFactory { ... }
-pub struct UseCaseRegistry { ... }
-pub struct UseCasePlan { ... }
-pub struct UseCaseStep { ... }
-pub enum UseCaseKind { ... }
-pub enum StepOutcome { ... }
-pub enum StepDecision { ... }
-pub struct UseCasePolicy { ... }
+// NUEVO module: usecase/ (~150 LOC total)
+pub trait SandboxUseCase { fn kind(), name(), run(), cleanup() }  // ~30 LOC
+pub enum UseCaseKind { Pipeline, AdHocTest, ProofOfConcept, E2eTest, BatchJob, Custom(String) }
+pub struct UseCaseContext { project_id, bastion_dir, environment, git_info }
+pub struct UseCaseResult { status, started_at, finished_at, sandbox_count, metadata }
+pub enum UseCaseStatus { Success, Failure, Partial }
+pub trait UseCaseFactory { fn kind(), create() }
+pub struct UseCaseRegistry { factories }
 ```
 
-### 7.3 Modificar en `bastion-domain`
+### 7.3 Añadir a `bastion-pipeline` (crate nuevo) — Toda la lógica
+
+```rust
+// BastionPipelineExecutor — impl PipelineExecutor (~200 LOC)
+// PipelineUseCase — impl SandboxUseCase (~50 LOC)
+// PipelineUseCaseFactory — impl UseCaseFactory (~80 LOC)
+// TOML parser — TOML → Pipeline (~100 LOC)
+```
+
+### 7.4 Modificar en `bastion-domain`
 
 ```rust
 // project/aggregate.rs - Project struct
 pub struct Project {
-    pub id: ProjectId,
-    pub name: String,
-    pub path: PathBuf,
-    pub kind: ProjectKind,
-    pub git: GitInfo,
-    pub sandboxes: Vec<SandboxSummary>,
+    ...
 -   pub pipelines: Vec<PipelineDef>,           // ELIMINAR
-+   pub use_cases: Vec<UseCaseConfig>,          // NUEVO — configs de casos de uso
-    pub pool_config: PoolConfig,
-    pub resource_limits: ResourceLimits,
-    pub last_active: DateTime<Utc>,
-    pub cost: CostSummary,
++   pub use_cases: Vec<UseCaseConfig>,          // NUEVO — configs genéricas
+    ...
 }
 
 // SandboxPurpose — simplificar
@@ -913,11 +1168,25 @@ pub enum SandboxPurpose {
     ProofOfConcept,
     E2eTest,
     RealTest,
--   PipelineStage,           // Ya no es un propósito — es un caso de uso
+-   PipelineStage,           // Ya no es un propósito especial
     Job,
-+   UseCase(String),         // Caso de uso genérico (pipeline, ansible, k6, etc.)
++   UseCase(String),         // Caso de uso genérico
 }
 ```
+
+### 7.5 Dependencias entre Crates
+
+```
+bastion-domain          (core, sin dependencias externas)
+    ↑
+bastion-infrastructure  (implementaciones concretas de providers)
+    ↑
+bastion-pipeline        (depende de bastion-domain + pipeliner)
+    ↑
+bastion-gateway         (CLI + MCP + HTTP server)
+```
+
+`bastion-domain` NO depende de `pipeliner`. Solo `bastion-pipeline` conoce Pipeliner.
 
 ---
 
@@ -967,18 +1236,36 @@ Tomamos los patrones, no la implementación.
 
 ## 10. Conclusión
 
-**Bastion orquesta sandboxes. Los pipelines usan sandboxes. Son capas diferentes.**
+**Bastion orquesta sandboxes. Pipeliner orquesta pipelines. Son capas complementarias, no competitivas.**
 
-La integración de Pipeliner como ciudadano de primer nivel se logra mediante:
+La integración tiene **un único punto de costura**: `impl PipelineExecutor for BastionPipelineExecutor`.
 
-1. **Abstracción `SandboxUseCase`** — Bastion define QUÉ necesita de un caso de uso
-2. **`PipelineUseCase`** — Pipeliner implementa CÓMO un pipeline usa sandboxes
-3. **`UseCaseRegistry`** — Bastion descubre casos de uso dinámicamente
-4. **Modelo de datos GISS-inspired** — Configuración declarativa en `.bastion/`
+- Pipeliner decide **QUÉ** ejecutar (DAG, stages, when, post, parallel, matrix)
+- Bastion decide **DÓNDE** ejecutar (sandbox lifecycle, isolation, resources, cleanup)
+- El `BastionPipelineExecutor` traduce entre ambos mundos: `ShellCommand::execute()` → `TaskExecutor::run_command()`
 
-Este modelo mantiene a Bastion agnóstico, permite que Pipeliner evolucione independientemente, y abre la puerta a una ecología de casos de uso que van más allá de los pipelines.
+No hay `UseCasePlan`, `UseCaseStep`, ni DAG paralelo. Pipeliner tiene su DSL completo y lo usamos directamente.
+
+El trait `SandboxUseCase` es la abstracción mínima de Bastion para extensibilidad — pero Pipeliner no lo "ve". Pipeliner solo ve `PipelineExecutor`, que es SU trait.
+
+**Principio**: cada proyecto usa su propio trait como interfaz natural:
+- Pipeliner → `PipelineExecutor` (su API de ejecución)
+- Bastion → `SandboxUseCase` (su API de extensión)
+- `bastion-pipeline` → el puente que conecta ambos
+
+```
+Pipeliner          bastion-pipeline         Bastion
+─────────          ────────────────         ───────
+Pipeline           BastionPipeline          SandboxLifecycle
+Stage               Executor                 TaskExecutor
+Step                   │                      SandboxProvider
+PipelineExecutor ──────┘
+  (impl)               │
+                       └─── SandboxUseCase (impl PipelineUseCase)
+                            (Bastion solo ve esto)
+```
 
 ---
 
-*Documento de estrategia — 2026-05-12*
+*Documento de estrategia v2 — 2026-05-12*
 *Proyectos: Bastion + Pipeliner + GISS Framework*
