@@ -13,6 +13,7 @@ use bastion_domain::sandbox::repository::SandboxRepository;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxStatus};
 use bastion_domain::shared::DomainError;
 use bastion_domain::shared::id::{ProviderId, SandboxId, TemplateId};
+use bastion_domain::project::{ProjectId, SandboxPurpose};
 
 /// SQLite-backed implementation of `SandboxRepository`.
 #[derive(Debug)]
@@ -46,7 +47,9 @@ impl SqliteSandboxRepository {
                 expires_at TEXT,
                 resources TEXT NOT NULL,
                 network TEXT NOT NULL,
-                metadata TEXT NOT NULL DEFAULT '{}'
+                metadata TEXT NOT NULL DEFAULT '{}',
+                project_id TEXT,
+                purpose TEXT
             );
             "#,
         )
@@ -409,5 +412,8 @@ fn row_to_sandbox(row: SandboxRow) -> Result<Sandbox, DomainError> {
         resources,
         network,
         metadata,
+        // Legacy sandboxes don't have project_id or purpose
+        project_id: None,
+        purpose: None,
     })
 }

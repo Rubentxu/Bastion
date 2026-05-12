@@ -37,6 +37,9 @@ use enrichment_engine::traits::RunRecorder;
 
 use rmcp::{ServiceExt, service::RoleServer};
 
+#[cfg(feature = "dashboard")]
+use bastion_dashboard::{DashboardApp, ProjectManager, ProjectManagerPort, DashboardApiClient};
+
 // HTTP transport imports
 use hyper::server::conn::http1;
 use hyper_util::service::TowerToHyperService;
@@ -61,10 +64,56 @@ mod server;
 use registry::{RegistryService, WorkerRegistryServer};
 use tonic::codec::CompressionEncoding;
 
+/// CLI project kind enum that maps to bastion_domain::project::ProjectKind.
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum CliProjectKind {
+    Rust,
+    Nodejs,
+    Python,
+    Go,
+    Generic,
+}
+
+impl From<CliProjectKind> for bastion_domain::project::ProjectKind {
+    fn from(kind: CliProjectKind) -> Self {
+        match kind {
+            CliProjectKind::Rust => bastion_domain::project::ProjectKind::Rust,
+            CliProjectKind::Nodejs => bastion_domain::project::ProjectKind::NodeJs,
+            CliProjectKind::Python => bastion_domain::project::ProjectKind::Python,
+            CliProjectKind::Go => bastion_domain::project::ProjectKind::Go,
+            CliProjectKind::Generic => bastion_domain::project::ProjectKind::Generic,
+        }
+    }
+}
+
 #[derive(clap::ValueEnum, Clone, Debug)]
 enum TransportMode {
     Stdio,
     Http,
+}
+
+/// CLI commands for the bastion gateway.
+#[derive(clap::Subcommand, Debug)]
+enum Commands {
+    /// Initialize a new Bastion project in the current directory.
+    Init {
+        /// Project kind (determines default templates and pipelines).
+        #[arg(long, value_enum, default_value = "generic")]
+        kind: CliProjectKind,
+        /// Project name (defaults to directory name).
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Start the dashboard HTTP server on port 3000.
+    #[cfg(feature = "dashboard")]
+    Dashboard {
+        /// Port to serve dashboard on.
+        #[arg(long, default_value_t = 3000)]
+        port: u16,
+        /// Open browser automatically.
+        #[arg(long, default_value_t = false)]
+        open_browser: bool,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -146,6 +195,10 @@ struct Args {
     /// Useful for e2e tests that only need MCP protocol testing without real infrastructure.
     #[arg(long, default_value_t = false)]
     test_mode: bool,
+
+    /// Subcommand to run.
+    #[command(subcommand)]
+    command: Option<Commands>,
 }
 
 /// Run HTTP transport server using StreamableHttpService
@@ -198,6 +251,96 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Handle CLI commands
+    #[cfg(feature = "dashboard")]
+    {
+        if let Some(cmd) = &args.command {
+            match cmd {
+                Commands::Init { kind, name } => {
+                    // Initialize a new Bastion project
+                    let project_path = std::env::current_dir()
+                        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))?;
+
+                    let project_name = name.clone().unwrap_or_else(|| {
+                        project_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unnamed")
+                            .to_string()
+                    });
+
+                    // Use ProjectManager to initialize the project
+                    let api_client = DashboardApiClient::default();
+                    let manager = ProjectManager::new(api_client);
+
+                    let project_path_for_init = if project_name != project_path.file_name().and_then(|n| n.to_str()).unwrap_or("") {
+                        // If name was provided and differs from directory, create a subdirectory
+                        if name.is_some() {
+                            project_path.join(&project_name)
+                        } else {
+                            project_path.clone()
+                        }
+                    } else {
+                        project_path.clone()
+                    };
+
+                    // Create project directory if it doesn't exist and name was specified
+                    if name.is_some() && !project_path_for_init.exists() {
+                        std::fs::create_dir_all(&project_path_for_init)
+                            .map_err(|e| anyhow::anyhow!("Failed to create project directory: {}", e))?;
+                    }
+
+                    // Convert CLI kind to domain kind
+                    let domain_kind: bastion_domain::project::ProjectKind = (*kind).clone().into();
+
+                    match manager.init_project(&project_path_for_init, domain_kind).await {
+                        Ok(project) => {
+                            tracing::info!("Successfully initialized project '{}' at {}", project.name, project.path.display());
+                            tracing::info!("Project ID: {}", project.id);
+                            tracing::info!("Run `bastion-gateway dashboard` to start the dashboard server");
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to initialize project: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                    return Ok(());
+                }
+                Commands::Dashboard { port, open_browser } => {
+                    // Start the dashboard server
+                    tracing::info!("Starting dashboard server on port {}", port);
+
+                    let api_client = DashboardApiClient::new("http://127.0.0.1:8080/api/v1");
+                    let manager = ProjectManager::new(api_client.clone());
+
+                    let dashboard_app = DashboardApp::new(
+                        std::sync::Arc::new(manager),
+                        std::sync::Arc::new(api_client),
+                        "http://127.0.0.1:8080".to_string(),
+                        *port,
+                    );
+
+                    // Open browser if requested
+                    if *open_browser {
+                        let url = format!("http://localhost:{}/", port);
+                        tracing::info!("Opening browser to {}", url);
+                        if let Err(e) = opener::open(&url) {
+                            tracing::warn!("Failed to open browser: {}", e);
+                        }
+                    } else {
+                        tracing::info!("Dashboard available at http://localhost:{}/", port);
+                    }
+
+                    // Run the dashboard server
+                    if let Err(e) = dashboard_app.serve().await {
+                        tracing::error!("Dashboard server error: {}", e);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
 
     // Set DANGEROUS_ALLOW_LOCAL if flag is present
     if args.dangerous_allow_local {

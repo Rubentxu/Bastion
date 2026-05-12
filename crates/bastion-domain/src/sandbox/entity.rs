@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::value_objects::{NetworkSpec, ResourcesSpec, SandboxStatus};
+use crate::project::{ProjectId, SandboxPurpose};
 use crate::shared::id::{ProviderId, SandboxId, TemplateId};
 
 /// Sandbox aggregate root.
@@ -26,6 +27,10 @@ pub struct Sandbox {
     pub resources: ResourcesSpec,
     pub network: NetworkSpec,
     pub metadata: std::collections::HashMap<String, String>,
+    /// Project this sandbox belongs to (None for legacy sandboxes).
+    pub project_id: Option<ProjectId>,
+    /// Purpose of this sandbox (None for legacy).
+    pub purpose: Option<SandboxPurpose>,
 }
 
 impl Sandbox {
@@ -47,6 +52,33 @@ impl Sandbox {
             resources,
             network,
             metadata: std::collections::HashMap::new(),
+            project_id: None,
+            purpose: None,
+        }
+    }
+
+    /// Create a new sandbox with project scope.
+    pub fn new_with_project(
+        id: SandboxId,
+        template_id: TemplateId,
+        provider_id: ProviderId,
+        resources: ResourcesSpec,
+        network: NetworkSpec,
+        project_id: ProjectId,
+        purpose: SandboxPurpose,
+    ) -> Self {
+        Self {
+            id,
+            template_id,
+            provider_id,
+            status: SandboxStatus::Pending,
+            created_at: Utc::now(),
+            expires_at: None,
+            resources,
+            network,
+            metadata: std::collections::HashMap::new(),
+            project_id: Some(project_id),
+            purpose: Some(purpose),
         }
     }
 
@@ -102,5 +134,65 @@ impl Sandbox {
     /// Check if the sandbox is still active (can accept commands).
     pub fn is_active(&self) -> bool {
         matches!(self.status, SandboxStatus::Running | SandboxStatus::Pending)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sandbox::value_objects::{NetworkSpec, ResourcesSpec};
+    use crate::shared::id::ProviderId;
+
+    fn create_test_sandbox() -> Sandbox {
+        Sandbox::new(
+            SandboxId::new("test-sandbox"),
+            TemplateId::new("template-1"),
+            ProviderId::new("provider-1"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        )
+    }
+
+    #[test]
+    fn test_sandbox_new_has_no_project() {
+        let sandbox = create_test_sandbox();
+        assert!(sandbox.project_id.is_none());
+        assert!(sandbox.purpose.is_none());
+    }
+
+    #[test]
+    fn test_sandbox_new_with_project() {
+        let sandbox = Sandbox::new_with_project(
+            SandboxId::new("test-sandbox"),
+            TemplateId::new("template-1"),
+            ProviderId::new("provider-1"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+            ProjectId::new("proj-1"),
+            SandboxPurpose::E2eTest,
+        );
+        assert!(sandbox.project_id.is_some());
+        assert_eq!(sandbox.project_id.as_ref().unwrap().as_str(), "proj-1");
+        assert!(sandbox.purpose.is_some());
+        assert_eq!(sandbox.purpose.unwrap(), SandboxPurpose::E2eTest);
+    }
+
+    #[test]
+    fn test_sandbox_serialize_with_project_fields() {
+        let sandbox = Sandbox::new_with_project(
+            SandboxId::new("test-sandbox"),
+            TemplateId::new("template-1"),
+            ProviderId::new("provider-1"),
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+            ProjectId::new("proj-1"),
+            SandboxPurpose::PipelineStage,
+        );
+        let json = serde_json::to_string(&sandbox).unwrap();
+        assert!(json.contains("\"project_id\""));
+        assert!(json.contains("\"purpose\""));
+        let parsed: Sandbox = serde_json::from_str(&json).unwrap();
+        assert!(parsed.project_id.is_some());
+        assert_eq!(parsed.purpose, Some(SandboxPurpose::PipelineStage));
     }
 }

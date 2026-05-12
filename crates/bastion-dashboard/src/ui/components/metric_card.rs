@@ -1,0 +1,1 @@
+//! Metric card component.

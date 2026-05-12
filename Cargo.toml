@@ -9,6 +9,7 @@ members = [
     "crates/bastion-bootstrap",
     "crates/enrichment-engine",
     "crates/bastion-test-harness",
+    "crates/bastion-dashboard",
 ]
 
 [workspace.package]
@@ -26,6 +27,7 @@ bastion-application = { path = "crates/bastion-application" }
 bastion-infrastructure = { path = "crates/bastion-infrastructure" }
 bastion-test-harness = { path = "crates/bastion-test-harness" }
 enrichment-engine = { path = "crates/enrichment-engine" }
+bastion-dashboard = { path = "crates/bastion-dashboard" }
 
 # ── Async runtime ────────────────────────────────────────────
 tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "process", "fs"] }

@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = []
 test-metrics = ["bastion-test-harness/test-metrics"]
+dashboard = ["bastion-dashboard", "opener"]
 
 [[bin]]
 name = "bastion-gateway"
@@ -52,6 +53,10 @@ rand = "0.8"
 hyper = { version = "1", features = ["http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "client", "server-auto"] }
 tower-service = "0.3"
+
+# ── Dashboard feature ─────────────────────────────────────────
+opener = { version = "0.7", optional = true }
+bastion-dashboard = { path = "../bastion-dashboard", optional = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

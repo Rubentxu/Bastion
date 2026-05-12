@@ -1,0 +1,1 @@
+//! Navigation sidebar component.
