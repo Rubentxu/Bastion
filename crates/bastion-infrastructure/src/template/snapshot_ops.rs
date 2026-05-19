@@ -150,6 +150,7 @@ pub async fn restore_snapshot(docker: &Docker, snapshot_id: &str) -> Result<Sand
         new_id.clone(),
         TemplateId::new("podman-snapshot"),
         ProviderId::new("podman"),
+        None,
         ResourcesSpec::default(),
         NetworkSpec::default(),
     );

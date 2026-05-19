@@ -21,7 +21,7 @@
 //! ```
 
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -121,34 +121,43 @@ fn send_request(
         "params": params,
     });
 
-    let mut line = serde_json::to_string(&request)
+    let req_str = serde_json::to_string(&request)
         .map_err(|e| format!("Failed to serialize request: {}", e))?;
-    line.push('\n');
 
-    stdin
-        .write_all(line.as_bytes())
+    stdin.write_all(format!("Content-Length: {}\r\n\r\n{}\n", req_str.len(), req_str).as_bytes())
         .map_err(|e| format!("Failed to write request: {}", e))?;
-    stdin
-        .flush()
+    stdin.flush()
         .map_err(|e| format!("Failed to flush stdin: {}", e))?;
 
-    // Read response
-    let mut response_line = String::new();
-    for _ in 0..100 {
-        response_line.clear();
-        let bytes = reader
-            .read_line(&mut response_line)
-            .map_err(|e| format!("Failed to read response: {}", e))?;
-        if bytes == 0 {
-            return Err("Unexpected EOF from gateway".to_string());
-        }
-        if response_line.contains("\"id\":") || response_line.contains("\"jsonrpc\"") {
+    // Read response headers
+    let mut content_length: Option<usize> = None;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).map_err(|e| format!("Failed to read header: {}", e))?;
+        let line = line.trim();
+        if line.is_empty() {
             break;
+        }
+        if line.starts_with("Content-Length: ") {
+            content_length = Some(line["Content-Length: ".len()..].trim().parse().map_err(|e| format!("Invalid Content-Length: {}", e))?);
         }
     }
 
-    serde_json::from_str(&response_line)
-        .map_err(|e| format!("Failed to parse response '{}': {}", response_line, e))
+    // Read the JSON body
+    let body_len = content_length.unwrap_or(0);
+    let mut body = vec![0u8; body_len];
+    let mut offset = 0;
+    while offset < body_len {
+        let n = reader.read(&mut body[offset..]).map_err(|e| format!("Failed to read body: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        offset += n;
+    }
+
+    let response_str = String::from_utf8_lossy(&body);
+    serde_json::from_str(&response_str)
+        .map_err(|e| format!("Failed to parse response '{}': {}", response_str, e))
 }
 
 fn send_notification(stdin: &mut impl Write, method: &str, params: Value) -> Result<(), String> {
@@ -158,15 +167,12 @@ fn send_notification(stdin: &mut impl Write, method: &str, params: Value) -> Res
         "params": params,
     });
 
-    let mut line = serde_json::to_string(&request)
+    let req_str = serde_json::to_string(&request)
         .map_err(|e| format!("Failed to serialize notification: {}", e))?;
-    line.push('\n');
 
-    stdin
-        .write_all(line.as_bytes())
+    stdin.write_all(format!("Content-Length: {}\r\n\r\n{}\n", req_str.len(), req_str).as_bytes())
         .map_err(|e| format!("Failed to write notification: {}", e))?;
-    stdin
-        .flush()
+    stdin.flush()
         .map_err(|e| format!("Failed to flush: {}", e))?;
 
     std::thread::sleep(Duration::from_millis(100));

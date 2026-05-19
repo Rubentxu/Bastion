@@ -110,6 +110,7 @@ impl SandboxLifecycle for MockProvider {
             id.clone(),
             bastion_domain::shared::id::TemplateId::new(template),
             bastion_domain::shared::id::ProviderId::new("mock"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         );
@@ -128,7 +129,18 @@ impl SandboxLifecycle for MockProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::default()
+        ProviderCapabilities::try_new(
+            false,           // supports_snapshots
+            true,            // supports_streaming
+            false,           // supports_pause_resume
+            86_400_000,      // max_timeout_ms
+            16_384,          // max_memory_mb
+            16,              // max_cpu_count
+            true,            // supports_networking
+            false,           // requires_kvm
+            1500,            // avg_startup_ms
+        )
+        .expect("known valid values")
     }
 
     fn name(&self) -> &str {
@@ -455,6 +467,7 @@ async fn test_pool_recovery_on_restart() {
         SandboxId::new("recovered-sandbox-1"),
         bastion_domain::shared::id::TemplateId::new("debian:bookworm-slim"),
         bastion_domain::shared::id::ProviderId::new("mock"),
+        None,
         ResourcesSpec::default(),
         NetworkSpec::default(),
     );
@@ -462,6 +475,7 @@ async fn test_pool_recovery_on_restart() {
         SandboxId::new("recovered-sandbox-2"),
         bastion_domain::shared::id::TemplateId::new("debian:bookworm-slim"),
         bastion_domain::shared::id::ProviderId::new("mock"),
+        None,
         ResourcesSpec::default(),
         NetworkSpec::default(),
     );
@@ -587,6 +601,7 @@ async fn test_pool_cleanup_on_shutdown() {
         SandboxId::new("cleanup-sandbox-1"),
         bastion_domain::shared::id::TemplateId::new("debian:bookworm-slim"),
         bastion_domain::shared::id::ProviderId::new("mock"),
+        None,
         ResourcesSpec::default(),
         NetworkSpec::default(),
     );
@@ -594,6 +609,7 @@ async fn test_pool_cleanup_on_shutdown() {
         SandboxId::new("cleanup-sandbox-2"),
         bastion_domain::shared::id::TemplateId::new("debian:bookworm-slim"),
         bastion_domain::shared::id::ProviderId::new("mock"),
+        None,
         ResourcesSpec::default(),
         NetworkSpec::default(),
     );
@@ -628,6 +644,7 @@ async fn test_pool_skips_unregistered_templates_on_recovery() {
         SandboxId::new("orphan-sandbox"),
         bastion_domain::shared::id::TemplateId::new("ubuntu:22.04"), // Not registered
         bastion_domain::shared::id::ProviderId::new("mock"),
+        None,
         ResourcesSpec::default(),
         NetworkSpec::default(),
     );

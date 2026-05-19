@@ -29,27 +29,27 @@ impl ExperienceStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperienceRecord {
     /// Unique identifier for this experience.
-    pub id: String,
+    id: String,
     /// Optional correlation key — groups related experiences across tools.
-    pub trace_id: Option<String>,
+    trace_id: Option<String>,
     /// Name of the tool that produced this experience.
-    pub tool_name: String,
+    tool_name: String,
     /// Sandbox ID the tool operated on (if applicable).
-    pub sandbox_id: Option<SandboxId>,
+    sandbox_id: Option<SandboxId>,
     /// When the tool execution started.
-    pub started_at: chrono::DateTime<chrono::Utc>,
+    started_at: chrono::DateTime<chrono::Utc>,
     /// When the tool execution finished (None if still running).
-    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    finished_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Exit code of the command (None if not applicable).
-    pub exit_code: Option<i32>,
+    exit_code: Option<i32>,
     /// Truncated stdout preview (max 1 KiB, preserving head and tail).
-    pub stdout_summary: String,
+    stdout_summary: String,
     /// Truncated stderr preview (max 1 KiB, preserving head and tail).
-    pub stderr_summary: String,
+    stderr_summary: String,
     /// Outcome status.
-    pub status: ExperienceStatus,
+    status: ExperienceStatus,
     /// Additional context as JSON.
-    pub metadata: serde_json::Value,
+    metadata: serde_json::Value,
 }
 
 impl ExperienceRecord {
@@ -133,6 +133,94 @@ impl ExperienceRecord {
         self.finished_at
             .map(|finished| (finished - self.started_at).num_milliseconds() as u64)
     }
+
+    // === Accessor methods ===
+
+    /// Returns the unique identifier for this experience.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Returns the optional correlation key.
+    pub fn trace_id(&self) -> Option<&str> {
+        self.trace_id.as_deref()
+    }
+
+    /// Returns the name of the tool that produced this experience.
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+
+    /// Returns the sandbox ID the tool operated on (if applicable).
+    pub fn sandbox_id(&self) -> Option<&SandboxId> {
+        self.sandbox_id.as_ref()
+    }
+
+    /// Returns when the tool execution started.
+    pub fn started_at(&self) -> &chrono::DateTime<chrono::Utc> {
+        &self.started_at
+    }
+
+    /// Returns when the tool execution finished (None if still running).
+    pub fn finished_at(&self) -> Option<&chrono::DateTime<chrono::Utc>> {
+        self.finished_at.as_ref()
+    }
+
+    /// Returns the exit code of the command (None if not applicable).
+    pub fn exit_code(&self) -> Option<i32> {
+        self.exit_code
+    }
+
+    /// Returns the truncated stdout preview.
+    pub fn stdout_summary(&self) -> &str {
+        &self.stdout_summary
+    }
+
+    /// Returns the truncated stderr preview.
+    pub fn stderr_summary(&self) -> &str {
+        &self.stderr_summary
+    }
+
+    /// Returns the outcome status.
+    pub fn status(&self) -> ExperienceStatus {
+        self.status
+    }
+
+    /// Returns the additional context as JSON.
+    pub fn metadata(&self) -> &serde_json::Value {
+        &self.metadata
+    }
+
+    // === Constructor for use by infrastructure ===
+
+    /// Construct an ExperienceRecord from raw components (used by infrastructure).
+    pub fn from_components(
+        id: String,
+        trace_id: Option<String>,
+        tool_name: String,
+        sandbox_id: Option<SandboxId>,
+        started_at: chrono::DateTime<chrono::Utc>,
+        finished_at: Option<chrono::DateTime<chrono::Utc>>,
+        exit_code: Option<i32>,
+        stdout_summary: String,
+        stderr_summary: String,
+        status: ExperienceStatus,
+        metadata: serde_json::Value,
+    ) -> Self {
+        Self {
+            id,
+            trace_id,
+            tool_name,
+            sandbox_id,
+            started_at,
+            finished_at,
+            exit_code,
+            stdout_summary,
+            stderr_summary,
+            status,
+            metadata,
+        }
+    }
 }
 
 fn summarize_output(output: &str) -> String {
@@ -199,10 +287,10 @@ mod tests {
             .with_stdout(b"BUILD SUCCESS")
             .with_stderr(b"");
 
-        assert_eq!(record.trace_id, Some("petclinic-fase014".to_string()));
-        assert_eq!(record.exit_code, Some(0));
-        assert_eq!(record.status, ExperienceStatus::Success);
-        assert!(record.stdout_summary.contains("BUILD SUCCESS"));
+        assert_eq!(record.trace_id(), Some("petclinic-fase014"));
+        assert_eq!(record.exit_code(), Some(0));
+        assert_eq!(record.status(), ExperienceStatus::Success);
+        assert!(record.stdout_summary().contains("BUILD SUCCESS"));
     }
 
     #[test]
@@ -220,9 +308,9 @@ mod tests {
 
         let record = ExperienceRecord::new("sandbox_run").with_stdout(output.as_bytes());
 
-        assert!(record.stdout_summary.len() <= 1100);
-        assert!(record.stdout_summary.contains("download log"));
-        assert!(record.stdout_summary.contains("BUILD SUCCESS"));
-        assert!(record.stdout_summary.contains("showing head and tail"));
+        assert!(record.stdout_summary().len() <= 1100);
+        assert!(record.stdout_summary().contains("download log"));
+        assert!(record.stdout_summary().contains("BUILD SUCCESS"));
+        assert!(record.stdout_summary().contains("showing head and tail"));
     }
 }

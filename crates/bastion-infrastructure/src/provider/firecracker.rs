@@ -27,7 +27,7 @@ use bastion_domain::provider::lifecycle::SandboxLifecycle;
 use bastion_domain::provider::network::NetworkBackend;
 use bastion_domain::provider::port::CommandStream;
 use bastion_domain::provider::router::CommandRouter;
-use bastion_domain::provider::state_machine::SandboxStateMachine;
+use super::state_machine::DashMapSandboxStateMachine;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
 use bastion_domain::sandbox::value_objects::{
@@ -65,7 +65,7 @@ pub struct FirecrackerProvider {
     /// Optional command router for registry-based command execution.
     command_router: Option<Arc<dyn CommandRouter>>,
     /// State machine for sandbox lifecycle (when use-segregated-traits is enabled)
-    state_machine: Arc<SandboxStateMachine>,
+    state_machine: Arc<DashMapSandboxStateMachine>,
     /// Network backend for TAP device management.
     network_backend: Arc<dyn NetworkBackend>,
 }
@@ -141,7 +141,7 @@ impl FirecrackerProvider {
             worker_binary,
             gateway_addr,
             command_router: None,
-            state_machine: Arc::new(SandboxStateMachine::new()),
+            state_machine: Arc::new(DashMapSandboxStateMachine::new()),
             network_backend: Arc::new(network_backend),
         })
     }
@@ -610,8 +610,8 @@ impl SandboxLifecycle for FirecrackerProvider {
         // 5. Configure machine — honor ResourcesSpec with safety clamps
         let vcpu_count = resources
             .cpu_count
-            .clamp(1, self.capabilities().max_cpu_count);
-        let mem_size_mib = (resources.memory_mb).clamp(128, self.capabilities().max_memory_mb);
+            .clamp(1, self.capabilities().max_cpu_count());
+        let mem_size_mib = (resources.memory_mb).clamp(128, self.capabilities().max_memory_mb());
         Self::api_request(
             &socket_path,
             "PUT",
@@ -677,6 +677,7 @@ impl SandboxLifecycle for FirecrackerProvider {
             id.clone(),
             bastion_domain::shared::id::TemplateId::new("firecracker"),
             bastion_domain::shared::id::ProviderId::new("firecracker"),
+            None,
             resources.clone(),
             _network.clone(),
         );
@@ -857,17 +858,18 @@ impl SandboxLifecycle for FirecrackerProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            supports_snapshots: true,
-            supports_streaming: false,
-            supports_pause_resume: false,
-            max_timeout_ms: 600_000,
-            max_memory_mb: 512,
-            max_cpu_count: 4,
-            supports_networking: true,
-            requires_kvm: true,
-            avg_startup_ms: 300,
-        }
+        ProviderCapabilities::try_new(
+            true,
+            false,
+            false,
+            600_000,
+            512,
+            4,
+            true,
+            true,
+            300,
+        )
+        .expect("known valid values")
     }
 
     fn name(&self) -> &str {
@@ -918,6 +920,7 @@ impl SandboxLifecycle for FirecrackerProvider {
                 SandboxId::new(&sandbox_id),
                 bastion_domain::shared::id::TemplateId::new("firecracker"),
                 bastion_domain::shared::id::ProviderId::new("firecracker"),
+                None,
                 ResourcesSpec::default(),
                 NetworkSpec::default(),
             );
@@ -954,6 +957,7 @@ impl SandboxLifecycle for FirecrackerProvider {
             id.clone(),
             bastion_domain::shared::id::TemplateId::new("firecracker"),
             bastion_domain::shared::id::ProviderId::new("firecracker"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         );
@@ -1009,170 +1013,35 @@ impl TaskExecutor for FirecrackerProvider {
                 .await;
         }
 
-        // Fallback to serial console
-        let full_cmd = if command.args.is_empty() {
-            command.command.clone()
-        } else {
-            format!("{} {}", command.command, command.args.join(" "))
-        };
-
-        let start = std::time::Instant::now();
-
-        // Get serial buffer and stdin
-        let (serial_buf, stdin) = {
-            let vm = self
-                .vms
-                .get(&id.to_string())
-                .ok_or_else(|| DomainError::NotFound(id.to_string()))?;
-            (vm.serial_buf.clone(), vm.stdin.clone())
-        };
-
-        // Send newline to get fresh prompt
-        {
-            let mut stdin_guard = stdin.lock().await;
-            stdin_guard
-                .write_all(b"\n")
-                .await
-                .map_err(|e| DomainError::Internal(format!("Failed to write: {e}")))?;
-        }
-        sleep(Duration::from_millis(300)).await;
-
-        let start_pos = {
-            let guard = serial_buf.lock().await;
-            guard.len()
-        };
-
-        // Use a unique marker on a SHORT separate line to avoid truncation
-        let marker = format!(
-            "E{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros()
-                % 999999
-        );
-
-        // Send commands one line at a time for reliability.
-        // Disable local echo and prompt to keep output clean.
-        let commands = vec![
-            format!("stty -echo 2>/dev/null; PS1=''; echo __{}_S__", marker), // start marker
-            full_cmd,                                                         // actual command
-            format!("echo __{}_E__:$?", marker), // end marker with exit code
-        ];
-
-        for cmd in &commands {
-            let mut stdin_guard = stdin.lock().await;
-            stdin_guard
-                .write_all(cmd.as_bytes())
-                .await
-                .map_err(|e| DomainError::Internal(format!("Failed to write: {e}")))?;
-            stdin_guard
-                .write_all(b"\n")
-                .await
-                .map_err(|e| DomainError::Internal(format!("Failed to write: {e}")))?;
-            drop(stdin_guard);
-            sleep(Duration::from_millis(20)).await;
-        }
-
-        // Poll for end marker
-        let timeout = Duration::from_secs(30);
-        let deadline = std::time::Instant::now() + timeout;
-
-        loop {
-            if std::time::Instant::now() > deadline {
-                let guard = serial_buf.lock().await;
-                let tail = String::from_utf8_lossy(&guard[start_pos..]);
-                return Err(DomainError::Timeout(format!(
-                    "Command timed out. Last output: {}",
-                    &tail[tail.len().saturating_sub(200)..]
-                )));
-            }
-
-            {
-                let guard = serial_buf.lock().await;
-                if guard.len() > start_pos {
-                    let tail = String::from_utf8_lossy(&guard[start_pos..]);
-                    if let Some(end_pos) = tail.rfind(&format!("__{}_E__:", marker)) {
-                        // Parse exit code
-                        let after = &tail[end_pos + marker.len() + 7..];
-                        let exit_code: i32 = after
-                            .chars()
-                            .take_while(|c| c.is_ascii_digit() || *c == '-')
-                            .collect::<String>()
-                            .parse()
-                            .unwrap_or(-1);
-
-                        // Extract output: everything between start marker and end marker
-                        let start_marker = format!("__{}_S__", marker);
-                        let out_start = tail
-                            .find(&start_marker)
-                            .map(|p| p + start_marker.len())
-                            .unwrap_or(0);
-                        let out_end = tail
-                            .rfind(&format!("__{}_E__:", marker))
-                            .unwrap_or(tail.len());
-
-                        let cmd_output = if out_start < out_end {
-                            tail[out_start..out_end]
-                                .lines()
-                                .filter(|l| {
-                                    let trimmed = l.trim();
-                                    !trimmed.is_empty()
-                                        && !trimmed.contains(&start_marker)
-                                        && !trimmed.contains("__E__")
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                                .trim()
-                                .to_string()
-                        } else {
-                            String::new()
-                        };
-
-                        let duration_ms = start.elapsed().as_millis() as u64;
-                        tracing::info!(sandbox_id = %id, exit_code, duration_ms, "Command completed");
-
-                        return Ok(CommandResult {
-                            exit_code,
-                            stdout: cmd_output.into_bytes(),
-                            stderr: Vec::new(),
-                            duration_ms,
-                            timed_out: false,
-                        });
-                    }
-                }
-            }
-
-            sleep(Duration::from_millis(100)).await;
-        }
+        // Worker is NOT connected - this is an error, not a fallback opportunity
+        return Err(DomainError::WorkerNotConnected(id.to_string()));
     }
 
     async fn run_command_stream(
         &self,
         id: &SandboxId,
-        _command: &CommandSpec,
+        command: &CommandSpec,
     ) -> Result<CommandStream, DomainError> {
         // Try registry-based routing
         if let Some(ref router) = self.command_router
             && router.is_worker_connected(&id.to_string())
         {
             tracing::info!(sandbox_id = %id, "Streaming command via worker registry");
-            let timeout_ms = _command.timeout_ms.unwrap_or(30000);
+            let timeout_ms = command.timeout_ms.unwrap_or(30000);
             return router
                 .route_run_command_stream(
                     &id.to_string(),
-                    &_command.command,
-                    &_command.args,
-                    _command.working_dir.as_deref().unwrap_or("/workspace"),
-                    &_command.env_vars,
+                    &command.command,
+                    &command.args,
+                    command.working_dir.as_deref().unwrap_or("/workspace"),
+                    &command.env_vars,
                     timeout_ms,
                 )
                 .await;
         }
 
-        Err(DomainError::UnsupportedOperation(
-            "firecracker does not support streaming".to_string(),
-        ))
+        // Worker is NOT connected - this is an error, not a fallback opportunity
+        return Err(DomainError::WorkerNotConnected(id.to_string()));
     }
 
     async fn write_file(
@@ -1191,22 +1060,8 @@ impl TaskExecutor for FirecrackerProvider {
                 .await;
         }
 
-        // Fallback to serial console
-        let text = String::from_utf8_lossy(content).replace('\'', "'\\''");
-        let command = format!("printf '%s' '{}' > '{}'", text, path);
-
-        let cmd = CommandSpec::new(&command);
-        let result = self.run_command(id, &cmd).await?;
-
-        if result.exit_code != 0 {
-            let stdout = String::from_utf8_lossy(&result.stdout);
-            return Err(DomainError::Internal(format!(
-                "Failed to write file (exit {}): {}",
-                result.exit_code, stdout
-            )));
-        }
-
-        Ok(())
+        // Worker is NOT connected - this is an error, not a fallback opportunity
+        return Err(DomainError::WorkerNotConnected(id.to_string()));
     }
 
     async fn read_file(&self, id: &SandboxId, path: &str) -> Result<Vec<u8>, DomainError> {
@@ -1218,20 +1073,8 @@ impl TaskExecutor for FirecrackerProvider {
             return router.route_read_file(&id.to_string(), path).await;
         }
 
-        // Fallback to serial console
-        let command = format!("cat '{}'", path);
-        let cmd = CommandSpec::new(&command);
-        let result = self.run_command(id, &cmd).await?;
-
-        if result.exit_code != 0 {
-            let stdout = String::from_utf8_lossy(&result.stdout);
-            return Err(DomainError::Internal(format!(
-                "Failed to read file (exit {}): {}",
-                result.exit_code, stdout
-            )));
-        }
-
-        Ok(result.stdout)
+        // Worker is NOT connected - this is an error, not a fallback opportunity
+        return Err(DomainError::WorkerNotConnected(id.to_string()));
     }
 
     async fn list_files(&self, id: &SandboxId, dir: &str) -> Result<Vec<FileEntry>, DomainError> {
@@ -1243,62 +1086,7 @@ impl TaskExecutor for FirecrackerProvider {
             return router.route_list_files(&id.to_string(), dir).await;
         }
 
-        // Fallback to serial console
-        let command = format!("ls -la '{}' 2>/dev/null || ls -la '{}'", dir, dir);
-        let cmd = CommandSpec::new(&command);
-        let result = self.run_command(id, &cmd).await?;
-
-        if result.exit_code != 0 {
-            let stdout = String::from_utf8_lossy(&result.stdout);
-            return Err(DomainError::Internal(format!(
-                "Failed to list files (exit {}): {}",
-                result.exit_code, stdout
-            )));
-        }
-
-        // Parse ls -la output into FileEntry structs
-        let output = String::from_utf8_lossy(&result.stdout);
-        let mut entries = Vec::new();
-
-        for line in output.lines().skip(1) {
-            // Skip "total N" header
-            let line = line.trim();
-            if line.is_empty() || line.starts_with("total") {
-                continue;
-            }
-
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 9 {
-                continue;
-            }
-
-            let permissions = parts[0].to_string();
-            let is_directory = permissions.starts_with('d');
-            let size_bytes: u64 = parts[4].parse().unwrap_or(0);
-
-            // Filename is everything from index 8 onwards (handles spaces)
-            let name = parts[8..].join(" ");
-
-            // Skip . and .. entries
-            if name == "." || name == ".." {
-                continue;
-            }
-
-            let path = if dir.ends_with('/') {
-                format!("{dir}{name}")
-            } else {
-                format!("{dir}/{name}")
-            };
-
-            entries.push(FileEntry {
-                path,
-                is_directory,
-                size_bytes,
-                modified_at: None,
-                permissions,
-            });
-        }
-
-        Ok(entries)
+        // Worker is NOT connected - this is an error, not a fallback opportunity
+        return Err(DomainError::WorkerNotConnected(id.to_string()));
     }
 }

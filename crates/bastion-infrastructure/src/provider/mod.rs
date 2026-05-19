@@ -8,6 +8,8 @@ pub mod gvisor;
 pub mod local;
 pub mod podman;
 pub mod registry;
+pub mod state_machine;
+pub mod toml_repository;
 pub mod wasm;
 
 pub mod network;
@@ -22,4 +24,5 @@ pub use gvisor::GVisorProvider;
 pub use local::LocalProvider;
 pub use podman::PodmanProvider;
 pub use registry::{ProviderRegistry, ProviderRegistryEntry, RegistryError};
+pub use toml_repository::TomlProviderInstanceRepository;
 pub use wasm::WasmSandboxProvider;

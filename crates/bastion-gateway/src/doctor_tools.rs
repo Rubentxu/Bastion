@@ -305,7 +305,7 @@ impl BastionGateway {
                 let experience = if let Some(ref store) = self.catalog_config.experience_store {
                     match store.find_by_trace_id(sandbox_id).await {
                         Ok(mut records) => {
-                            records.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+                            records.sort_by(|a, b| b.started_at().cmp(&a.started_at()));
                             records.into_iter().next()
                         }
                         Err(_) => None,
@@ -357,6 +357,42 @@ impl BastionGateway {
                     }
                 }
             }
+            // These check types are handled elsewhere (in sandbox_tools)
+            DoctorCheck::ProviderAlive { .. } => AssertionCheckResult {
+                check: "ProviderAlive".to_string(),
+                passed: false,
+                reason: Some("ProviderAlive check not supported in this context".to_string()),
+            },
+            DoctorCheck::BinaryAvailable { .. } => AssertionCheckResult {
+                check: "BinaryAvailable".to_string(),
+                passed: false,
+                reason: Some("BinaryAvailable check not supported in this context".to_string()),
+            },
+            DoctorCheck::ImageAvailable { .. } => AssertionCheckResult {
+                check: "ImageAvailable".to_string(),
+                passed: false,
+                reason: Some("ImageAvailable check not supported in this context".to_string()),
+            },
+            DoctorCheck::KvmAvailable => AssertionCheckResult {
+                check: "KvmAvailable".to_string(),
+                passed: false,
+                reason: Some("KvmAvailable check not supported in this context".to_string()),
+            },
+            DoctorCheck::CapabilitiesMet { .. } => AssertionCheckResult {
+                check: "CapabilitiesMet".to_string(),
+                passed: false,
+                reason: Some("CapabilitiesMet check not supported in this context".to_string()),
+            },
+            DoctorCheck::ConfigValid { .. } => AssertionCheckResult {
+                check: "ConfigValid".to_string(),
+                passed: false,
+                reason: Some("ConfigValid check not supported in this context".to_string()),
+            },
+            DoctorCheck::WorkerBinaryValid { .. } => AssertionCheckResult {
+                check: "WorkerBinaryValid".to_string(),
+                passed: false,
+                reason: Some("WorkerBinaryValid check not supported in this context".to_string()),
+            },
         }
     }
 }

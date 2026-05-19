@@ -69,17 +69,17 @@ impl SqliteExperienceStore {
                 stdout_summary, stderr_summary, status, metadata)
                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
             params![
-                record.id,
-                record.trace_id,
-                record.tool_name,
-                record.sandbox_id.as_ref().map(|s| s.to_string()),
-                record.started_at.to_rfc3339(),
-                record.finished_at.map(|dt| dt.to_rfc3339()),
-                record.exit_code,
-                record.stdout_summary,
-                record.stderr_summary,
-                format!("{:?}", record.status).to_lowercase(),
-                serde_json::to_string(&record.metadata).unwrap_or_else(|_| "{}".to_string()),
+                record.id(),
+                record.trace_id(),
+                record.tool_name(),
+                record.sandbox_id().as_ref().map(|s| s.to_string()),
+                record.started_at().to_rfc3339(),
+                record.finished_at().map(|dt| dt.to_rfc3339()),
+                record.exit_code(),
+                record.stdout_summary(),
+                record.stderr_summary(),
+                format!("{:?}", record.status()).to_lowercase(),
+                serde_json::to_string(record.metadata()).unwrap_or_else(|_| "{}".to_string()),
             ],
         )
         .map_err(|e| DomainError::Internal(format!("Failed to insert experience: {}", e)))?;
@@ -242,19 +242,19 @@ fn row_to_experience(row: ExperienceRow) -> Result<ExperienceRecord, DomainError
 
     let sandbox_id = row.sandbox_id.map(SandboxId::new);
 
-    Ok(ExperienceRecord {
-        id: row.id,
-        trace_id: row.trace_id,
-        tool_name: row.tool,
+    Ok(ExperienceRecord::from_components(
+        row.id,
+        row.trace_id,
+        row.tool,
         sandbox_id,
         started_at,
-        finished_at: ended_at,
-        exit_code: row.exit_code,
-        stdout_summary: row.stdout_summary,
-        stderr_summary: row.stderr_summary,
+        ended_at,
+        row.exit_code,
+        row.stdout_summary,
+        row.stderr_summary,
         status,
         metadata,
-    })
+    ))
 }
 
 #[cfg(test)]
@@ -276,11 +276,11 @@ mod tests {
 
         store.save(&record).await.unwrap();
 
-        let found = store.find_by_id(&record.id).await.unwrap();
+        let found = store.find_by_id(record.id()).await.unwrap();
         assert!(found.is_some());
         let found = found.unwrap();
-        assert_eq!(found.trace_id, Some("trace-1".to_string()));
-        assert_eq!(found.exit_code, Some(0));
+        assert_eq!(found.trace_id(), Some("trace-1"));
+        assert_eq!(found.exit_code(), Some(0));
     }
 
     #[tokio::test]

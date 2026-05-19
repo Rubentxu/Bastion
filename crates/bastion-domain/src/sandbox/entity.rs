@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::value_objects::{NetworkSpec, ResourcesSpec, SandboxStatus};
 use crate::project::{ProjectId, SandboxPurpose};
+use crate::provider::instance::ProviderInstanceId;
 use crate::shared::id::{ProviderId, SandboxId, TemplateId};
 
 /// Sandbox aggregate root.
@@ -21,6 +22,8 @@ pub struct Sandbox {
     pub id: SandboxId,
     pub template_id: TemplateId,
     pub provider_id: ProviderId,
+    /// The specific provider instance this sandbox is running on (None for legacy/migration period).
+    pub provider_instance_id: Option<ProviderInstanceId>,
     pub status: SandboxStatus,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
@@ -39,6 +42,7 @@ impl Sandbox {
         id: SandboxId,
         template_id: TemplateId,
         provider_id: ProviderId,
+        provider_instance_id: Option<ProviderInstanceId>,
         resources: ResourcesSpec,
         network: NetworkSpec,
     ) -> Self {
@@ -46,6 +50,7 @@ impl Sandbox {
             id,
             template_id,
             provider_id,
+            provider_instance_id,
             status: SandboxStatus::Pending,
             created_at: Utc::now(),
             expires_at: None,
@@ -62,6 +67,7 @@ impl Sandbox {
         id: SandboxId,
         template_id: TemplateId,
         provider_id: ProviderId,
+        provider_instance_id: Option<ProviderInstanceId>,
         resources: ResourcesSpec,
         network: NetworkSpec,
         project_id: ProjectId,
@@ -71,6 +77,7 @@ impl Sandbox {
             id,
             template_id,
             provider_id,
+            provider_instance_id,
             status: SandboxStatus::Pending,
             created_at: Utc::now(),
             expires_at: None,
@@ -148,6 +155,7 @@ mod tests {
             SandboxId::new("test-sandbox"),
             TemplateId::new("template-1"),
             ProviderId::new("provider-1"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         )
@@ -166,6 +174,7 @@ mod tests {
             SandboxId::new("test-sandbox"),
             TemplateId::new("template-1"),
             ProviderId::new("provider-1"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
             ProjectId::new("proj-1"),
@@ -183,6 +192,7 @@ mod tests {
             SandboxId::new("test-sandbox"),
             TemplateId::new("template-1"),
             ProviderId::new("provider-1"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
             ProjectId::new("proj-1"),
@@ -194,5 +204,88 @@ mod tests {
         let parsed: Sandbox = serde_json::from_str(&json).unwrap();
         assert!(parsed.project_id.is_some());
         assert_eq!(parsed.purpose, Some(SandboxPurpose::PipelineStage));
+    }
+
+    #[test]
+    fn test_mark_failed_from_pending() {
+        let sandbox = Sandbox::new(
+            SandboxId::new("test-sandbox"),
+            TemplateId::new("template-1"),
+            ProviderId::new("provider-1"),
+            None,
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+        assert_eq!(sandbox.status, SandboxStatus::Pending);
+        let mut sandbox = sandbox;
+        sandbox.mark_failed();
+        assert_eq!(sandbox.status, SandboxStatus::Failed);
+    }
+
+    #[test]
+    fn test_mark_failed_from_running() {
+        let mut sandbox = Sandbox::new(
+            SandboxId::new("test-sandbox"),
+            TemplateId::new("template-1"),
+            ProviderId::new("provider-1"),
+            None,
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+        sandbox.mark_running().unwrap();
+        assert_eq!(sandbox.status, SandboxStatus::Running);
+        sandbox.mark_failed();
+        assert_eq!(sandbox.status, SandboxStatus::Failed);
+    }
+
+    #[test]
+    fn test_mark_failed_from_paused() {
+        let mut sandbox = Sandbox::new(
+            SandboxId::new("test-sandbox"),
+            TemplateId::new("template-1"),
+            ProviderId::new("provider-1"),
+            None,
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+        sandbox.mark_running().unwrap();
+        sandbox.status = SandboxStatus::Paused; // Direct transition to Paused
+        assert_eq!(sandbox.status, SandboxStatus::Paused);
+        sandbox.mark_failed();
+        assert_eq!(sandbox.status, SandboxStatus::Failed);
+    }
+
+    #[test]
+    fn test_mark_failed_from_stopped() {
+        let mut sandbox = Sandbox::new(
+            SandboxId::new("test-sandbox"),
+            TemplateId::new("template-1"),
+            ProviderId::new("provider-1"),
+            None,
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+        sandbox.mark_running().unwrap();
+        sandbox.terminate().unwrap();
+        assert_eq!(sandbox.status, SandboxStatus::Stopped);
+        sandbox.mark_failed();
+        assert_eq!(sandbox.status, SandboxStatus::Failed);
+    }
+
+    #[test]
+    fn test_mark_failed_from_already_failed() {
+        let mut sandbox = Sandbox::new(
+            SandboxId::new("test-sandbox"),
+            TemplateId::new("template-1"),
+            ProviderId::new("provider-1"),
+            None,
+            ResourcesSpec::default(),
+            NetworkSpec::default(),
+        );
+        sandbox.mark_failed();
+        assert_eq!(sandbox.status, SandboxStatus::Failed);
+        // Calling mark_failed again should still work (idempotent)
+        sandbox.mark_failed();
+        assert_eq!(sandbox.status, SandboxStatus::Failed);
     }
 }

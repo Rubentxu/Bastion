@@ -300,6 +300,15 @@ impl ProviderRegistry {
             .contains(name)
     }
 
+    /// Get the configuration for a provider by name.
+    pub fn get_config(&self, name: &str) -> Option<ProviderConfig> {
+        self.configs
+            .read()
+            .expect("provider registry: lock poisoned")
+            .get(name)
+            .cloned()
+    }
+
     /// Get the name of the default provider.
     pub fn default_name(&self) -> String {
         self.factory

@@ -22,9 +22,9 @@ impl<S: ExperienceStore> RecordExperienceUseCase<S> {
     /// Execute the use case: persist the experience record.
     pub async fn execute(&self, record: ExperienceRecord) -> Result<(), DomainError> {
         tracing::debug!(
-            experience_id = %record.id,
-            tool_name = %record.tool_name,
-            trace_id = ?record.trace_id,
+            experience_id = %record.id(),
+            tool_name = %record.tool_name(),
+            trace_id = ?record.trace_id(),
             "Recording experience"
         );
         self.store.save(&record).await

@@ -43,6 +43,9 @@ pub enum DomainError {
 
     #[error("Rate limiter lock poisoned: {0}")]
     PoisonedLock(String),
+
+    #[error("Worker not connected for sandbox '{0}'. Sandbox creation may have failed or worker could not connect to registry.")]
+    WorkerNotConnected(String),
 }
 
 impl From<std::io::Error> for DomainError {

@@ -694,7 +694,18 @@ mod tests {
             Ok(true)
         }
         fn capabilities(&self) -> ProviderCapabilities {
-            ProviderCapabilities::default()
+            ProviderCapabilities::try_new(
+                false,
+                true,
+                false,
+                86_400_000,
+                16_384,
+                16,
+                true,
+                false,
+                1500,
+            )
+            .expect("known valid values")
         }
         fn name(&self) -> &str {
             "fake"

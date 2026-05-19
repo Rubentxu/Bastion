@@ -743,6 +743,7 @@ mod tests {
             SandboxId::generate(),
             bastion_domain::shared::id::TemplateId::new("test"),
             bastion_domain::shared::id::ProviderId::new("podman"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         );
@@ -765,6 +766,7 @@ mod tests {
             SandboxId::generate(),
             bastion_domain::shared::id::TemplateId::new("test"),
             bastion_domain::shared::id::ProviderId::new("podman"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         );
@@ -772,6 +774,7 @@ mod tests {
             SandboxId::generate(),
             bastion_domain::shared::id::TemplateId::new("test"),
             bastion_domain::shared::id::ProviderId::new("podman"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         );
@@ -779,6 +782,7 @@ mod tests {
             SandboxId::generate(),
             bastion_domain::shared::id::TemplateId::new("test"),
             bastion_domain::shared::id::ProviderId::new("podman"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         );
@@ -801,6 +805,7 @@ mod tests {
             SandboxId::new("entry-1"),
             bastion_domain::shared::id::TemplateId::new("test"),
             bastion_domain::shared::id::ProviderId::new("podman"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         ));
@@ -808,6 +813,7 @@ mod tests {
             SandboxId::new("entry-2"),
             bastion_domain::shared::id::TemplateId::new("test"),
             bastion_domain::shared::id::ProviderId::new("podman"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         ));
@@ -815,6 +821,7 @@ mod tests {
             SandboxId::new("entry-3"),
             bastion_domain::shared::id::TemplateId::new("test"),
             bastion_domain::shared::id::ProviderId::new("podman"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         ));
@@ -856,6 +863,7 @@ mod tests {
                 SandboxId::new(format!("concurrent-{}", i)),
                 bastion_domain::shared::id::TemplateId::new("test"),
                 bastion_domain::shared::id::ProviderId::new("podman"),
+                None,
                 ResourcesSpec::default(),
                 NetworkSpec::default(),
             )));
@@ -916,6 +924,7 @@ mod tests {
             SandboxId::new("test-sandbox-1"),
             bastion_domain::shared::id::TemplateId::new("test-template"),
             bastion_domain::shared::id::ProviderId::new("mock"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         );
@@ -924,6 +933,7 @@ mod tests {
             SandboxId::new("test-sandbox-2"),
             bastion_domain::shared::id::TemplateId::new("test-template"),
             bastion_domain::shared::id::ProviderId::new("mock"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         );
@@ -967,7 +977,18 @@ mod tests {
                 unimplemented!()
             }
             fn capabilities(&self) -> ProviderCapabilities {
-                ProviderCapabilities::default()
+                ProviderCapabilities::try_new(
+                    false,
+                    true,
+                    false,
+                    86_400_000,
+                    16_384,
+                    16,
+                    true,
+                    false,
+                    1500,
+                )
+                .expect("known valid values")
             }
             fn name(&self) -> &str {
                 "mock"
@@ -1147,6 +1168,7 @@ mod tests {
             SandboxId::new("unregistered-template-sandbox"),
             bastion_domain::shared::id::TemplateId::new("unregistered-template"),
             bastion_domain::shared::id::ProviderId::new("mock"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         );
@@ -1177,7 +1199,18 @@ mod tests {
                 unimplemented!()
             }
             fn capabilities(&self) -> ProviderCapabilities {
-                ProviderCapabilities::default()
+                ProviderCapabilities::try_new(
+                    false,
+                    true,
+                    false,
+                    86_400_000,
+                    16_384,
+                    16,
+                    true,
+                    false,
+                    1500,
+                )
+                .expect("known valid values")
             }
             fn name(&self) -> &str {
                 "mock"

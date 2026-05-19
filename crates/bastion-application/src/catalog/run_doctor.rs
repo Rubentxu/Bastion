@@ -218,7 +218,7 @@ impl<P: PoolStatsPort, R: AssertionRegistryPort> RunDoctorUseCase<P, R> {
                     if let Some(target_id) = sandbox_id {
                         match store.find_by_trace_id(target_id).await {
                             Ok(mut records) => {
-                                records.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+                                records.sort_by(|a, b| b.started_at().cmp(&a.started_at()));
                                 records.into_iter().next()
                             }
                             Err(_) => None,
@@ -273,6 +273,43 @@ impl<P: PoolStatsPort, R: AssertionRegistryPort> RunDoctorUseCase<P, R> {
                     }
                 }
             }
+            // Infrastructure checks - not supported in RunDoctor use case
+            // These require access to the gateway's provider and system context
+            DoctorCheck::ProviderAlive { provider: _ } => AssertionCheckResult {
+                check: "ProviderAlive".to_string(),
+                passed: false,
+                reason: Some("ProviderAlive check not supported in RunDoctor use case".to_string()),
+            },
+            DoctorCheck::BinaryAvailable { name: _, expected_path: _ } => AssertionCheckResult {
+                check: "BinaryAvailable".to_string(),
+                passed: false,
+                reason: Some("BinaryAvailable check not supported in RunDoctor use case".to_string()),
+            },
+            DoctorCheck::ImageAvailable { provider: _, image: _ } => AssertionCheckResult {
+                check: "ImageAvailable".to_string(),
+                passed: false,
+                reason: Some("ImageAvailable check not supported in RunDoctor use case".to_string()),
+            },
+            DoctorCheck::KvmAvailable => AssertionCheckResult {
+                check: "KvmAvailable".to_string(),
+                passed: false,
+                reason: Some("KvmAvailable check not supported in RunDoctor use case".to_string()),
+            },
+            DoctorCheck::CapabilitiesMet { provider: _, min_memory_mb: _, min_cpu_count: _ } => AssertionCheckResult {
+                check: "CapabilitiesMet".to_string(),
+                passed: false,
+                reason: Some("CapabilitiesMet check not supported in RunDoctor use case".to_string()),
+            },
+            DoctorCheck::ConfigValid { provider: _ } => AssertionCheckResult {
+                check: "ConfigValid".to_string(),
+                passed: false,
+                reason: Some("ConfigValid check not supported in RunDoctor use case".to_string()),
+            },
+            DoctorCheck::WorkerBinaryValid { provider: _ } => AssertionCheckResult {
+                check: "WorkerBinaryValid".to_string(),
+                passed: false,
+                reason: Some("WorkerBinaryValid check not supported in RunDoctor use case".to_string()),
+            },
         }
     }
 }

@@ -59,12 +59,54 @@ pub enum TomlDoctorCheck {
         /// The assertion ID to evaluate against experience records.
         assertion_id: String,
     },
+    /// Check if a provider is alive/responsive.
+    ProviderAlive {
+        /// Provider name (e.g., "podman", "firecracker").
+        provider: String,
+    },
+    /// Check if a binary is available in PATH or expected location.
+    BinaryAvailable {
+        /// Binary name.
+        name: String,
+        /// Optional expected path to the binary.
+        expected_path: Option<String>,
+    },
+    /// Check if a VM image is available for a provider.
+    ImageAvailable {
+        /// Provider name.
+        provider: String,
+        /// Optional specific image name/path.
+        image: Option<String>,
+    },
+    /// Check if KVM virtualization is available.
+    KvmAvailable,
+    /// Check if provider capabilities meet minimum requirements.
+    CapabilitiesMet {
+        /// Provider name.
+        provider: String,
+        /// Minimum required memory in MB.
+        min_memory_mb: Option<u64>,
+        /// Minimum required CPU count.
+        min_cpu_count: Option<u32>,
+    },
+    /// Check if provider configuration is valid.
+    ConfigValid {
+        /// Provider name.
+        provider: String,
+    },
+    /// Check if worker binary is valid for a provider.
+    WorkerBinaryValid {
+        /// Provider name.
+        provider: String,
+    },
 }
 
 impl TomlDoctorCheck {
     /// Convert to a CEL condition string for the CEL-lite rules engine.
     ///
-    /// Returns `None` for checks that have no CEL equivalent (Aliveness, Resources).
+    /// Returns `None` for checks that have no CEL equivalent (Aliveness, Resources,
+    /// ProviderAlive, BinaryAvailable, ImageAvailable, KvmAvailable, CapabilitiesMet,
+    /// ConfigValid, WorkerBinaryValid).
     pub fn to_cel_condition(&self) -> Option<String> {
         match self {
             TomlDoctorCheck::Aliveness { .. } => None, // Deferred — infrastructure check
@@ -73,6 +115,14 @@ impl TomlDoctorCheck {
                 // fact('assertion:<id>') == "passed"
                 Some(format!("fact('assertion:{}') == 'passed'", assertion_id))
             }
+            // Infrastructure checks — no CEL equivalent
+            TomlDoctorCheck::ProviderAlive { .. } => None,
+            TomlDoctorCheck::BinaryAvailable { .. } => None,
+            TomlDoctorCheck::ImageAvailable { .. } => None,
+            TomlDoctorCheck::KvmAvailable => None,
+            TomlDoctorCheck::CapabilitiesMet { .. } => None,
+            TomlDoctorCheck::ConfigValid { .. } => None,
+            TomlDoctorCheck::WorkerBinaryValid { .. } => None,
         }
     }
 
@@ -88,6 +138,27 @@ impl TomlDoctorCheck {
             },
             TomlDoctorCheck::AssertionDriven { assertion_id } => {
                 DoctorCheck::AssertionDriven { assertion_id }
+            }
+            TomlDoctorCheck::ProviderAlive { provider } => DoctorCheck::ProviderAlive { provider },
+            TomlDoctorCheck::BinaryAvailable { name, expected_path } => {
+                DoctorCheck::BinaryAvailable { name, expected_path }
+            }
+            TomlDoctorCheck::ImageAvailable { provider, image } => {
+                DoctorCheck::ImageAvailable { provider, image }
+            }
+            TomlDoctorCheck::KvmAvailable => DoctorCheck::KvmAvailable,
+            TomlDoctorCheck::CapabilitiesMet {
+                provider,
+                min_memory_mb,
+                min_cpu_count,
+            } => DoctorCheck::CapabilitiesMet {
+                provider,
+                min_memory_mb,
+                min_cpu_count,
+            },
+            TomlDoctorCheck::ConfigValid { provider } => DoctorCheck::ConfigValid { provider },
+            TomlDoctorCheck::WorkerBinaryValid { provider } => {
+                DoctorCheck::WorkerBinaryValid { provider }
             }
         }
     }

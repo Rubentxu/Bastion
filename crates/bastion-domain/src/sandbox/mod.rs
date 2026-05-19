@@ -6,10 +6,12 @@ pub mod entity;
 pub mod events;
 pub mod repository;
 pub mod snapshot;
+pub mod state_manager;
 pub mod value_objects;
 
 pub use entity::Sandbox;
 pub use events::*;
 pub use repository::SandboxRepository;
 pub use snapshot::SnapshotInfo;
+pub use state_manager::SandboxStateManager;
 pub use value_objects::*;

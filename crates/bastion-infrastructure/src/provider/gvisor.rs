@@ -8,15 +8,10 @@ use dashmap::DashMap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
 
-use futures::StreamExt;
 use tokio::process::Command;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 
 use bastion_domain::execution::command::{CommandResult, CommandSpec};
-use bastion_domain::execution::stream::CommandChunk;
 use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::executor::TaskExecutor;
@@ -25,7 +20,7 @@ use bastion_domain::provider::lifecycle::SandboxLifecycle;
 use bastion_domain::provider::port::CommandStream;
 use bastion_domain::provider::rootfs::RootfsManager;
 use bastion_domain::provider::router::CommandRouter;
-use bastion_domain::provider::state_machine::SandboxStateMachine;
+use super::state_machine::DashMapSandboxStateMachine;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::value_objects::{
     NetworkSpec, ResourcesSpec, SandboxFilter, SandboxStatus,
@@ -56,7 +51,7 @@ pub struct GVisorProvider {
     containers: Arc<DashMap<String, ContainerState>>,
     gateway_addr: String,
     /// State machine for sandbox lifecycle (when use-segregated-traits is enabled)
-    state_machine: Arc<SandboxStateMachine>,
+    state_machine: Arc<DashMapSandboxStateMachine>,
 }
 
 impl std::fmt::Debug for GVisorProvider {
@@ -114,53 +109,13 @@ impl GVisorProvider {
             command_router: None,
             containers: Arc::new(DashMap::new()),
             gateway_addr,
-            state_machine: Arc::new(SandboxStateMachine::new()),
+            state_machine: Arc::new(DashMapSandboxStateMachine::new()),
         })
     }
 
     /// Set the command router for registry-based command execution.
     pub fn set_command_router(&mut self, router: Arc<dyn CommandRouter>) {
         self.command_router = Some(router);
-    }
-
-    /// Execute a shell command inside a gVisor container and collect output.
-    ///
-    /// If `env_vars` is provided, they are prepended as `KEY=VALUE` exports
-    /// before the command, since `runsc exec` does not have a native env option.
-    async fn exec_in_container(
-        &self,
-        container_id: &str,
-        shell_cmd: &str,
-        env_vars: Option<&HashMap<String, String>>,
-    ) -> Result<(Vec<u8>, Vec<u8>, i32), DomainError> {
-        // If env_vars provided (and non-empty), prepend them as exports in the shell command
-        let full_cmd = if let Some(vars) = env_vars {
-            if vars.is_empty() {
-                shell_cmd.to_string()
-            } else {
-                let exports: Vec<String> = vars
-                    .iter()
-                    .map(|(k, v)| format!("export {k}={v}"))
-                    .collect();
-                format!("{} && {}", exports.join(" && "), shell_cmd)
-            }
-        } else {
-            shell_cmd.to_string()
-        };
-
-        tracing::debug!(container_id, %full_cmd, "Running runsc exec");
-
-        let output = self
-            .runsc_cmd()
-            .args(["exec", container_id, "sh", "-c", &full_cmd])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await
-            .map_err(|e| DomainError::Internal(format!("Failed to run runsc exec: {e}")))?;
-
-        let exit_code = output.status.code().unwrap_or(-1);
-        Ok((output.stdout, output.stderr, exit_code))
     }
 
     /// Start the bastion-worker process in the container via exec.
@@ -423,6 +378,7 @@ impl SandboxLifecycle for GVisorProvider {
             id.clone(),
             bastion_domain::shared::id::TemplateId::new(template),
             bastion_domain::shared::id::ProviderId::new("gvisor"),
+            None,
             _resources.clone(),
             network.clone(),
         );
@@ -502,17 +458,18 @@ impl SandboxLifecycle for GVisorProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            supports_snapshots: false,
-            supports_streaming: true,
-            supports_pause_resume: false,
-            max_timeout_ms: 600_000,
-            max_memory_mb: 4096,
-            max_cpu_count: 4,
-            supports_networking: true,
-            requires_kvm: false,
-            avg_startup_ms: 2000,
-        }
+        ProviderCapabilities::try_new(
+            false,
+            true,
+            false,
+            600_000,
+            4096,
+            4,
+            true,
+            false,
+            2000,
+        )
+        .expect("known valid values")
     }
 
     fn name(&self) -> &str {
@@ -563,6 +520,7 @@ impl SandboxLifecycle for GVisorProvider {
                 SandboxId::new(&sandbox_id),
                 bastion_domain::shared::id::TemplateId::new("gvisor"),
                 bastion_domain::shared::id::ProviderId::new("gvisor"),
+                None,
                 ResourcesSpec::default(),
                 NetworkSpec::default(),
             );
@@ -599,6 +557,7 @@ impl SandboxLifecycle for GVisorProvider {
             id.clone(),
             bastion_domain::shared::id::TemplateId::new("gvisor"),
             bastion_domain::shared::id::ProviderId::new("gvisor"),
+            None,
             ResourcesSpec::default(),
             NetworkSpec::default(),
         );
@@ -656,53 +615,8 @@ impl TaskExecutor for GVisorProvider {
                 .await;
         }
 
-        // Fallback to runsc exec
-        let start = Instant::now();
-
-        tracing::info!(
-            sandbox_id = %id,
-            command = %command.command,
-            "Running command via runsc exec (fallback)"
-        );
-
-        let shell_cmd = if command.args.is_empty() {
-            command.command.clone()
-        } else {
-            format!(
-                "{} {}",
-                command.command,
-                command
-                    .args
-                    .iter()
-                    .map(|a| if a.contains(' ') {
-                        format!("\"{}\"", a)
-                    } else {
-                        a.clone()
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )
-        };
-
-        let (stdout, stderr, exit_code) = self
-            .exec_in_container(&sandbox_id, &shell_cmd, Some(&command.env_vars))
-            .await?;
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        tracing::info!(
-            sandbox_id = %id,
-            exit_code,
-            duration_ms,
-            "Command completed"
-        );
-
-        Ok(CommandResult {
-            exit_code,
-            stdout,
-            stderr,
-            duration_ms,
-            timed_out: false,
-        })
+        // Worker is NOT connected - this is an error, not a fallback opportunity
+        return Err(DomainError::WorkerNotConnected(id.to_string()));
     }
 
     async fn run_command_stream(
@@ -730,70 +644,8 @@ impl TaskExecutor for GVisorProvider {
                 .await;
         }
 
-        // Fallback: execute and stream results
-        tracing::info!(
-            sandbox_id = %id,
-            command = %command.command,
-            "Starting streaming command via runsc exec"
-        );
-
-        let shell_cmd = if command.args.is_empty() {
-            command.command.clone()
-        } else {
-            format!(
-                "{} {}",
-                command.command,
-                command
-                    .args
-                    .iter()
-                    .map(|a| if a.contains(' ') {
-                        format!("\"{}\"", a)
-                    } else {
-                        a.clone()
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )
-        };
-
-        let runsc = self.runsc_binary.clone();
-        let cid = sandbox_id.clone();
-
-        let (tx, rx) = mpsc::channel::<Result<CommandChunk, DomainError>>(4);
-
-        tokio::spawn(async move {
-            let output = Command::new(&runsc)
-                .arg("-rootless")
-                .args(["exec", &cid, "sh", "-c", &shell_cmd])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-                .await;
-
-            match output {
-                Ok(output) => {
-                    if !output.stdout.is_empty() {
-                        let _ = tx.send(Ok(CommandChunk::stdout(output.stdout))).await;
-                    }
-                    if !output.stderr.is_empty() {
-                        let _ = tx.send(Ok(CommandChunk::stderr(output.stderr))).await;
-                    }
-                    let exit_code = output.status.code().unwrap_or(-1);
-                    let _ = tx.send(Ok(CommandChunk::exit_code(exit_code))).await;
-                }
-                Err(e) => {
-                    let _ = tx
-                        .send(Err(DomainError::Internal(format!(
-                            "Failed to run runsc exec: {e}"
-                        ))))
-                        .await;
-                }
-            }
-        });
-
-        let stream =
-            ReceiverStream::new(rx).map(|r| r.map_err(|e| DomainError::Internal(e.to_string())));
-        Ok(Box::pin(stream))
+        // Worker is NOT connected - this is an error, not a fallback opportunity
+        return Err(DomainError::WorkerNotConnected(id.to_string()));
     }
 
     async fn write_file(
@@ -812,31 +664,8 @@ impl TaskExecutor for GVisorProvider {
             return router.route_write_file(&sandbox_id, path, content).await;
         }
 
-        // Fallback to runsc exec
-        tracing::info!(
-            sandbox_id = %id,
-            path,
-            size = content.len(),
-            "Writing file via runsc exec (fallback)"
-        );
-
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(content);
-        let shell_cmd = format!("printf '%s' '{}' | base64 -d > '{}'", encoded, path);
-
-        let (_, _, exit_code) = self
-            .exec_in_container(&sandbox_id, &shell_cmd, None)
-            .await?;
-
-        if exit_code != 0 {
-            return Err(DomainError::Internal(format!(
-                "Failed to write file: exit code {}",
-                exit_code
-            )));
-        }
-
-        tracing::info!(sandbox_id = %id, path, "File written");
-        Ok(())
+        // Worker is NOT connected - this is an error, not a fallback opportunity
+        return Err(DomainError::WorkerNotConnected(id.to_string()));
     }
 
     async fn read_file(&self, id: &SandboxId, path: &str) -> Result<Vec<u8>, DomainError> {
@@ -850,33 +679,8 @@ impl TaskExecutor for GVisorProvider {
             return router.route_read_file(&sandbox_id, path).await;
         }
 
-        // Fallback to runsc exec
-        tracing::info!(sandbox_id = %id, path, "Reading file via runsc exec (fallback)");
-
-        let shell_cmd = format!("base64 -w0 < '{}' 2>/dev/null || base64 < '{}'", path, path);
-        let (stdout, _, exit_code) = self
-            .exec_in_container(&sandbox_id, &shell_cmd, None)
-            .await?;
-
-        if exit_code != 0 {
-            return Err(DomainError::Internal(format!(
-                "Failed to read file: exit code {}",
-                exit_code
-            )));
-        }
-
-        // Decode base64 — strip whitespace as safety net
-        use base64::Engine;
-        let cleaned: Vec<u8> = stdout
-            .iter()
-            .copied()
-            .filter(|&b| b != b'\n' && b != b'\r' && b != b' ')
-            .collect();
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&cleaned)
-            .map_err(|e| DomainError::Internal(format!("Failed to decode base64: {e}")))?;
-
-        Ok(decoded)
+        // Worker is NOT connected - this is an error, not a fallback opportunity
+        return Err(DomainError::WorkerNotConnected(id.to_string()));
     }
 
     async fn list_files(&self, id: &SandboxId, dir: &str) -> Result<Vec<FileEntry>, DomainError> {
@@ -890,69 +694,9 @@ impl TaskExecutor for GVisorProvider {
             return router.route_list_files(&sandbox_id, dir).await;
         }
 
-        // Fallback to runsc exec
-        tracing::info!(sandbox_id = %id, dir, "Listing files via runsc exec (fallback)");
-
-        let shell_cmd = format!("ls -la '{}' 2>/dev/null || ls -la '{}'", dir, dir);
-        let (stdout, _, exit_code) = self
-            .exec_in_container(&sandbox_id, &shell_cmd, None)
-            .await?;
-
-        if exit_code != 0 {
-            return Err(DomainError::Internal(format!(
-                "Failed to list files: exit code {}",
-                exit_code
-            )));
-        }
-
-        let output_str = String::from_utf8_lossy(&stdout);
-        let entries = parse_ls_output(&output_str, dir);
-        Ok(entries)
+        // Worker is NOT connected - this is an error, not a fallback opportunity
+        return Err(DomainError::WorkerNotConnected(id.to_string()));
     }
-}
-
-/// Parse `ls -la` output into FileEntry structs.
-fn parse_ls_output(output: &str, base_dir: &str) -> Vec<FileEntry> {
-    let mut entries = Vec::new();
-
-    for line in output.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("total") {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 9 {
-            continue;
-        }
-
-        let permissions = parts[0].to_string();
-        let is_directory = permissions.starts_with('d');
-        let size_bytes: u64 = parts[4].parse().unwrap_or(0);
-
-        // Filename is everything from index 8 onwards (handles spaces)
-        let name = parts[8..].join(" ");
-
-        if name == "." || name == ".." {
-            continue;
-        }
-
-        let path = if base_dir.ends_with('/') {
-            format!("{base_dir}{name}")
-        } else {
-            format!("{base_dir}/{name}")
-        };
-
-        entries.push(FileEntry {
-            path,
-            is_directory,
-            size_bytes,
-            modified_at: None,
-            permissions,
-        });
-    }
-
-    entries
 }
 
 #[cfg(test)]
@@ -971,28 +715,5 @@ mod tests {
             DefaultRootfsManager::new(),
         );
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_ls_output() {
-        let output = "total 8\n\
-                      drwxr-xr-x 2 root root 4096 Jan 01 12:00 dir1\n\
-                      -rw-r--r-- 1 root root  100 Jan 01 12:00 file.txt\n";
-        let entries = parse_ls_output(output, "/workspace");
-        assert_eq!(entries.len(), 2);
-
-        let dir_entry = entries
-            .iter()
-            .find(|e| e.path == "/workspace/dir1")
-            .unwrap();
-        assert!(dir_entry.is_directory);
-        assert_eq!(dir_entry.size_bytes, 4096);
-
-        let file_entry = entries
-            .iter()
-            .find(|e| e.path == "/workspace/file.txt")
-            .unwrap();
-        assert!(!file_entry.is_directory);
-        assert_eq!(file_entry.size_bytes, 100);
     }
 }

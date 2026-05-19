@@ -25,6 +25,7 @@ use bastion_domain::provider::port::CommandStream;
 use bastion_domain::provider::router::CommandRouter;
 use bastion_domain::shared::DomainError;
 
+use crate::pipeline_events::PipelineEventStore;
 use crate::sandbox::v2::worker_registry_server::WorkerRegistry;
 use crate::sandbox::v2::*;
 use crate::server::AuthConfig;
@@ -208,6 +209,8 @@ pub struct RegistryService {
     /// Uses RwLock for interior mutability since RegistryService is Clone and may be
     /// used behind Arc. Set via set_heartbeat_bridge() after MetricsHub initialization.
     heartbeat_bridge: Arc<std::sync::RwLock<Option<Arc<HeartbeatBridge>>>>,
+    /// Pipeline event store for SSE streaming to dashboard
+    pipeline_events: Arc<PipelineEventStore>,
 }
 
 impl RegistryService {
@@ -215,6 +218,7 @@ impl RegistryService {
         jwt_manager: crate::auth::JwtManager,
         auto_tls: Arc<crate::auto_tls::AutoTls>,
         auth_config: AuthConfig,
+        pipeline_events: Arc<PipelineEventStore>,
     ) -> Self {
         Self {
             workers: Arc::new(DashMap::new()),
@@ -226,6 +230,7 @@ impl RegistryService {
             auto_tls,
             auth_config,
             heartbeat_bridge: Arc::new(std::sync::RwLock::new(None)),
+            pipeline_events,
         }
     }
 
@@ -395,6 +400,8 @@ impl RegistryService {
                     gateway_command::Payload::Ping(_) => "ping",
                     gateway_command::Payload::Shutdown(_) => "shutdown",
                     gateway_command::Payload::Cancel(_) => "cancel",
+                    gateway_command::Payload::RunPipeline(_) => "run_pipeline",
+                    gateway_command::Payload::CancelPipeline(_) => "cancel_pipeline",
                 })
                 .unwrap_or("unknown")
         );
@@ -858,6 +865,97 @@ impl CommandRouter for RegistryService {
     }
 }
 
+impl RegistryService {
+    /// Run a pipeline in a sandbox.
+    ///
+    /// Sends a RunPipelineRequest to the worker and returns the pipeline_run_id
+    /// for tracking. Pipeline events are streamed back via SSE through the
+    /// PipelineEventStore.
+    pub async fn run_pipeline(
+        &self,
+        sandbox_id: &str,
+        pipeline_file: &str,
+        env: HashMap<String, String>,
+        timeout_ms: u64,
+        parameters: HashMap<String, String>,
+    ) -> Result<String, DomainError> {
+        let pipeline_run_id = Uuid::new_v4().to_string();
+        let command_id = pipeline_run_id.clone();
+
+        let cmd = GatewayCommand {
+            command_id: command_id.clone(),
+            session_token: String::new(),
+            payload: Some(gateway_command::Payload::RunPipeline(RunPipelineRequest {
+                pipeline_file: pipeline_file.to_string(),
+                env,
+                timeout_ms: timeout_ms as u64,
+                pipeline_run_id: pipeline_run_id.clone(),
+                parameters,
+            })),
+        };
+
+        // Get worker handle
+        let handle = self.workers.get(sandbox_id).ok_or_else(|| {
+            DomainError::Internal(format!("Worker not found for sandbox {}", sandbox_id))
+        })?;
+
+        // Send the command
+        handle
+            .cmd_tx
+            .send(cmd)
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to send pipeline command: {}", e)))?;
+
+        tracing::info!(
+            sandbox_id = %sandbox_id,
+            pipeline_run_id = %pipeline_run_id,
+            pipeline_file = %pipeline_file,
+            "Pipeline started"
+        );
+
+        Ok(pipeline_run_id)
+    }
+
+    /// Cancel a running pipeline.
+    pub async fn cancel_pipeline(
+        &self,
+        sandbox_id: &str,
+        pipeline_run_id: &str,
+        reason: &str,
+    ) -> Result<(), DomainError> {
+        let command_id = Uuid::new_v4().to_string();
+
+        let cmd = GatewayCommand {
+            command_id: command_id.clone(),
+            session_token: String::new(),
+            payload: Some(gateway_command::Payload::CancelPipeline(CancelPipelineRequest {
+                pipeline_run_id: pipeline_run_id.to_string(),
+                reason: reason.to_string(),
+            })),
+        };
+
+        // Get worker handle
+        let handle = self.workers.get(sandbox_id).ok_or_else(|| {
+            DomainError::Internal(format!("Worker not found for sandbox {}", sandbox_id))
+        })?;
+
+        // Send the command
+        handle
+            .cmd_tx
+            .send(cmd)
+            .await
+            .map_err(|e| DomainError::Internal(format!("Failed to send cancel command: {}", e)))?;
+
+        tracing::info!(
+            sandbox_id = %sandbox_id,
+            pipeline_run_id = %pipeline_run_id,
+            "Pipeline cancellation requested"
+        );
+
+        Ok(())
+    }
+}
+
 #[tonic::async_trait]
 impl WorkerRegistry for RegistryService {
     async fn register(
@@ -1036,9 +1134,11 @@ impl WorkerRegistry for RegistryService {
 
         // Spawn task to handle worker messages - route to pending_multi
         // and update HeartbeatBridge when PongResponse with HealthReport arrives
+        // Also route PipelineEvent to the event store for SSE streaming
         let pending_multi = self.pending_multi.clone();
         let registry_for_hb = self.clone();
         let ready_sandbox_id_clone = ready_sandbox_id.clone();
+        let pipeline_events = self.pipeline_events.clone();
         tokio::spawn(async move {
             while let Some(msg_result) = in_stream.next().await {
                 match msg_result {
@@ -1056,6 +1156,16 @@ impl WorkerRegistry for RegistryService {
                                 registry_for_hb
                                     .update_heartbeat_bridge(&ready_sandbox_id_clone, health);
                             }
+                        }
+
+                        // Route PipelineEvent to event store for SSE streaming
+                        if let Some(worker_message::Payload::PipelineEvent(event)) = &msg.payload {
+                            pipeline_events.push(event.clone());
+                            tracing::debug!(
+                                pipeline_run_id = %event.pipeline_run_id,
+                                event_type = %event.event_type,
+                                "Pipeline event routed to store"
+                            );
                         }
                     }
                     Err(e) => {

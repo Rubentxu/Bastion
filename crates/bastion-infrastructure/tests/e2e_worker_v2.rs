@@ -16,7 +16,7 @@ use bastion_infrastructure::provider::PodmanProvider;
 /// Helper to skip tests if Podman is not available
 async fn ensure_podman() -> PodmanProvider {
     let socket = "/run/user/1000/podman/podman.sock";
-    let worker_bin = PathBuf::from("target/debug/bastion-worker");
+    let worker_bin = PathBuf::from("target/x86_64-unknown-linux-musl/release/bastion-worker");
 
     if !std::path::Path::new(socket).exists() {
         eprintln!("Skipping: Podman socket not found at {}", socket);

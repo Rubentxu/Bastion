@@ -106,17 +106,18 @@ impl SandboxLifecycle for WasmSandboxProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            supports_snapshots: false,
-            supports_streaming: true,
-            supports_pause_resume: false,
-            max_timeout_ms: 86_400_000,
-            max_memory_mb: 4096,
-            max_cpu_count: 4,
-            supports_networking: false,
-            requires_kvm: false,
-            avg_startup_ms: 100,
-        }
+        ProviderCapabilities::try_new(
+            false,
+            true,
+            false,
+            86_400_000,
+            4096,
+            4,
+            false,
+            false,
+            100,
+        )
+        .expect("known valid values")
     }
 
     async fn create(
@@ -136,6 +137,7 @@ impl SandboxLifecycle for WasmSandboxProvider {
             id.clone(),
             bastion_domain::shared::id::TemplateId::new(template),
             bastion_domain::shared::id::ProviderId::new("wasm"),
+            None,
             _resources.clone(),
             _network.clone(),
         );
@@ -371,7 +373,18 @@ impl SandboxLifecycle for WasmSandboxProviderStub {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::default()
+        ProviderCapabilities::try_new(
+            false,
+            true,
+            false,
+            86_400_000,
+            16_384,
+            16,
+            true,
+            false,
+            1500,
+        )
+        .expect("known valid values")
     }
 
     async fn create(

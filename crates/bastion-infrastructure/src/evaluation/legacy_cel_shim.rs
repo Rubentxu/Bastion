@@ -58,25 +58,25 @@ fn eval_cel_on_record(record: &ExperienceRecord, condition: &str) -> Result<bool
     let expr = Parser::parse(condition).map_err(|e| ShimError::CelParse(e.to_string()))?;
 
     // Build OperationResult from ExperienceRecord fields
-    let exit_code = record.exit_code.unwrap_or(0);
+    let exit_code = record.exit_code().unwrap_or(0);
     // Use i32::MAX as sentinel for unknown duration.
     // This ensures duration comparisons fail for unfinished commands,
     // matching legacy AssertionCheck behavior where duration unknown = check fails.
     let duration_ms = record.duration_ms().map(|d| d as i32).unwrap_or(i32::MAX);
     let timed_out = matches!(
-        record.status,
+        record.status(),
         bastion_domain::catalog::experience::ExperienceStatus::Timeout
     );
 
     let result = OperationResult {
         exit_code,
-        stdout: record.stdout_summary.clone(),
-        stderr: record.stderr_summary.clone(),
+        stdout: record.stdout_summary().to_string(),
+        stderr: record.stderr_summary().to_string(),
         duration_ms: duration_ms as u64,
         timed_out,
     };
 
-    let invocation = OperationInvocation::from_command(&record.tool_name);
+    let invocation = OperationInvocation::from_command(record.tool_name());
     let facts: Vec<Fact> = vec![];
     let ctx = EvalContext::new(&invocation, &result, &facts);
 
@@ -91,22 +91,22 @@ fn eval_cel_on_record_with_facts(
 ) -> Result<bool, ShimError> {
     let expr = Parser::parse(condition).map_err(|e| ShimError::CelParse(e.to_string()))?;
 
-    let exit_code = record.exit_code.unwrap_or(0);
+    let exit_code = record.exit_code().unwrap_or(0);
     let duration_ms = record.duration_ms().map(|d| d as i32).unwrap_or(i32::MAX);
     let timed_out = matches!(
-        record.status,
+        record.status(),
         bastion_domain::catalog::experience::ExperienceStatus::Timeout
     );
 
     let result = OperationResult {
         exit_code,
-        stdout: record.stdout_summary.clone(),
-        stderr: record.stderr_summary.clone(),
+        stdout: record.stdout_summary().to_string(),
+        stderr: record.stderr_summary().to_string(),
         duration_ms: duration_ms as u64,
         timed_out,
     };
 
-    let invocation = OperationInvocation::from_command(&record.tool_name);
+    let invocation = OperationInvocation::from_command(record.tool_name());
     let all_facts: Vec<Fact> = extra_facts.to_vec();
     let ctx = EvalContext::new(&invocation, &result, &all_facts);
 
@@ -247,7 +247,15 @@ pub fn evaluate_doctor_check(
                 matches,
             })
         }
-        TomlDoctorCheck::Aliveness { .. } | TomlDoctorCheck::Resources { .. } => {
+        TomlDoctorCheck::Aliveness { .. }
+        | TomlDoctorCheck::Resources { .. }
+        | TomlDoctorCheck::ProviderAlive { .. }
+        | TomlDoctorCheck::BinaryAvailable { .. }
+        | TomlDoctorCheck::ImageAvailable { .. }
+        | TomlDoctorCheck::KvmAvailable
+        | TomlDoctorCheck::CapabilitiesMet { .. }
+        | TomlDoctorCheck::ConfigValid { .. }
+        | TomlDoctorCheck::WorkerBinaryValid { .. } => {
             // These have no CEL equivalent — return legacy result only
             Ok(ComparisonResult {
                 legacy_passed: true, // Deferred checks always pass at domain level
@@ -481,11 +489,8 @@ mod tests {
     fn test_toml_check_duration_lt_parity_pass() {
         let record = ExperienceRecord::new("sandbox_run")
             .with_stdout(b"done")
-            .with_stderr(b"");
-        // Simulate a fast command by setting finished_at close to started_at
-        let mut record = record;
-        record.exit_code = Some(0);
-        record.finished_at = Some(record.started_at);
+            .with_stderr(b"")
+            .completed(0);
 
         let toml_check = TomlCheck::CommandDuration { max_ms: 1000 };
         let result = evaluate_toml_check(toml_check.clone(), &record).unwrap();
@@ -801,10 +806,8 @@ max_ms = 5000
     fn test_eval_cel_on_record_duration() {
         let record = ExperienceRecord::new("sandbox_run")
             .with_stdout(b"done")
-            .with_stderr(b"");
-        let mut record = record;
-        record.exit_code = Some(0);
-        record.finished_at = Some(record.started_at);
+            .with_stderr(b"")
+            .completed(0);
 
         let result = eval_cel_on_record(&record, "duration_lt(1000)").unwrap();
         assert!(result);

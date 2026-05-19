@@ -17,6 +17,7 @@ use bastion_domain::secret::{SecretResolver, parse_secret_ref};
 use bastion_domain::shared::DomainError;
 use bastion_domain::template::ArtifactCatalog;
 use bastion_infrastructure::catalog::toml_advice_parser::{AdviceConfigStore, AdviceRegistry};
+use bastion_infrastructure::catalog::toml_doctor_parser::DoctorRegistry;
 use bastion_infrastructure::enrichment::{BastionEnrichmentAdapter, EnrichmentConfig};
 use bastion_infrastructure::metrics::{GatewayMetrics, MetricsHub};
 use bastion_infrastructure::pool::SandboxPoolManager;
@@ -132,10 +133,21 @@ pub struct BastionGateway {
     cancel_tokens: Arc<DashMap<String, Arc<AtomicBool>>>,
     /// Catalog configuration (experience, assertions, doctors, advice)
     pub(crate) catalog_config: CatalogConfig,
+    /// Doctor context for provider readiness checks (pre-flight in sandbox_create)
+    pub(crate) doctor_context: Option<Arc<DoctorContext>>,
     /// Optional enrichment adapter for sandbox command enrichment
     pub(crate) enrichment_adapter: Arc<Option<BastionEnrichmentAdapter>>,
     /// Enrichment configuration
     enrichment_config: EnrichmentConfig,
+}
+
+/// Doctor context for provider readiness checks.
+/// Holds the doctor registry and other context needed to run pre-flight checks
+/// before sandbox creation.
+#[derive(Debug, Clone)]
+pub struct DoctorContext {
+    /// Registry of available doctors loaded from TOML
+    pub doctor_registry: Arc<DoctorRegistry>,
 }
 
 /// Simple token bucket rate limiter for MCP layer
@@ -224,6 +236,7 @@ impl BastionGateway {
         gateway_config: GatewayConfig,
         capability_registry: CapabilityRegistry,
         catalog_config: CatalogConfig,
+        doctor_context: Option<Arc<DoctorContext>>,
         enrichment_adapter: Arc<Option<BastionEnrichmentAdapter>>,
         enrichment_config: EnrichmentConfig,
     ) -> Self {
@@ -245,6 +258,7 @@ impl BastionGateway {
             capability_registry: Arc::new(RwLock::new(capability_registry)),
             cancel_tokens: Arc::new(DashMap::new()),
             catalog_config,
+            doctor_context,
             enrichment_adapter,
             enrichment_config,
         }

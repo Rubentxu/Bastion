@@ -53,20 +53,20 @@ pub struct ProviderCapabilitiesConfig {
     pub requires_kvm: Option<bool>,
 }
 
-impl ProviderCapabilitiesConfig {
-    /// Convert to domain ProviderCapabilities, applying defaults for missing fields.
+    impl ProviderCapabilitiesConfig {
     pub fn into_domain(self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            supports_snapshots: self.supports_snapshots.unwrap_or(false),
-            supports_streaming: self.supports_streaming.unwrap_or(true),
-            supports_pause_resume: false,
-            max_timeout_ms: 86_400_000,
-            max_memory_mb: self.max_memory_mb.unwrap_or(16384),
-            max_cpu_count: self.max_cpu_count.unwrap_or(16),
-            supports_networking: true,
-            requires_kvm: self.requires_kvm.unwrap_or(false),
-            avg_startup_ms: self.avg_startup_ms.unwrap_or(1500),
-        }
+        ProviderCapabilities::try_new(
+            self.supports_snapshots.unwrap_or(false),
+            self.supports_streaming.unwrap_or(true),
+            false,
+            86_400_000,
+            self.max_memory_mb.unwrap_or(16384),
+            self.max_cpu_count.unwrap_or(16),
+            true,
+            self.requires_kvm.unwrap_or(false),
+            self.avg_startup_ms.unwrap_or(1500),
+        )
+        .expect("known valid values")
     }
 }
 
@@ -100,7 +100,7 @@ max_memory_mb = 16384
         let empty: ProviderCapabilitiesConfig = toml::from_str("").unwrap_or_default();
         let caps = empty.into_domain();
         // Check defaults are applied
-        assert_eq!(caps.avg_startup_ms, 1500);
-        assert_eq!(caps.max_memory_mb, 16384);
+        assert_eq!(caps.avg_startup_ms(), 1500);
+        assert_eq!(caps.max_memory_mb(), 16384);
     }
 }

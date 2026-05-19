@@ -22,7 +22,7 @@ use bastion_domain::file_ops::FileEntry;
 use bastion_domain::provider::capabilities::ProviderCapabilities;
 use bastion_domain::provider::executor::TaskExecutor;
 use bastion_domain::provider::lifecycle::SandboxLifecycle;
-use bastion_domain::provider::state_machine::SandboxStateMachine;
+use super::state_machine::DashMapSandboxStateMachine;
 use bastion_domain::sandbox::entity::Sandbox;
 use bastion_domain::sandbox::snapshot::SnapshotInfo;
 use bastion_domain::sandbox::value_objects::{NetworkSpec, ResourcesSpec, SandboxFilter};
@@ -48,7 +48,7 @@ pub struct LocalProvider {
     /// Whether to clean up workspaces on terminate
     cleanup: bool,
     /// State machine for sandbox lifecycle (when use-segregated-traits is enabled)
-    state_machine: Arc<SandboxStateMachine>,
+    state_machine: Arc<DashMapSandboxStateMachine>,
 }
 
 impl LocalProvider {
@@ -69,7 +69,7 @@ impl LocalProvider {
             sandboxes: Arc::new(RwLock::new(HashMap::new())),
             base_dir,
             cleanup: true,
-            state_machine: Arc::new(SandboxStateMachine::new()),
+            state_machine: Arc::new(DashMapSandboxStateMachine::new()),
         })
     }
 
@@ -96,17 +96,18 @@ impl SandboxLifecycle for LocalProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            supports_snapshots: false,
-            supports_streaming: true,
-            supports_pause_resume: false,
-            max_timeout_ms: 86_400_000,
-            max_memory_mb: 0, // Unlimited
-            max_cpu_count: 0, // Unlimited
-            supports_networking: true,
-            requires_kvm: false,
-            avg_startup_ms: 10,
-        }
+        ProviderCapabilities::try_new(
+            false,
+            true,
+            false,
+            86_400_000,
+            u64::MAX,
+            u32::MAX,
+            true,
+            false,
+            10,
+        )
+        .expect("known valid values")
     }
 
     async fn create(
@@ -133,6 +134,7 @@ impl SandboxLifecycle for LocalProvider {
             id.clone(),
             bastion_domain::shared::id::TemplateId::new(template),
             bastion_domain::shared::id::ProviderId::new("local"),
+            None,
             _resources.clone(),
             _network.clone(),
         );

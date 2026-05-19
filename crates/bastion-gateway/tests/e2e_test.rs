@@ -4,7 +4,7 @@
 //! Requires Podman daemon running.
 
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -90,6 +90,7 @@ fn spawn_gateway_pool() -> (std::process::Child, impl Write, impl BufRead) {
 }
 
 /// Send a JSON-RPC request and return the response.
+/// Uses proper MCP framing with Content-Length headers.
 fn send_request(
     stdin: &mut impl Write,
     reader: &mut impl BufRead,
@@ -104,25 +105,44 @@ fn send_request(
         "params": params,
     });
 
-    let mut line = serde_json::to_string(&request).unwrap();
-    line.push('\n');
-    stdin.write_all(line.as_bytes()).unwrap();
+    let req_str = serde_json::to_string(&request).unwrap();
+    stdin
+        .write_all(format!("Content-Length: {}\r\n\r\n{}\n", req_str.len(), req_str).as_bytes())
+        .unwrap();
     stdin.flush().unwrap();
 
-    // Read response (may have multiple lines for logging etc.)
-    let mut response_line = String::new();
-    for _ in 0..100 {
-        response_line.clear();
-        reader.read_line(&mut response_line).unwrap();
-        if response_line.contains("\"id\":") || response_line.contains("\"jsonrpc\"") {
+    // Read response headers
+    let mut content_length: Option<usize> = None;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let line = line.trim();
+        if line.is_empty() {
             break;
+        }
+        if line.starts_with("Content-Length: ") {
+            content_length = Some(line["Content-Length: ".len()..].trim().parse().unwrap());
         }
     }
 
-    serde_json::from_str(&response_line).unwrap_or(json!({"error": "parse failed"}))
+    // Read the JSON body
+    let body_len = content_length.unwrap_or(0);
+    let mut body = vec![0u8; body_len];
+    let mut offset = 0;
+    while offset < body_len {
+        let n = reader.read(&mut body[offset..]).unwrap();
+        if n == 0 {
+            break;
+        }
+        offset += n;
+    }
+
+    let response_str = String::from_utf8_lossy(&body);
+    serde_json::from_str(&response_str).unwrap_or(json!({"error": "parse failed"}))
 }
 
 /// Send a JSON-RPC notification (no response expected).
+/// Uses proper MCP framing with Content-Length headers.
 fn send_notification(stdin: &mut impl Write, method: &str, params: Value) {
     let request = json!({
         "jsonrpc": "2.0",
@@ -130,9 +150,10 @@ fn send_notification(stdin: &mut impl Write, method: &str, params: Value) {
         "params": params,
     });
 
-    let mut line = serde_json::to_string(&request).unwrap();
-    line.push('\n');
-    stdin.write_all(line.as_bytes()).unwrap();
+    let req_str = serde_json::to_string(&request).unwrap();
+    stdin
+        .write_all(format!("Content-Length: {}\r\n\r\n{}\n", req_str.len(), req_str).as_bytes())
+        .unwrap();
     stdin.flush().unwrap();
     // Give the server time to process
     std::thread::sleep(Duration::from_millis(100));

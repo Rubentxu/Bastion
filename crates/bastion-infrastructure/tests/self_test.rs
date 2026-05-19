@@ -19,20 +19,16 @@ async fn create_test_provider()
 -> Result<bastion_infrastructure::provider::PodmanProvider, Box<dyn std::error::Error>> {
     let socket = "/run/user/1000/podman/podman.sock";
 
-    // Path to bastion-worker binary
+    // Path to bastion-worker binary (musl static for container compatibility)
     let worker_bin = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
         .unwrap()
-        .parent()
-        .unwrap()
-        .join("target/debug/bastion-worker");
+        .join("target/x86_64-unknown-linux-musl/release/bastion-worker");
 
     // Path to Bastion source root
     let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
         .parent()
         .unwrap()
         .parent()

@@ -4,6 +4,7 @@
 //! against live sandbox state or existing experience records.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::assertion::CheckResult;
 
@@ -68,6 +69,46 @@ pub enum DoctorCheck {
         /// The assertion ID to evaluate against experience records.
         assertion_id: String,
     },
+    /// Check if a provider is alive/responsive.
+    ProviderAlive {
+        /// Provider name (e.g., "podman", "firecracker").
+        provider: String,
+    },
+    /// Check if a binary is available in PATH or expected location.
+    BinaryAvailable {
+        /// Binary name.
+        name: String,
+        /// Optional expected path to the binary.
+        expected_path: Option<String>,
+    },
+    /// Check if a VM image is available for a provider.
+    ImageAvailable {
+        /// Provider name.
+        provider: String,
+        /// Optional specific image name/path.
+        image: Option<String>,
+    },
+    /// Check if KVM virtualization is available.
+    KvmAvailable,
+    /// Check if provider capabilities meet minimum requirements.
+    CapabilitiesMet {
+        /// Provider name.
+        provider: String,
+        /// Minimum required memory in MB.
+        min_memory_mb: Option<u64>,
+        /// Minimum required CPU count.
+        min_cpu_count: Option<u32>,
+    },
+    /// Check if provider configuration is valid.
+    ConfigValid {
+        /// Provider name.
+        provider: String,
+    },
+    /// Check if worker binary is valid for a provider.
+    WorkerBinaryValid {
+        /// Provider name.
+        provider: String,
+    },
 }
 
 /// Result of running a doctor against a sandbox.
@@ -83,12 +124,139 @@ pub struct DoctorResult {
     pub severity: Severity,
     /// Trace ID for correlation.
     pub trace_id: String,
-    /// Per-check results.
+    /// Per-check results (simple format).
     pub check_results: Vec<CheckResult>,
     /// Human-readable summary of why the doctor passed/failed.
     pub rationale: String,
     /// When the doctor was executed.
     pub executed_at: chrono::DateTime<chrono::Utc>,
+    /// Rich results for AI agents.
+    pub rich_check_results: Vec<RichCheckResult>,
+    /// Simple summary for humans.
+    pub summary: String,
+    /// AI-specific flag indicating attention is needed.
+    pub requires_ai_attention: bool,
+    /// AI-specific flag indicating the issue may be self-remediated.
+    pub potential_self_remediation: bool,
+}
+
+/// Status result of a single check within RichCheckResult.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckStatus {
+    Pass,
+    Fail,
+    Warning,
+    Skip,
+}
+
+/// Detailed result of a single check, designed for AI agent context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RichCheckResult {
+    /// Unique identifier for this check.
+    pub check_id: String,
+    /// Type of check performed.
+    pub check_type: String,
+    /// Status of the check.
+    pub status: CheckStatus,
+    /// What actually exists/found in the system.
+    pub current_state: serde_json::Value,
+    /// What the config/provider expects.
+    pub expected_state: serde_json::Value,
+    /// What's missing or wrong.
+    pub delta: Vec<DeltaItem>,
+    /// Remediation steps for AI agents.
+    pub remediation: Option<Remediation>,
+    /// System context information.
+    pub system_context: SystemContext,
+    /// Trace ID for correlation.
+    pub trace_id: String,
+    /// When the check was executed.
+    pub executed_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// A single delta item describing what's missing or wrong.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeltaItem {
+    /// The item name or path.
+    pub item: String,
+    /// What was expected.
+    pub expected: String,
+    /// What was actually found (None if not found).
+    pub actual: Option<String>,
+    /// Severity level of this delta.
+    pub severity: Severity,
+}
+
+/// Remediation instructions for AI agents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Remediation {
+    /// Confidence level: "high", "medium", or "low".
+    pub confidence: String,
+    /// Whether this can be fixed automatically.
+    pub auto_fixable: bool,
+    /// Commands to run for automatic remediation.
+    pub commands: Vec<String>,
+    /// Manual steps if auto-fix is not possible.
+    pub manual_steps: Vec<String>,
+    /// Command to verify the fix worked.
+    pub verify_after: String,
+    /// Sources for installing missing components.
+    pub install_sources: Vec<InstallSource>,
+}
+
+/// Source for installing a missing component.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallSource {
+    /// Name of the component.
+    pub name: String,
+    /// URL to download or install from.
+    pub url: String,
+    /// Installation method: "script", "package_manager", or "source".
+    pub method: String,
+}
+
+/// System context information for debugging and remediation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemContext {
+    /// Operating system name (e.g., "linux", "macos", "windows").
+    pub os: String,
+    /// Operating system version.
+    pub os_version: String,
+    /// CPU architecture (e.g., "x86_64", "aarch64").
+    pub architecture: String,
+    /// Kernel version or name.
+    pub kernel: String,
+    /// Whether KVM virtualization is available.
+    pub has_kvm: bool,
+    /// Whether nested virtualization is supported (if known).
+    pub has_nested_virt: Option<bool>,
+    /// Map of relevant binary names to their info.
+    pub relevant_binaries: HashMap<String, BinaryInfo>,
+    /// Map of installed provider names to their info.
+    pub installed_providers: HashMap<String, ProviderInfo>,
+}
+
+/// Information about a binary on the system.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryInfo {
+    /// Binary name.
+    pub name: String,
+    /// Path to the binary if found.
+    pub path: Option<String>,
+    /// Version string if available.
+    pub version: Option<String>,
+}
+
+/// Information about an installed provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderInfo {
+    /// Provider name.
+    pub name: String,
+    /// Provider version if available.
+    pub version: Option<String>,
+    /// Whether the provider is currently available.
+    pub available: bool,
 }
 
 impl DoctorResult {
@@ -108,7 +276,21 @@ impl DoctorResult {
             check_results: Vec::new(),
             rationale: String::new(),
             executed_at: chrono::Utc::now(),
+            rich_check_results: Vec::new(),
+            summary: String::new(),
+            requires_ai_attention: false,
+            potential_self_remediation: false,
         }
+    }
+
+    /// Add a rich check result.
+    pub fn add_rich_check_result(&mut self, result: RichCheckResult) {
+        self.rich_check_results.push(result);
+    }
+
+    /// Set the summary.
+    pub fn set_summary(&mut self, summary: impl Into<String>) {
+        self.summary = summary.into();
     }
 
     /// Add a check result.

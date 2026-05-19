@@ -406,6 +406,7 @@ fn row_to_sandbox(row: SandboxRow) -> Result<Sandbox, DomainError> {
         id: SandboxId::new(row.id),
         template_id: TemplateId::new(row.template_id),
         provider_id: ProviderId::new(row.provider_id),
+        provider_instance_id: None, // Legacy sandboxes don't have provider_instance_id
         status,
         created_at,
         expires_at,

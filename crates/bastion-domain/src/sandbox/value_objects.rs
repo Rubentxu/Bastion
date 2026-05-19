@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::shared::DomainError;
+
 /// Status of a sandbox instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -27,12 +29,51 @@ impl std::fmt::Display for SandboxStatus {
     }
 }
 
+impl SandboxStatus {
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Running | Self::Pending)
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Stopped | Self::Failed)
+    }
+}
+
 /// Resource specification for a sandbox.
+///
+/// cpu_count must be >= 1. Use `ResourcesSpec::new()` for validated construction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourcesSpec {
     pub cpu_count: u32,
     pub memory_mb: u64,
     pub disk_mb: u64,
+}
+
+impl ResourcesSpec {
+    pub fn new(cpu_count: u32, memory_mb: u64, disk_mb: u64) -> Result<Self, DomainError> {
+        if cpu_count == 0 {
+            return Err(DomainError::Validation(
+                "cpu_count must be at least 1".into(),
+            ));
+        }
+        Ok(Self {
+            cpu_count,
+            memory_mb,
+            disk_mb,
+        })
+    }
+
+    pub fn cpu_count(&self) -> u32 {
+        self.cpu_count
+    }
+
+    pub fn memory_mb(&self) -> u64 {
+        self.memory_mb
+    }
+
+    pub fn disk_mb(&self) -> u64 {
+        self.disk_mb
+    }
 }
 
 impl Default for ResourcesSpec {
@@ -42,6 +83,30 @@ impl Default for ResourcesSpec {
             memory_mb: 512,
             disk_mb: 1024,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resources_spec_default() {
+        let spec = ResourcesSpec::default();
+        assert_eq!(spec.cpu_count, 1);
+    }
+
+    #[test]
+    fn test_resources_spec_new_rejects_zero_cpu() {
+        let err = ResourcesSpec::new(0, 512, 1024).expect_err("zero cpu should be rejected");
+        assert!(matches!(err, DomainError::Validation(_)));
+    }
+
+    #[test]
+    fn test_resources_spec_new_accepts_valid() {
+        let spec = ResourcesSpec::new(4, 8192, 20480).expect("valid spec");
+        assert_eq!(spec.cpu_count, 4);
+        assert_eq!(spec.memory_mb, 8192);
     }
 }
 
@@ -67,15 +132,21 @@ impl Default for NetworkSpec {
     }
 }
 
+impl NetworkSpec {
+    pub fn allow_internet(&self) -> bool {
+        self.allow_internet
+    }
+
+    pub fn allowed_hosts(&self) -> &[String] {
+        &self.allowed_hosts
+    }
+}
+
 /// Filter for listing sandboxes managed by a provider.
 #[derive(Debug, Clone, Default)]
 pub struct SandboxFilter {
-    /// Filter by provider name (exact match).
     pub provider_name: Option<String>,
-    /// Filter by sandbox status.
     pub status: Option<SandboxStatus>,
-    /// Maximum number of results to return.
     pub limit: Option<u32>,
-    /// Cursor for pagination (opaque string from previous response).
     pub cursor: Option<String>,
 }

@@ -37,9 +37,6 @@ use enrichment_engine::traits::RunRecorder;
 
 use rmcp::{ServiceExt, service::RoleServer};
 
-#[cfg(feature = "dashboard")]
-use bastion_dashboard::{DashboardApp, ProjectManager, ProjectManagerPort, DashboardApiClient};
-
 // HTTP transport imports
 use hyper::server::conn::http1;
 use hyper_util::service::TowerToHyperService;
@@ -57,6 +54,7 @@ mod metrics_tools;
 mod metrics_tools_types;
 mod orientation_tools;
 mod orientation_tools_types;
+mod pipeline_events;
 mod registry;
 mod sandbox;
 mod server;
@@ -86,12 +84,6 @@ impl From<CliProjectKind> for bastion_domain::project::ProjectKind {
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
-enum TransportMode {
-    Stdio,
-    Http,
-}
-
 /// CLI commands for the bastion gateway.
 #[derive(clap::Subcommand, Debug)]
 enum Commands {
@@ -103,16 +95,6 @@ enum Commands {
         /// Project name (defaults to directory name).
         #[arg(long)]
         name: Option<String>,
-    },
-    /// Start the dashboard HTTP server on port 3000.
-    #[cfg(feature = "dashboard")]
-    Dashboard {
-        /// Port to serve dashboard on.
-        #[arg(long, default_value_t = 3000)]
-        port: u16,
-        /// Open browser automatically.
-        #[arg(long, default_value_t = false)]
-        open_browser: bool,
     },
 }
 
@@ -163,11 +145,12 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:50052")]
     registry_addr: String,
 
-    /// Transport mode: stdio (default) or http
-    #[arg(long, default_value_t = TransportMode::Stdio, value_enum)]
-    transport: TransportMode,
+    /// Disable mTLS for registry (for development/testing with plain HTTP).
+    /// When set, workers can connect without client certificates.
+    #[arg(long, default_value_t = false)]
+    registry_no_tls: bool,
 
-    /// HTTP server port (only used when --transport=http)
+    /// HTTP server port for MCP protocol
     #[arg(long, default_value_t = 8080)]
     http_port: u16,
 
@@ -236,6 +219,79 @@ where
     }
 }
 
+/// Run SSE server for pipeline events on a dedicated port.
+/// Streams pipeline events to connected SSE clients (dashboard).
+///
+/// Uses channel-based streaming - each event is sent immediately as it arrives.
+async fn run_pipeline_events_sse(pipeline_events: Arc<pipeline_events::PipelineEventStore>, port: u16) -> Result<()> {
+    use hyper_util::rt::TokioIo;
+    use http_body_util::{StreamBody, Empty, Either};
+    use http_body::Frame;
+    use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("Pipeline events SSE server listening on {}", addr);
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let pipeline_events = pipeline_events.clone();
+        tokio::spawn(async move {
+            let io = TokioIo::new(stream);
+            let service = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let pipeline_events = pipeline_events.clone();
+                async move {
+                    // Check if this is a valid SSE request
+                    let is_valid_path = req.method() == hyper::Method::GET && req.uri().path() == "/api/v1/pipeline-events";
+
+                    // Stream-based SSE: convert broadcast receiver to StreamBody
+                    let rx = pipeline_events.subscribe();
+
+                    // Create a stream that yields SSE data frames
+                    let stream = BroadcastStream::new(rx).filter_map(|result| {
+                        match result {
+                            Ok(event) => {
+                                let sse = pipeline_events::event_to_sse(event);
+                                if sse.is_empty() {
+                                    None
+                                } else {
+                                    Some(Ok::<_, std::convert::Infallible>(Frame::data(hyper::body::Bytes::from(sse))))
+                                }
+                            }
+                            Err(_) => None, // BroadcastStream wraps RecvError internally
+                        }
+                    });
+
+                    let body: Either<Empty<hyper::body::Bytes>, StreamBody<_>> = if is_valid_path {
+                        Either::Right(StreamBody::new(stream))
+                    } else {
+                        Either::Left(Empty::new())
+                    };
+
+                    let response = hyper::Response::builder()
+                        .status(if is_valid_path { 200 } else { 404 })
+                        .header("Content-Type", if is_valid_path { "text/event-stream" } else { "text/plain" })
+                        .header("Cache-Control", "no-cache")
+                        .header("Connection", "keep-alive")
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("X-Accel-Buffering", "no")
+                        .body(body)
+                        .unwrap();
+
+                    Ok::<_, std::convert::Infallible>(response)
+                }
+            });
+
+            if let Err(e) = http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+            {
+                tracing::warn!("SSE serve error: {}", e);
+            }
+        });
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Logs to stderr to keep stdout clean for MCP JSON-RPC protocol
@@ -251,96 +307,6 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-
-    // Handle CLI commands
-    #[cfg(feature = "dashboard")]
-    {
-        if let Some(cmd) = &args.command {
-            match cmd {
-                Commands::Init { kind, name } => {
-                    // Initialize a new Bastion project
-                    let project_path = std::env::current_dir()
-                        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))?;
-
-                    let project_name = name.clone().unwrap_or_else(|| {
-                        project_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unnamed")
-                            .to_string()
-                    });
-
-                    // Use ProjectManager to initialize the project
-                    let api_client = DashboardApiClient::default();
-                    let manager = ProjectManager::new(api_client);
-
-                    let project_path_for_init = if project_name != project_path.file_name().and_then(|n| n.to_str()).unwrap_or("") {
-                        // If name was provided and differs from directory, create a subdirectory
-                        if name.is_some() {
-                            project_path.join(&project_name)
-                        } else {
-                            project_path.clone()
-                        }
-                    } else {
-                        project_path.clone()
-                    };
-
-                    // Create project directory if it doesn't exist and name was specified
-                    if name.is_some() && !project_path_for_init.exists() {
-                        std::fs::create_dir_all(&project_path_for_init)
-                            .map_err(|e| anyhow::anyhow!("Failed to create project directory: {}", e))?;
-                    }
-
-                    // Convert CLI kind to domain kind
-                    let domain_kind: bastion_domain::project::ProjectKind = (*kind).clone().into();
-
-                    match manager.init_project(&project_path_for_init, domain_kind).await {
-                        Ok(project) => {
-                            tracing::info!("Successfully initialized project '{}' at {}", project.name, project.path.display());
-                            tracing::info!("Project ID: {}", project.id);
-                            tracing::info!("Run `bastion-gateway dashboard` to start the dashboard server");
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to initialize project: {}", e);
-                            std::process::exit(1);
-                        }
-                    }
-                    return Ok(());
-                }
-                Commands::Dashboard { port, open_browser } => {
-                    // Start the dashboard server
-                    tracing::info!("Starting dashboard server on port {}", port);
-
-                    let api_client = DashboardApiClient::new("http://127.0.0.1:8080/api/v1");
-                    let manager = ProjectManager::new(api_client.clone());
-
-                    let dashboard_app = DashboardApp::new(
-                        std::sync::Arc::new(manager),
-                        std::sync::Arc::new(api_client),
-                        "http://127.0.0.1:8080".to_string(),
-                        *port,
-                    );
-
-                    // Open browser if requested
-                    if *open_browser {
-                        let url = format!("http://localhost:{}/", port);
-                        tracing::info!("Opening browser to {}", url);
-                        if let Err(e) = opener::open(&url) {
-                            tracing::warn!("Failed to open browser: {}", e);
-                        }
-                    } else {
-                        tracing::info!("Dashboard available at http://localhost:{}/", port);
-                    }
-
-                    // Run the dashboard server
-                    if let Err(e) = dashboard_app.serve().await {
-                        tracing::error!("Dashboard server error: {}", e);
-                    }
-                    return Ok(());
-                }
-            }
-        }
-    }
 
     // Set DANGEROUS_ALLOW_LOCAL if flag is present
     if args.dangerous_allow_local {
@@ -366,8 +332,7 @@ async fn main() -> Result<()> {
     let jwt_manager = auth::JwtManager::init_or_load(&bastion_home)?;
     auto_tls::init_or_load(bastion_home.clone()).await?;
 
-    // Extract transport config before async blocks (args will be moved)
-    let transport_mode = args.transport.clone();
+    // Extract HTTP port before async blocks (args will be moved)
     let _http_port = args.http_port;
 
     // Determine sandbox DB path
@@ -419,10 +384,13 @@ async fn main() -> Result<()> {
     }
 
     // Create the RegistryService (gRPC) with JWT + auto_tls + auth config support
+    use pipeline_events::PipelineEventStore;
+    let pipeline_events = Arc::new(PipelineEventStore::new());
     let grpc_registry: Arc<RegistryService> = Arc::new(RegistryService::new(
         jwt_manager.clone(),
         Arc::new(auto_tls::get_auto_tls().clone()),
         server::AuthConfig::default(),
+        pipeline_events.clone(),
     ));
 
     // Start watchdog to detect dead workers (10s heartbeat, 30s watchdog timeout)
@@ -847,10 +815,14 @@ async fn main() -> Result<()> {
     let catalog_config = server::CatalogConfig {
         experience_store,
         assertion_registry: Some(assertion_registry),
-        doctor_registry: Some(doctor_registry),
+        doctor_registry: Some(doctor_registry.clone()),
         advice_registry: Some(advice_registry),
         advice_config: Some(advice_config),
     };
+    // Create doctor context for pre-flight readiness checks in sandbox_create
+    let doctor_context = Some(Arc::new(server::DoctorContext {
+        doctor_registry: doctor_registry,
+    }));
     let gateway = server::BastionGateway::new(
         default_provider,
         providers_map,
@@ -859,34 +831,41 @@ async fn main() -> Result<()> {
         gateway_config,
         capability_registry,
         catalog_config,
+        doctor_context,
         enrichment_adapter,
         enrichment_config,
     );
 
-    // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS)
+    // Start the Worker Registry gRPC server with AutoTLS (mandatory mTLS unless --registry-no-tls)
     let registry_addr: std::net::SocketAddr = args
         .registry_addr
         .parse()
         .expect("Invalid registry address");
 
     let registry_for_grpc = Arc::clone(&grpc_registry);
+    let registry_no_tls = args.registry_no_tls;
     let registry_handle = tokio::spawn(async move {
         let svc = WorkerRegistryServer::new((*registry_for_grpc).clone())
             .accept_compressed(CompressionEncoding::Gzip)
             .send_compressed(CompressionEncoding::Gzip);
 
-        let tls_config = auto_tls::get_auto_tls()
-            .server_config()
-            .expect("Failed to get AutoTLS server config");
-
-        tracing::info!("Starting registry with AutoTLS (mTLS) + gzip compression");
-        tonic::transport::Server::builder()
+        let mut builder = tonic::transport::Server::builder()
             .http2_adaptive_window(Some(true))
             .initial_stream_window_size(1024 * 1024)
             .initial_connection_window_size(4 * 1024 * 1024)
-            .max_frame_size(4 * 1024 * 1024)
-            .tls_config(tls_config)
-            .expect("TLS config failed")
+            .max_frame_size(4 * 1024 * 1024);
+
+        if registry_no_tls {
+            tracing::info!("Starting registry WITHOUT TLS (plaintext - DEV MODE)");
+        } else {
+            let tls_config = auto_tls::get_auto_tls()
+                .server_config()
+                .expect("Failed to get AutoTLS server config");
+            tracing::info!("Starting registry with AutoTLS (mTLS) + gzip compression");
+            builder = builder.tls_config(tls_config).expect("TLS config failed");
+        }
+
+        builder
             .add_service(svc)
             .serve(registry_addr)
             .await
@@ -894,54 +873,40 @@ async fn main() -> Result<()> {
     });
     tracing::info!("Worker registry listening on {}", registry_addr);
 
-    // Transport selection based on CLI argument
-    match transport_mode {
-        TransportMode::Stdio => {
-            tracing::info!("MCP Gateway ready — serving on stdio");
+    // SSE server for pipeline events on port 8081
+    let pipeline_events_sse_port = 8081;
+    let pipeline_events_for_sse = pipeline_events.clone();
+    let sse_handle = tokio::spawn(async move {
+        run_pipeline_events_sse(pipeline_events_for_sse, pipeline_events_sse_port).await
+    });
+    tracing::info!("Pipeline events SSE server starting on port {}", pipeline_events_sse_port);
 
-            // Run MCP server on stdio, registry in parallel.
-            // serve() now starts immediately because provider construction is fast
-            // (no network I/O in constructors — ping/pool-start are deferred).
-            let mcp_future = async {
-                let service = gateway
-                    .serve(rmcp::transport::stdio())
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to start MCP server: {e}"))?;
-                let _ = service.waiting().await;
-                Ok::<(), anyhow::Error>(())
-            };
+    // HTTP transport for MCP protocol
+    tracing::info!("MCP Gateway ready — HTTP transport on port {}", args.http_port);
+    if args.registry_no_tls {
+        tracing::info!("Worker Registry — gRPC on port 50052 (plaintext)");
+    } else {
+        tracing::info!("Worker Registry — gRPC on port 50052 (mTLS)");
+    }
+    tracing::info!("Pipeline Events — SSE on port 8081");
 
-            // Wait for either to finish
-            tokio::select! {
-                result = mcp_future => {
-                    if let Err(e) = result {
-                        tracing::error!("MCP server error: {}", e);
-                    }
-                }
-                result = registry_handle => {
-                    if let Err(e) = result {
-                        tracing::error!("Registry server error: {}", e);
-                    }
-                }
+    // Run all services: HTTP MCP, Worker Registry gRPC, and SSE in parallel
+    let http_future = run_http_transport(gateway, args.http_port);
+
+    tokio::select! {
+        result = http_future => {
+            if let Err(e) = result {
+                tracing::error!("HTTP transport error: {}", e);
             }
         }
-        TransportMode::Http => {
-            tracing::info!("MCP Gateway ready — serving on HTTP transport");
-
-            // Run HTTP transport and registry in parallel
-            let http_future = run_http_transport(gateway, args.http_port);
-
-            tokio::select! {
-                result = http_future => {
-                    if let Err(e) = result {
-                        tracing::error!("HTTP transport error: {}", e);
-                    }
-                }
-                result = registry_handle => {
-                    if let Err(e) = result {
-                        tracing::error!("Registry server error: {}", e);
-                    }
-                }
+        result = registry_handle => {
+            if let Err(e) = result {
+                tracing::error!("Worker registry error: {}", e);
+            }
+        }
+        result = sse_handle => {
+            if let Err(e) = result {
+                tracing::error!("Pipeline events SSE error: {}", e);
             }
         }
     }

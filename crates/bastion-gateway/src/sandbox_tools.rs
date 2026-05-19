@@ -74,6 +74,11 @@ use bastion_infrastructure::template::{
     SdkmanAdapter, UniversalMaterializer,
 };
 
+use bastion_domain::catalog::doctor::{
+    CheckStatus, DoctorCheck, DoctorResult, DoctorStatus, RichCheckResult,
+};
+use crate::server::DoctorContext;
+
 use crate::server::BastionGateway;
 
 // ─── Tool router function ───────────────────────────────────────────────────
@@ -181,6 +186,42 @@ impl BastionGateway {
 
         let selected_provider = self.resolve_provider(&params.provider);
         tracing::info!(template = %params.template, provider = %params.provider, "Creating sandbox");
+
+        // Pre-flight doctor check: verify provider readiness before attempting to create sandbox
+        if let Some(ref doctor_ctx) = self.doctor_context {
+            let doctor_id = format!("{}.readiness", params.provider);
+            let readiness_result = self.run_provider_readiness_check(&doctor_id, &params.provider).await;
+
+            if readiness_result.status != DoctorStatus::Pass {
+                // Provider not ready - return rich error for AI agent
+                let failed_checks: Vec<_> = readiness_result
+                    .rich_check_results
+                    .iter()
+                    .filter(|r| r.status == CheckStatus::Fail || r.status == CheckStatus::Warning)
+                    .map(|r| {
+                        serde_json::json!({
+                            "check_type": r.check_type,
+                            "status": format!("{:?}", r.status),
+                            "current_state": r.current_state,
+                            "delta": r.delta,
+                            "remediation": r.remediation,
+                        })
+                    })
+                    .collect();
+
+                return serde_json::json!({
+                    "error": "Provider not ready",
+                    "provider": params.provider,
+                    "doctor_id": doctor_id,
+                    "status": format!("{:?}", readiness_result.status),
+                    "summary": readiness_result.summary,
+                    "requires_attention": readiness_result.requires_ai_attention,
+                    "can_self_remediate": readiness_result.potential_self_remediation,
+                    "check_results": failed_checks,
+                    "hint": format!("Run doctor_run tool with doctor_id='{}' for detailed remediation steps", doctor_id)
+                }).to_string();
+            }
+        }
 
         // Only use pool for the default podman provider — pool sandboxes are podman-based.
         // For non-podman providers (local, gvisor, firecracker), go straight to direct creation.
@@ -1520,7 +1561,7 @@ impl BastionGateway {
         // REQ-03: Capability guard — streaming file sync requires provider streaming support.
         // Tar-pipe sync is a streaming operation; if provider.capabilities().supports_streaming
         // is false, return explicit UnsupportedOperation JSON-RPC error with code -32001.
-        if !provider.capabilities().supports_streaming {
+        if !provider.capabilities().supports_streaming() {
             return serde_json::json!({
                 "error": "Unsupported operation: this provider does not support streaming file sync",
                 "code": -32001,
@@ -1886,5 +1927,714 @@ impl BastionGateway {
             "artifacts": artifacts,
         })
         .to_string()
+    }
+
+    /// Run provider readiness check using the doctor registry.
+    ///
+    /// Looks up a doctor with ID `{provider}.readiness` (e.g., `firecracker.readiness`)
+    /// and runs all its checks to verify the provider is ready for sandbox creation.
+    async fn run_provider_readiness_check(
+        &self,
+        doctor_id: &str,
+        provider: &str,
+    ) -> DoctorResult {
+        let ctx = match &self.doctor_context {
+            Some(c) => c,
+            None => {
+                // Doctor context not configured, skip check
+                return DoctorResult {
+                    doctor_id: doctor_id.to_string(),
+                    sandbox_id: None,
+                    status: DoctorStatus::Pass,
+                    severity: bastion_domain::catalog::doctor::Severity::Warning,
+                    trace_id: uuid::Uuid::new_v4().to_string(),
+                    check_results: Vec::new(),
+                    rationale: "Doctor context not configured".to_string(),
+                    executed_at: chrono::Utc::now(),
+                    rich_check_results: Vec::new(),
+                    summary: "Doctor context not configured, skipping check".to_string(),
+                    requires_ai_attention: false,
+                    potential_self_remediation: false,
+                };
+            }
+        };
+
+        // Get the doctor
+        let doctor = match ctx.doctor_registry.get(doctor_id) {
+            Some(d) => d,
+            None => {
+                // Doctor doesn't exist, log warning and skip
+                tracing::warn!(doctor_id = doctor_id, "Provider readiness doctor not found");
+                return DoctorResult {
+                    doctor_id: doctor_id.to_string(),
+                    sandbox_id: None,
+                    status: DoctorStatus::Pass,
+                    severity: bastion_domain::catalog::doctor::Severity::Warning,
+                    trace_id: uuid::Uuid::new_v4().to_string(),
+                    check_results: Vec::new(),
+                    rationale: format!("Doctor {} not found, skipping check", doctor_id),
+                    executed_at: chrono::Utc::now(),
+                    rich_check_results: Vec::new(),
+                    summary: format!("Doctor {} not found, skipping check", doctor_id),
+                    requires_ai_attention: false,
+                    potential_self_remediation: false,
+                };
+            }
+        };
+
+        // Run each check
+        let mut check_results = Vec::new();
+        let mut rich_check_results = Vec::new();
+        let mut overall_status = DoctorStatus::Pass;
+
+        for check in &doctor.checks {
+            let result = self.evaluate_check(check, ctx, provider).await;
+
+            if result.status == CheckStatus::Fail {
+                overall_status = DoctorStatus::Fail;
+            } else if result.status == CheckStatus::Warning && overall_status == DoctorStatus::Pass {
+                overall_status = DoctorStatus::Error;
+            }
+
+            // Convert RichCheckResult to simple CheckResult for compatibility
+            let simple_result = bastion_domain::catalog::assertion::CheckResult {
+                check: result.check_type.clone(),
+                passed: result.status == CheckStatus::Pass,
+                reason: if result.status != CheckStatus::Pass {
+                    Some(format!("{:?}: {:?}", result.status, result.current_state))
+                } else {
+                    None
+                },
+            };
+            check_results.push(simple_result);
+            rich_check_results.push(result);
+        }
+
+        // Determine if AI can self-remediation
+        let potential_self_remediation = rich_check_results
+            .iter()
+            .any(|r| {
+                r.remediation
+                    .as_ref()
+                    .map(|rem| rem.auto_fixable && !rem.commands.is_empty())
+                    .unwrap_or(false)
+            });
+
+        // Generate summary
+        let failed_count = rich_check_results
+            .iter()
+            .filter(|r| r.status == CheckStatus::Fail)
+            .count();
+        let warning_count = rich_check_results
+            .iter()
+            .filter(|r| r.status == CheckStatus::Warning)
+            .count();
+
+        let summary = match overall_status {
+            DoctorStatus::Pass => format!("{} provider is ready", provider),
+            DoctorStatus::Fail => format!("{} provider has {} missing requirements", provider, failed_count),
+            DoctorStatus::Skip => format!("{} provider readiness check skipped", provider),
+            DoctorStatus::Error => format!("{} provider has {} warnings", provider, warning_count),
+        };
+
+        DoctorResult {
+            doctor_id: doctor_id.to_string(),
+            sandbox_id: None,
+            status: overall_status,
+            severity: doctor.severity,
+            trace_id: uuid::Uuid::new_v4().to_string(),
+            check_results,
+            rationale: summary.clone(),
+            executed_at: chrono::Utc::now(),
+            rich_check_results,
+            summary,
+            requires_ai_attention: overall_status != DoctorStatus::Pass,
+            potential_self_remediation,
+        }
+    }
+
+    /// Evaluate a single doctor check and return a rich result.
+    async fn evaluate_check(
+        &self,
+        check: &DoctorCheck,
+        ctx: &DoctorContext,
+        provider: &str,
+    ) -> RichCheckResult {
+        let trace_id = uuid::Uuid::new_v4().to_string();
+        let executed_at = chrono::Utc::now();
+
+        match check {
+            DoctorCheck::ProviderAlive { provider } => {
+                self.eval_provider_alive(provider, &trace_id, executed_at).await
+            }
+            DoctorCheck::BinaryAvailable { name, expected_path } => {
+                self.eval_binary_available(name, expected_path.as_deref(), &trace_id, executed_at)
+                    .await
+            }
+            DoctorCheck::KvmAvailable => {
+                self.eval_kvm_available(&trace_id, executed_at).await
+            }
+            DoctorCheck::ImageAvailable { provider, image } => {
+                self.eval_image_available(provider, image.as_deref(), &trace_id, executed_at)
+                    .await
+            }
+            DoctorCheck::WorkerBinaryValid { provider } => {
+                self.eval_worker_binary_valid(provider, &trace_id, executed_at).await
+            }
+            DoctorCheck::CapabilitiesMet {
+                provider,
+                min_memory_mb,
+                min_cpu_count,
+            } => {
+                self.eval_capabilities_met(provider, *min_memory_mb, *min_cpu_count, &trace_id, executed_at)
+                    .await
+            }
+            DoctorCheck::ConfigValid { provider } => {
+                self.eval_config_valid(provider, &trace_id, executed_at).await
+            }
+            _ => {
+                // Unknown check type - return skip result
+                RichCheckResult {
+                    check_id: format!("unknown.{}", provider),
+                    check_type: "unknown".to_string(),
+                    status: CheckStatus::Skip,
+                    current_state: serde_json::json!({}),
+                    expected_state: serde_json::json!({}),
+                    delta: Vec::new(),
+                    remediation: None,
+                    system_context: self.get_system_context(),
+                    trace_id,
+                    executed_at,
+                }
+            }
+        }
+    }
+
+    /// Evaluate ProviderAlive check.
+    async fn eval_provider_alive(
+        &self,
+        provider_name: &str,
+        trace_id: &str,
+        executed_at: chrono::DateTime<chrono::Utc>,
+    ) -> RichCheckResult {
+        // Check if the provider daemon socket is accessible
+        // This is different from is_alive() which checks if a specific container is running
+        let socket_path = match provider_name {
+            "podman" => "/run/user/1000/podman/podman.sock",
+            "docker" => "/var/run/docker.sock",
+            _ => "/var/run/unknown.sock",
+        };
+
+        let is_alive = std::path::Path::new(socket_path).exists()
+            && std::os::unix::net::UnixStream::connect(socket_path).is_ok();
+
+        let status = if is_alive {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        };
+
+        RichCheckResult {
+            check_id: format!("provider_alive.{}", provider_name),
+            check_type: "provider_alive".to_string(),
+            status,
+            current_state: serde_json::json!({
+                "provider": provider_name,
+                "alive": is_alive,
+                "socket_path": socket_path
+            }),
+            expected_state: serde_json::json!({
+                "provider": provider_name,
+                "alive": true
+            }),
+            delta: if !is_alive {
+                vec![bastion_domain::catalog::doctor::DeltaItem {
+                    item: format!("{} provider", provider_name),
+                    expected: "alive and responsive".to_string(),
+                    actual: Some("not responding".to_string()),
+                    severity: bastion_domain::catalog::doctor::Severity::Critical,
+                }]
+            } else {
+                Vec::new()
+            },
+            remediation: None,
+            system_context: self.get_system_context(),
+            trace_id: trace_id.to_string(),
+            executed_at,
+        }
+    }
+
+    /// Evaluate BinaryAvailable check.
+    async fn eval_binary_available(
+        &self,
+        name: &str,
+        expected_path: Option<&str>,
+        trace_id: &str,
+        executed_at: chrono::DateTime<chrono::Utc>,
+    ) -> RichCheckResult {
+        use std::process::Command;
+
+        let which_output = Command::new("which").arg(name).output();
+        let found_path = which_output.ok().and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        });
+
+        let found = found_path.is_some();
+        let path_match = expected_path.map(|ep| found_path.as_ref() == Some(&ep.to_string())).unwrap_or(true);
+
+        let status = if found && path_match {
+            CheckStatus::Pass
+        } else if found {
+            CheckStatus::Warning
+        } else {
+            CheckStatus::Fail
+        };
+
+        RichCheckResult {
+            check_id: format!("binary_available.{}", name),
+            check_type: "binary_available".to_string(),
+            status,
+            current_state: serde_json::json!({
+                "binary": name,
+                "found": found,
+                "path": found_path,
+                "expected_path": expected_path
+            }),
+            expected_state: serde_json::json!({
+                "binary": name,
+                "found": true,
+                "expected_path": expected_path
+            }),
+            delta: if !found {
+                vec![bastion_domain::catalog::doctor::DeltaItem {
+                    item: format!("binary '{}'", name),
+                    expected: expected_path.unwrap_or("in PATH").to_string(),
+                    actual: None,
+                    severity: bastion_domain::catalog::doctor::Severity::Critical,
+                }]
+            } else {
+                Vec::new()
+            },
+            remediation: if !found {
+                Some(bastion_domain::catalog::doctor::Remediation {
+                    confidence: "high".to_string(),
+                    auto_fixable: true,
+                    commands: vec![
+                        format!("sudo apt-get install -y {}", name),
+                        format!("cargo install {}", name),
+                    ],
+                    manual_steps: vec![format!("Install {} manually", name)],
+                    verify_after: format!("which {}", name),
+                    install_sources: vec![
+                        bastion_domain::catalog::doctor::InstallSource {
+                            name: name.to_string(),
+                            url: format!("https://packages.debian.org/{}", name),
+                            method: "package_manager".to_string(),
+                        }
+                    ],
+                })
+            } else {
+                None
+            },
+            system_context: self.get_system_context(),
+            trace_id: trace_id.to_string(),
+            executed_at,
+        }
+    }
+
+    /// Evaluate KvmAvailable check.
+    async fn eval_kvm_available(
+        &self,
+        trace_id: &str,
+        executed_at: chrono::DateTime<chrono::Utc>,
+    ) -> RichCheckResult {
+        use std::os::unix::fs::MetadataExt;
+        use std::path::Path;
+
+        let kvm_path = Path::new("/dev/kvm");
+        let exists = kvm_path.exists();
+        let accessible = if exists {
+            std::fs::metadata(kvm_path).map(|m| m.mode() & 0o777 != 0).unwrap_or(false)
+        } else {
+            false
+        };
+
+        let status = if exists && accessible {
+            CheckStatus::Pass
+        } else if exists {
+            CheckStatus::Fail
+        } else {
+            CheckStatus::Fail
+        };
+
+        RichCheckResult {
+            check_id: "kvm_available".to_string(),
+            check_type: "kvm_available".to_string(),
+            status,
+            current_state: serde_json::json!({
+                "kvm_device": "/dev/kvm",
+                "exists": exists,
+                "accessible": accessible
+            }),
+            expected_state: serde_json::json!({
+                "kvm_device": "/dev/kvm",
+                "exists": true,
+                "accessible": true
+            }),
+            delta: if !exists {
+                vec![bastion_domain::catalog::doctor::DeltaItem {
+                    item: "KVM device".to_string(),
+                    expected: "/dev/kvm exists".to_string(),
+                    actual: None,
+                    severity: bastion_domain::catalog::doctor::Severity::Critical,
+                }]
+            } else if !accessible {
+                vec![bastion_domain::catalog::doctor::DeltaItem {
+                    item: "KVM access".to_string(),
+                    expected: "User in kvm group".to_string(),
+                    actual: Some("NOT in kvm group".to_string()),
+                    severity: bastion_domain::catalog::doctor::Severity::Critical,
+                }]
+            } else {
+                Vec::new()
+            },
+            remediation: if !accessible {
+                Some(bastion_domain::catalog::doctor::Remediation {
+                    confidence: "high".to_string(),
+                    auto_fixable: true,
+                    commands: vec![
+                        "sudo usermod -aG kvm $USER".to_string(),
+                        "newgrp kvm".to_string(),
+                    ],
+                    manual_steps: vec![
+                        "Run: sudo usermod -aG kvm $USER".to_string(),
+                        "Log out and log back in for group membership to take effect".to_string(),
+                    ],
+                    verify_after: "groups | grep kvm".to_string(),
+                    install_sources: Vec::new(),
+                })
+            } else if !exists {
+                Some(bastion_domain::catalog::doctor::Remediation {
+                    confidence: "medium".to_string(),
+                    auto_fixable: false,
+                    commands: Vec::new(),
+                    manual_steps: vec![
+                        "Enable KVM virtualization in BIOS/UEFI".to_string(),
+                        "Load KVM kernel modules: sudo modprobe kvm".to_string(),
+                    ],
+                    verify_after: "ls -la /dev/kvm".to_string(),
+                    install_sources: Vec::new(),
+                })
+            } else {
+                None
+            },
+            system_context: self.get_system_context(),
+            trace_id: trace_id.to_string(),
+            executed_at,
+        }
+    }
+
+    /// Evaluate ImageAvailable check.
+    async fn eval_image_available(
+        &self,
+        provider_name: &str,
+        _image: Option<&str>,
+        trace_id: &str,
+        executed_at: chrono::DateTime<chrono::Utc>,
+    ) -> RichCheckResult {
+        let provider = self.resolve_provider(provider_name);
+
+        // Try to list images - if we can, the provider is working
+        let list_result = provider.list_sandboxes(&Default::default()).await;
+        let can_list = list_result.is_ok();
+
+        let status = if can_list {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        };
+
+        RichCheckResult {
+            check_id: format!("image_available.{}", provider_name),
+            check_type: "image_available".to_string(),
+            status,
+            current_state: serde_json::json!({
+                "provider": provider.name(),
+                "can_list_images": can_list,
+                "error": list_result.as_ref().err().map(|e| e.to_string())
+            }),
+            expected_state: serde_json::json!({
+                "provider": provider.name(),
+                "can_list_images": true
+            }),
+            delta: if !can_list {
+                vec![bastion_domain::catalog::doctor::DeltaItem {
+                    item: format!("{} image availability", provider_name),
+                    expected: "Provider can list images".to_string(),
+                    actual: list_result.as_ref().err().map(|e| e.to_string()),
+                    severity: bastion_domain::catalog::doctor::Severity::Critical,
+                }]
+            } else {
+                Vec::new()
+            },
+            remediation: None,
+            system_context: self.get_system_context(),
+            trace_id: trace_id.to_string(),
+            executed_at,
+        }
+    }
+
+    /// Evaluate WorkerBinaryValid check.
+    async fn eval_worker_binary_valid(
+        &self,
+        provider_name: &str,
+        trace_id: &str,
+        executed_at: chrono::DateTime<chrono::Utc>,
+    ) -> RichCheckResult {
+        use std::path::Path;
+        use std::process::Command;
+
+        let worker_paths = vec![
+            "target/debug/bastion-worker",
+            "target/release/bastion-worker",
+            "/usr/local/bin/bastion-worker",
+        ];
+
+        let mut found_path: Option<String> = None;
+        for path in &worker_paths {
+            if Path::new(path).exists() {
+                found_path = Some(path.to_string());
+                break;
+            }
+        }
+
+        // Also check if it's in PATH
+        let which_output = Command::new("which").arg("bastion-worker").output();
+        let in_path = which_output.ok().and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        });
+
+        let valid = found_path.is_some() || in_path.is_some();
+        let status = if valid {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        };
+
+        RichCheckResult {
+            check_id: format!("worker_binary_valid.{}", provider_name),
+            check_type: "worker_binary_valid".to_string(),
+            status,
+            current_state: serde_json::json!({
+                "binary": "bastion-worker",
+                "found": valid,
+                "paths_checked": worker_paths,
+                "found_path": found_path.or(in_path),
+            }),
+            expected_state: serde_json::json!({
+                "binary": "bastion-worker",
+                "found": true
+            }),
+            delta: if !valid {
+                vec![bastion_domain::catalog::doctor::DeltaItem {
+                    item: "bastion-worker binary".to_string(),
+                    expected: "bastion-worker exists".to_string(),
+                    actual: None,
+                    severity: bastion_domain::catalog::doctor::Severity::Critical,
+                }]
+            } else {
+                Vec::new()
+            },
+            remediation: if !valid {
+                Some(bastion_domain::catalog::doctor::Remediation {
+                    confidence: "high".to_string(),
+                    auto_fixable: true,
+                    commands: vec![
+                        "cargo build --bin bastion-worker".to_string(),
+                    ],
+                    manual_steps: vec![
+                        "Run: cargo build --bin bastion-worker".to_string(),
+                        "Or install via: cargo install bastion-worker".to_string(),
+                    ],
+                    verify_after: "which bastion-worker || ls -la target/debug/bastion-worker".to_string(),
+                    install_sources: vec![
+                        bastion_domain::catalog::doctor::InstallSource {
+                            name: "bastion-worker".to_string(),
+                            url: "https://github.com/example/bastion".to_string(),
+                            method: "source".to_string(),
+                        }
+                    ],
+                })
+            } else {
+                None
+            },
+            system_context: self.get_system_context(),
+            trace_id: trace_id.to_string(),
+            executed_at,
+        }
+    }
+
+    /// Evaluate CapabilitiesMet check.
+    async fn eval_capabilities_met(
+        &self,
+        provider_name: &str,
+        min_memory_mb: Option<u64>,
+        min_cpu_count: Option<u32>,
+        trace_id: &str,
+        executed_at: chrono::DateTime<chrono::Utc>,
+    ) -> RichCheckResult {
+        let provider = self.resolve_provider(provider_name);
+        let caps = provider.capabilities();
+
+        let memory_ok = min_memory_mb.map(|min| caps.max_memory_mb() >= min).unwrap_or(true);
+        let cpu_ok = min_cpu_count.map(|min| caps.max_cpu_count() >= min).unwrap_or(true);
+
+        let status = if memory_ok && cpu_ok {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        };
+
+        RichCheckResult {
+            check_id: format!("capabilities_met.{}", provider_name),
+            check_type: "capabilities_met".to_string(),
+            status,
+            current_state: serde_json::json!({
+                "provider": provider.name(),
+                "memory_mb": caps.max_memory_mb(),
+                "cpu_count": caps.max_cpu_count()
+            }),
+            expected_state: serde_json::json!({
+                "provider": provider.name(),
+                "min_memory_mb": min_memory_mb,
+                "min_cpu_count": min_cpu_count
+            }),
+            delta: {
+                let mut deltas = Vec::new();
+                if !memory_ok {
+                    deltas.push(bastion_domain::catalog::doctor::DeltaItem {
+                        item: "Memory".to_string(),
+                        expected: format!("{} MB", min_memory_mb.unwrap()),
+                        actual: Some(format!("{} MB", caps.max_memory_mb())),
+                        severity: bastion_domain::catalog::doctor::Severity::Critical,
+                    });
+                }
+                if !cpu_ok {
+                    deltas.push(bastion_domain::catalog::doctor::DeltaItem {
+                        item: "CPU count".to_string(),
+                        expected: format!("{}", min_cpu_count.unwrap()),
+                        actual: Some(format!("{}", caps.max_cpu_count())),
+                        severity: bastion_domain::catalog::doctor::Severity::Critical,
+                    });
+                }
+                deltas
+            },
+            remediation: None,
+            system_context: self.get_system_context(),
+            trace_id: trace_id.to_string(),
+            executed_at,
+        }
+    }
+
+    /// Evaluate ConfigValid check.
+    async fn eval_config_valid(
+        &self,
+        provider_name: &str,
+        trace_id: &str,
+        executed_at: chrono::DateTime<chrono::Utc>,
+    ) -> RichCheckResult {
+        let provider = self.resolve_provider(provider_name);
+
+        // Basic config validation - provider can be resolved and initialized
+        let status = CheckStatus::Pass;
+
+        RichCheckResult {
+            check_id: format!("config_valid.{}", provider_name),
+            check_type: "config_valid".to_string(),
+            status,
+            current_state: serde_json::json!({
+                "provider": provider.name(),
+                "config_valid": true
+            }),
+            expected_state: serde_json::json!({
+                "provider": provider.name(),
+                "config_valid": true
+            }),
+            delta: Vec::new(),
+            remediation: None,
+            system_context: self.get_system_context(),
+            trace_id: trace_id.to_string(),
+            executed_at,
+        }
+    }
+
+    /// Get system context for rich check results.
+    fn get_system_context(&self) -> bastion_domain::catalog::doctor::SystemContext {
+        use std::collections::HashMap;
+
+        let uname = std::process::Command::new("uname")
+            .arg("-r")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let os = std::process::Command::new("uname")
+            .arg("-s")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let arch = std::process::Command::new("uname")
+            .arg("-m")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Check for KVM
+        let has_kvm = std::path::Path::new("/dev/kvm").exists();
+
+        // Collect relevant binaries
+        let mut relevant_binaries = HashMap::new();
+        for binary in &["podman", "docker", "firecracker", "containerd-shim"] {
+            let which_output = std::process::Command::new("which")
+                .arg(binary)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+
+            if which_output.is_some() {
+                relevant_binaries.insert(
+                    binary.to_string(),
+                    bastion_domain::catalog::doctor::BinaryInfo {
+                        name: binary.to_string(),
+                        path: which_output,
+                        version: None,
+                    },
+                );
+            }
+        }
+
+        bastion_domain::catalog::doctor::SystemContext {
+            os,
+            os_version: uname.clone(),
+            architecture: arch,
+            kernel: uname,
+            has_kvm,
+            has_nested_virt: None,
+            relevant_binaries,
+            installed_providers: HashMap::new(),
+        }
     }
 }

@@ -17,5 +17,5 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
-dashmap = "6.1"
 tokio = { workspace = true }
+toml = { workspace = true }

@@ -16,7 +16,7 @@ fn create_provider() -> bastion_infrastructure::provider::PodmanProvider {
         .unwrap()
         .parent()
         .unwrap()
-        .join("target/debug/bastion-worker");
+        .join("target/x86_64-unknown-linux-musl/release/bastion-worker");
 
     bastion_infrastructure::provider::PodmanProvider::new(
         "/run/user/1000/podman/podman.sock",
