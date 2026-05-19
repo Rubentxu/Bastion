@@ -1,6 +1,6 @@
 //! Provider instance configuration types.
 //!
-//! Tagged enum containing provider-specific configuration for each instance type.
+//! Compositional struct containing provider-specific configuration.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +9,10 @@ use super::mount_ref::{ContainerNetworkMode, MountRef};
 use super::socket_ref::SocketRef;
 use super::worker_binary_source::WorkerBinarySource;
 use crate::shared::DomainError;
+
+// ============================================================================
+// Wasm Runtime Types
+// ============================================================================
 
 /// Wasm runtime kind.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -62,6 +66,10 @@ impl WasmRuntime {
         self.binary_path.is_some()
     }
 }
+
+// ============================================================================
+// AWS Credentials Types
+// ============================================================================
 
 /// AWS credentials kind.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -182,6 +190,10 @@ impl AwsCredentials {
     }
 }
 
+// ============================================================================
+// Kubernetes Credentials Types
+// ============================================================================
+
 /// Kubernetes credentials kind.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -270,131 +282,29 @@ impl KubernetesCredentials {
     }
 }
 
-/// Provider instance configuration.
-///
-/// A tagged enum containing provider-specific configuration for each instance type.
-/// Serialized to TOML with `type_id` as the tag.
+// ============================================================================
+// Provider-Specific Config Structs
+// ============================================================================
+
+/// Firecracker-specific configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type_id", rename_all = "snake_case")]
-pub enum ProviderInstanceConfig {
-    /// Podman provider configuration.
-    Podman {
-        /// Socket reference for Podman.
-        socket: Option<SocketRef>,
-        /// Default image to use.
-        image: Option<ImageReference>,
-        /// Worker binary source.
-        worker_binary: Option<WorkerBinarySource>,
-        /// Mounts to create.
-        mounts: Vec<MountRef>,
-        /// Network mode.
-        network_mode: Option<ContainerNetworkMode>,
-    },
-    /// Docker provider configuration.
-    Docker {
-        /// Socket reference for Docker.
-        socket: Option<SocketRef>,
-        /// Default image to use.
-        image: Option<ImageReference>,
-        /// Worker binary source.
-        worker_binary: Option<WorkerBinarySource>,
-        /// Mounts to create.
-        mounts: Vec<MountRef>,
-        /// Network mode.
-        network_mode: Option<ContainerNetworkMode>,
-    },
-    /// gVisor provider configuration.
-    Gvisor {
-        /// Path to the runsc binary.
-        runsc_binary: Option<String>,
-        /// Default image to use.
-        image: Option<ImageReference>,
-        /// Root filesystem directory.
-        rootfs_dir: Option<String>,
-        /// Worker binary source.
-        worker_binary: Option<WorkerBinarySource>,
-    },
-    /// Firecracker provider configuration.
-    Firecracker {
-        /// Path to the firecracker binary.
-        firecracker_binary: Option<String>,
-        /// Path to the kernel image.
-        kernel: Option<String>,
-        /// Path to the root filesystem image.
-        rootfs: Option<String>,
-        /// Worker binary source.
-        worker_binary: Option<WorkerBinarySource>,
-        /// Additional boot arguments.
-        boot_args: Option<String>,
-    },
-    /// WebAssembly provider configuration.
-    Wasm {
-        /// WASM runtime configuration.
-        runtime: WasmRuntime,
-        /// Worker binary source.
-        worker_binary: Option<WorkerBinarySource>,
-    },
-    /// Local provider configuration.
-    Local {
-        /// Workspace directory for local execution.
-        workspace_dir: String,
-    },
-    /// Kubernetes provider configuration.
-    Kubernetes {
-        /// Kubernetes API server endpoint.
-        cluster_endpoint: Option<String>,
-        /// Kubernetes namespace.
-        namespace: Option<String>,
-        /// Credentials for the cluster.
-        credentials: Option<KubernetesCredentials>,
-        /// Default volume snapshot class.
-        default_volume_snapshot_class: Option<String>,
-    },
-    /// AWS Lambda provider configuration.
-    Lambda {
-        /// AWS region.
-        region: String,
-        /// AWS credentials.
-        credentials: Option<AwsCredentials>,
-    },
+pub struct FirecrackerConfig {
+    /// Path to the firecracker binary.
+    pub firecracker_binary: Option<String>,
+    /// Path to the kernel image.
+    pub kernel: Option<String>,
+    /// Path to the root filesystem image.
+    pub rootfs: Option<String>,
+    /// Worker binary source.
+    pub worker_binary: Option<WorkerBinarySource>,
+    /// Additional boot arguments.
+    pub boot_args: Option<String>,
 }
 
-impl ProviderInstanceConfig {
-    /// Create a Podman configuration.
-    pub fn podman() -> Self {
-        Self::Podman {
-            socket: None,
-            image: None,
-            worker_binary: None,
-            mounts: Vec::new(),
-            network_mode: None,
-        }
-    }
-
-    /// Create a Docker configuration.
-    pub fn docker() -> Self {
-        Self::Docker {
-            socket: None,
-            image: None,
-            worker_binary: None,
-            mounts: Vec::new(),
-            network_mode: None,
-        }
-    }
-
-    /// Create a gVisor configuration.
-    pub fn gvisor() -> Self {
-        Self::Gvisor {
-            runsc_binary: None,
-            image: None,
-            rootfs_dir: None,
-            worker_binary: None,
-        }
-    }
-
-    /// Create a Firecracker configuration.
-    pub fn firecracker() -> Self {
-        Self::Firecracker {
+impl FirecrackerConfig {
+    /// Create a new FirecrackerConfig with defaults.
+    pub fn new() -> Self {
+        Self {
             firecracker_binary: None,
             kernel: None,
             rootfs: None,
@@ -402,12 +312,253 @@ impl ProviderInstanceConfig {
             boot_args: None,
         }
     }
+}
+
+impl Default for FirecrackerConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Kubernetes-specific configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesConfig {
+    /// Kubernetes API server endpoint.
+    pub cluster_endpoint: Option<String>,
+    /// Kubernetes namespace.
+    pub namespace: Option<String>,
+    /// Credentials for the cluster.
+    pub credentials: Option<KubernetesCredentials>,
+    /// Default volume snapshot class.
+    pub default_volume_snapshot_class: Option<String>,
+}
+
+impl KubernetesConfig {
+    /// Create a new KubernetesConfig with defaults.
+    pub fn new() -> Self {
+        Self {
+            cluster_endpoint: None,
+            namespace: None,
+            credentials: None,
+            default_volume_snapshot_class: None,
+        }
+    }
+}
+
+impl Default for KubernetesConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Lambda-specific configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LambdaConfig {
+    /// AWS region.
+    pub region: String,
+    /// AWS credentials.
+    pub credentials: Option<AwsCredentials>,
+}
+
+impl LambdaConfig {
+    /// Create a new LambdaConfig.
+    ///
+    /// Returns `Err(DomainError::Validation)` if region is empty.
+    pub fn new(region: impl Into<String>) -> Result<Self, DomainError> {
+        let region = region.into();
+        if region.trim().is_empty() {
+            return Err(DomainError::Validation(
+                "Lambda region cannot be empty".into(),
+            ));
+        }
+        Ok(Self {
+            region,
+            credentials: None,
+        })
+    }
+}
+
+/// Local provider-specific configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalConfig {
+    /// Workspace directory for local execution.
+    pub workspace_dir: String,
+}
+
+impl LocalConfig {
+    /// Create a new LocalConfig.
+    ///
+    /// Returns `Err(DomainError::Validation)` if workspace_dir is empty.
+    pub fn new(workspace_dir: impl Into<String>) -> Result<Self, DomainError> {
+        let workspace_dir = workspace_dir.into();
+        if workspace_dir.trim().is_empty() {
+            return Err(DomainError::Validation(
+                "Local workspace_dir cannot be empty".into(),
+            ));
+        }
+        Ok(Self { workspace_dir })
+    }
+}
+
+// ============================================================================
+// Provider Instance Config (Compositional)
+// ============================================================================
+
+/// Provider instance configuration.
+///
+/// A compositional struct containing provider-specific configuration fields.
+/// Serialized with `provider_type` field as the type discriminator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProviderInstanceConfig {
+    /// Provider type identifier (e.g., "podman", "docker", "firecracker").
+    #[serde(rename = "type_id")]
+    pub provider_type: String,
+
+    // ── Shared fields (used by multiple container-based providers) ───────────
+
+    /// Socket reference (used by Podman, Docker).
+    pub socket: Option<SocketRef>,
+    /// Default image to use.
+    pub image: Option<ImageReference>,
+    /// Worker binary source.
+    pub worker_binary: Option<WorkerBinarySource>,
+    /// Mounts to create.
+    pub mounts: Vec<MountRef>,
+    /// Network mode.
+    pub network_mode: Option<ContainerNetworkMode>,
+
+    // ── gVisor-specific fields ──────────────────────────────────────────────
+
+    /// Path to the runsc binary.
+    pub runsc_binary: Option<String>,
+    /// Root filesystem directory.
+    pub rootfs_dir: Option<String>,
+
+    // ── Firecracker-specific config ─────────────────────────────────────────
+
+    /// Firecracker-specific configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firecracker_config: Option<FirecrackerConfig>,
+
+    // ── WASM-specific fields ────────────────────────────────────────────────
+
+    /// WASM runtime configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wasm_runtime: Option<WasmRuntime>,
+
+    // ── Kubernetes-specific config ──────────────────────────────────────────
+
+    /// Kubernetes-specific configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kubernetes_config: Option<KubernetesConfig>,
+
+    // ── Lambda-specific config ─────────────────────────────────────────────
+
+    /// Lambda-specific configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lambda_config: Option<LambdaConfig>,
+
+    // ── Local-specific config ───────────────────────────────────────────────
+
+    /// Local-specific configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_config: Option<LocalConfig>,
+}
+
+impl ProviderInstanceConfig {
+    /// Create a Podman configuration.
+    pub fn podman() -> Self {
+        Self {
+            provider_type: "podman".to_string(),
+            socket: None,
+            image: None,
+            worker_binary: None,
+            mounts: Vec::new(),
+            network_mode: None,
+            runsc_binary: None,
+            rootfs_dir: None,
+            firecracker_config: None,
+            wasm_runtime: None,
+            kubernetes_config: None,
+            lambda_config: None,
+            local_config: None,
+        }
+    }
+
+    /// Create a Docker configuration.
+    pub fn docker() -> Self {
+        Self {
+            provider_type: "docker".to_string(),
+            socket: None,
+            image: None,
+            worker_binary: None,
+            mounts: Vec::new(),
+            network_mode: None,
+            runsc_binary: None,
+            rootfs_dir: None,
+            firecracker_config: None,
+            wasm_runtime: None,
+            kubernetes_config: None,
+            lambda_config: None,
+            local_config: None,
+        }
+    }
+
+    /// Create a gVisor configuration.
+    pub fn gvisor() -> Self {
+        Self {
+            provider_type: "gvisor".to_string(),
+            socket: None,
+            image: None,
+            worker_binary: None,
+            mounts: Vec::new(),
+            network_mode: None,
+            runsc_binary: None,
+            rootfs_dir: None,
+            firecracker_config: None,
+            wasm_runtime: None,
+            kubernetes_config: None,
+            lambda_config: None,
+            local_config: None,
+        }
+    }
+
+    /// Create a Firecracker configuration.
+    pub fn firecracker() -> Self {
+        Self {
+            provider_type: "firecracker".to_string(),
+            socket: None,
+            image: None,
+            worker_binary: None,
+            mounts: Vec::new(),
+            network_mode: None,
+            runsc_binary: None,
+            rootfs_dir: None,
+            firecracker_config: Some(FirecrackerConfig::new()),
+            wasm_runtime: None,
+            kubernetes_config: None,
+            lambda_config: None,
+            local_config: None,
+        }
+    }
 
     /// Create a WASM configuration with default runtime.
     pub fn wasm() -> Self {
-        Self::Wasm {
-            runtime: WasmRuntime::new(WasmRuntimeKind::default()),
+        Self {
+            provider_type: "wasm".to_string(),
+            socket: None,
+            image: None,
             worker_binary: None,
+            mounts: Vec::new(),
+            network_mode: None,
+            runsc_binary: None,
+            rootfs_dir: None,
+            firecracker_config: None,
+            wasm_runtime: Some(WasmRuntime::new(WasmRuntimeKind::default())),
+            kubernetes_config: None,
+            lambda_config: None,
+            local_config: None,
         }
     }
 
@@ -415,22 +566,40 @@ impl ProviderInstanceConfig {
     ///
     /// Returns `Err(DomainError::Validation)` if workspace_dir is empty.
     pub fn local(workspace_dir: impl Into<String>) -> Result<Self, DomainError> {
-        let workspace_dir = workspace_dir.into();
-        if workspace_dir.trim().is_empty() {
-            return Err(DomainError::Validation(
-                "Local workspace_dir cannot be empty".into(),
-            ));
-        }
-        Ok(Self::Local { workspace_dir })
+        let local_config = LocalConfig::new(workspace_dir)?;
+        Ok(Self {
+            provider_type: "local".to_string(),
+            socket: None,
+            image: None,
+            worker_binary: None,
+            mounts: Vec::new(),
+            network_mode: None,
+            runsc_binary: None,
+            rootfs_dir: None,
+            firecracker_config: None,
+            wasm_runtime: None,
+            kubernetes_config: None,
+            lambda_config: None,
+            local_config: Some(local_config),
+        })
     }
 
     /// Create a Kubernetes configuration.
     pub fn kubernetes() -> Self {
-        Self::Kubernetes {
-            cluster_endpoint: None,
-            namespace: None,
-            credentials: None,
-            default_volume_snapshot_class: None,
+        Self {
+            provider_type: "kubernetes".to_string(),
+            socket: None,
+            image: None,
+            worker_binary: None,
+            mounts: Vec::new(),
+            network_mode: None,
+            runsc_binary: None,
+            rootfs_dir: None,
+            firecracker_config: None,
+            wasm_runtime: None,
+            kubernetes_config: Some(KubernetesConfig::new()),
+            lambda_config: None,
+            local_config: None,
         }
     }
 
@@ -438,286 +607,222 @@ impl ProviderInstanceConfig {
     ///
     /// Returns `Err(DomainError::Validation)` if region is empty.
     pub fn lambda(region: impl Into<String>) -> Result<Self, DomainError> {
-        let region = region.into();
-        if region.trim().is_empty() {
-            return Err(DomainError::Validation(
-                "Lambda region cannot be empty".into(),
-            ));
-        }
-        Ok(Self::Lambda {
-            region,
-            credentials: None,
+        let lambda_config = LambdaConfig::new(region)?;
+        Ok(Self {
+            provider_type: "lambda".to_string(),
+            socket: None,
+            image: None,
+            worker_binary: None,
+            mounts: Vec::new(),
+            network_mode: None,
+            runsc_binary: None,
+            rootfs_dir: None,
+            firecracker_config: None,
+            wasm_runtime: None,
+            kubernetes_config: None,
+            lambda_config: Some(lambda_config),
+            local_config: None,
         })
     }
 
-    // ==================== Podman Accessors ====================
+    // ==================== Type Query Methods ================================
 
-    /// Accessor: Podman socket reference.
-    pub fn podman_socket(&self) -> Option<&SocketRef> {
-        match self {
-            Self::Podman { socket, .. } => socket.as_ref(),
-            _ => None,
-        }
+    /// Check if this is a Podman configuration.
+    pub fn is_podman(&self) -> bool {
+        self.provider_type == "podman"
     }
 
-    /// Accessor: Podman default image.
-    pub fn podman_image(&self) -> Option<&ImageReference> {
-        match self {
-            Self::Podman { image, .. } => image.as_ref(),
-            _ => None,
-        }
+    /// Check if this is a Docker configuration.
+    pub fn is_docker(&self) -> bool {
+        self.provider_type == "docker"
     }
 
-    /// Accessor: Podman worker binary source.
-    pub fn podman_worker_binary(&self) -> Option<&WorkerBinarySource> {
-        match self {
-            Self::Podman { worker_binary, .. } => worker_binary.as_ref(),
-            _ => None,
-        }
+    /// Check if this is a gVisor configuration.
+    pub fn is_gvisor(&self) -> bool {
+        self.provider_type == "gvisor"
     }
 
-    /// Accessor: Podman mounts.
-    pub fn podman_mounts(&self) -> &[MountRef] {
-        match self {
-            Self::Podman { mounts, .. } => mounts,
-            _ => &[],
-        }
+    /// Check if this is a Firecracker configuration.
+    pub fn is_firecracker(&self) -> bool {
+        self.provider_type == "firecracker"
     }
 
-    /// Accessor: Podman network mode.
-    pub fn podman_network_mode(&self) -> Option<&ContainerNetworkMode> {
-        match self {
-            Self::Podman { network_mode, .. } => network_mode.as_ref(),
-            _ => None,
-        }
+    /// Check if this is a WASM configuration.
+    pub fn is_wasm(&self) -> bool {
+        self.provider_type == "wasm"
     }
 
-    // ==================== Docker Accessors ====================
-
-    /// Accessor: Docker socket reference.
-    pub fn docker_socket(&self) -> Option<&SocketRef> {
-        match self {
-            Self::Docker { socket, .. } => socket.as_ref(),
-            _ => None,
-        }
+    /// Check if this is a Local configuration.
+    pub fn is_local(&self) -> bool {
+        self.provider_type == "local"
     }
 
-    /// Accessor: Docker default image.
-    pub fn docker_image(&self) -> Option<&ImageReference> {
-        match self {
-            Self::Docker { image, .. } => image.as_ref(),
-            _ => None,
-        }
+    /// Check if this is a Kubernetes configuration.
+    pub fn is_kubernetes(&self) -> bool {
+        self.provider_type == "kubernetes"
     }
 
-    /// Accessor: Docker worker binary source.
-    pub fn docker_worker_binary(&self) -> Option<&WorkerBinarySource> {
-        match self {
-            Self::Docker { worker_binary, .. } => worker_binary.as_ref(),
-            _ => None,
-        }
+    /// Check if this is a Lambda configuration.
+    pub fn is_lambda(&self) -> bool {
+        self.provider_type == "lambda"
     }
 
-    /// Accessor: Docker mounts.
-    pub fn docker_mounts(&self) -> &[MountRef] {
-        match self {
-            Self::Docker { mounts, .. } => mounts,
-            _ => &[],
-        }
+    // ==================== Shared Field Accessors ===========================
+
+    /// Accessor: socket reference (Podman, Docker).
+    pub fn socket(&self) -> Option<&SocketRef> {
+        self.socket.as_ref()
     }
 
-    /// Accessor: Docker network mode.
-    pub fn docker_network_mode(&self) -> Option<&ContainerNetworkMode> {
-        match self {
-            Self::Docker { network_mode, .. } => network_mode.as_ref(),
-            _ => None,
-        }
+    /// Accessor: image reference.
+    pub fn image(&self) -> Option<&ImageReference> {
+        self.image.as_ref()
     }
 
-    // ==================== gVisor Accessors ====================
+    /// Accessor: worker binary source.
+    pub fn worker_binary(&self) -> Option<&WorkerBinarySource> {
+        self.worker_binary.as_ref()
+    }
+
+    /// Accessor: mounts.
+    pub fn mounts(&self) -> &[MountRef] {
+        &self.mounts
+    }
+
+    /// Accessor: network mode.
+    pub fn network_mode(&self) -> Option<&ContainerNetworkMode> {
+        self.network_mode.as_ref()
+    }
+
+    // ==================== gVisor Accessors ================================
 
     /// Accessor: gVisor runsc binary path.
-    pub fn gvisor_runsc_binary(&self) -> Option<&str> {
-        match self {
-            Self::Gvisor { runsc_binary, .. } => runsc_binary.as_deref(),
-            _ => None,
-        }
-    }
-
-    /// Accessor: gVisor default image.
-    pub fn gvisor_image(&self) -> Option<&ImageReference> {
-        match self {
-            Self::Gvisor { image, .. } => image.as_ref(),
-            _ => None,
-        }
+    pub fn runsc_binary(&self) -> Option<&str> {
+        self.runsc_binary.as_deref()
     }
 
     /// Accessor: gVisor root filesystem directory.
-    pub fn gvisor_rootfs_dir(&self) -> Option<&str> {
-        match self {
-            Self::Gvisor { rootfs_dir, .. } => rootfs_dir.as_deref(),
-            _ => None,
-        }
+    pub fn rootfs_dir(&self) -> Option<&str> {
+        self.rootfs_dir.as_deref()
     }
 
-    /// Accessor: gVisor worker binary source.
-    pub fn gvisor_worker_binary(&self) -> Option<&WorkerBinarySource> {
-        match self {
-            Self::Gvisor { worker_binary, .. } => worker_binary.as_ref(),
-            _ => None,
-        }
-    }
-
-    // ==================== Firecracker Accessors ====================
+    // ==================== Firecracker Accessors =============================
 
     /// Accessor: Firecracker binary path.
     pub fn firecracker_binary(&self) -> Option<&str> {
-        match self {
-            Self::Firecracker {
-                firecracker_binary,
-                ..
-            } => firecracker_binary.as_deref(),
-            _ => None,
-        }
+        self.firecracker_config
+            .as_ref()
+            .and_then(|c| c.firecracker_binary.as_deref())
     }
 
     /// Accessor: Firecracker kernel image path.
     pub fn firecracker_kernel(&self) -> Option<&str> {
-        match self {
-            Self::Firecracker { kernel, .. } => kernel.as_deref(),
-            _ => None,
-        }
+        self.firecracker_config
+            .as_ref()
+            .and_then(|c| c.kernel.as_deref())
     }
 
     /// Accessor: Firecracker rootfs image path.
     pub fn firecracker_rootfs(&self) -> Option<&str> {
-        match self {
-            Self::Firecracker { rootfs, .. } => rootfs.as_deref(),
-            _ => None,
-        }
+        self.firecracker_config
+            .as_ref()
+            .and_then(|c| c.rootfs.as_deref())
     }
 
     /// Accessor: Firecracker worker binary source.
     pub fn firecracker_worker_binary(&self) -> Option<&WorkerBinarySource> {
-        match self {
-            Self::Firecracker {
-                worker_binary, ..
-            } => worker_binary.as_ref(),
-            _ => None,
-        }
+        self.firecracker_config
+            .as_ref()
+            .and_then(|c| c.worker_binary.as_ref())
     }
 
     /// Accessor: Firecracker boot arguments.
     pub fn firecracker_boot_args(&self) -> Option<&str> {
-        match self {
-            Self::Firecracker { boot_args, .. } => boot_args.as_deref(),
-            _ => None,
-        }
+        self.firecracker_config
+            .as_ref()
+            .and_then(|c| c.boot_args.as_deref())
     }
 
-    // ==================== Wasm Accessors ====================
+    // ==================== Wasm Accessors =================================
 
     /// Accessor: WASM runtime configuration.
     pub fn wasm_runtime(&self) -> Option<&WasmRuntime> {
-        match self {
-            Self::Wasm { runtime, .. } => Some(runtime),
-            _ => None,
-        }
+        self.wasm_runtime.as_ref()
     }
 
-    /// Accessor: WASM worker binary source.
-    pub fn wasm_worker_binary(&self) -> Option<&WorkerBinarySource> {
-        match self {
-            Self::Wasm { worker_binary, .. } => worker_binary.as_ref(),
-            _ => None,
-        }
-    }
-
-    // ==================== Local Accessors ====================
-
-    /// Accessor: Local workspace directory.
-    pub fn local_workspace_dir(&self) -> Option<&str> {
-        match self {
-            Self::Local { workspace_dir } => Some(workspace_dir),
-            _ => None,
-        }
-    }
-
-    // ==================== Kubernetes Accessors ====================
+    // ==================== Kubernetes Accessors =============================
 
     /// Accessor: Kubernetes API server endpoint.
     pub fn kubernetes_cluster_endpoint(&self) -> Option<&str> {
-        match self {
-            Self::Kubernetes {
-                cluster_endpoint, ..
-            } => cluster_endpoint.as_deref(),
-            _ => None,
-        }
+        self.kubernetes_config
+            .as_ref()
+            .and_then(|c| c.cluster_endpoint.as_deref())
     }
 
     /// Accessor: Kubernetes namespace.
     pub fn kubernetes_namespace(&self) -> Option<&str> {
-        match self {
-            Self::Kubernetes { namespace, .. } => namespace.as_deref(),
-            _ => None,
-        }
+        self.kubernetes_config
+            .as_ref()
+            .and_then(|c| c.namespace.as_deref())
     }
 
     /// Accessor: Kubernetes credentials.
     pub fn kubernetes_credentials(&self) -> Option<&KubernetesCredentials> {
-        match self {
-            Self::Kubernetes { credentials, .. } => credentials.as_ref(),
-            _ => None,
-        }
+        self.kubernetes_config
+            .as_ref()
+            .and_then(|c| c.credentials.as_ref())
     }
 
     /// Accessor: Kubernetes default volume snapshot class.
     pub fn kubernetes_default_volume_snapshot_class(&self) -> Option<&str> {
-        match self {
-            Self::Kubernetes {
-                default_volume_snapshot_class,
-                ..
-            } => default_volume_snapshot_class.as_deref(),
-            _ => None,
-        }
+        self.kubernetes_config
+            .as_ref()
+            .and_then(|c| c.default_volume_snapshot_class.as_deref())
     }
 
-    // ==================== Lambda Accessors ====================
+    // ==================== Lambda Accessors =================================
 
     /// Accessor: Lambda region.
     pub fn lambda_region(&self) -> Option<&str> {
-        match self {
-            Self::Lambda { region, .. } => Some(region),
-            _ => None,
-        }
+        self.lambda_config.as_ref().map(|c| c.region.as_str())
     }
 
     /// Accessor: Lambda credentials.
     pub fn lambda_credentials(&self) -> Option<&AwsCredentials> {
-        match self {
-            Self::Lambda { credentials, .. } => credentials.as_ref(),
-            _ => None,
-        }
+        self.lambda_config
+            .as_ref()
+            .and_then(|c| c.credentials.as_ref())
     }
 
-    // ==================== Validation Helpers ====================
+    // ==================== Local Accessors ==================================
+
+    /// Accessor: Local workspace directory.
+    pub fn local_workspace_dir(&self) -> Option<&str> {
+        self.local_config
+            .as_ref()
+            .map(|c| c.workspace_dir.as_str())
+    }
+
+    // ==================== Validation Helpers ==============================
 
     /// Check if Local config has a non-empty workspace directory.
     pub fn is_valid_local(&self) -> bool {
-        match self {
-            Self::Local { workspace_dir } => !workspace_dir.trim().is_empty(),
-            _ => false,
-        }
+        self.local_config
+            .as_ref()
+            .map_or(false, |c| !c.workspace_dir.trim().is_empty())
     }
 
     /// Check if Lambda config has a non-empty region.
     pub fn is_valid_lambda(&self) -> bool {
-        match self {
-            Self::Lambda { region, .. } => !region.trim().is_empty(),
-            _ => false,
-        }
+        self.lambda_config
+            .as_ref()
+            .map_or(false, |c| !c.region.trim().is_empty())
     }
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -751,14 +856,20 @@ mod tests {
     fn test_aws_credentials_iam_role() {
         let creds = AwsCredentials::iam_role("arn:aws:iam::123456789:role/my-role");
         assert!(matches!(creds.kind(), AwsCredentialsKind::IamRole));
-        assert_eq!(creds.role_arn(), Some("arn:aws:iam::123456789:role/my-role"));
+        assert_eq!(
+            creds.role_arn(),
+            Some("arn:aws:iam::123456789:role/my-role")
+        );
         assert!(creds.is_valid());
     }
 
     #[test]
     fn test_aws_credentials_static() {
-        let creds = AwsCredentials::static_creds("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-            .expect("valid credentials");
+        let creds = AwsCredentials::static_creds(
+            "AKIAIOSFODNN7EXAMPLE",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        )
+        .expect("valid credentials");
         assert!(matches!(creds.kind(), AwsCredentialsKind::Static));
         assert!(creds.access_key_id().is_some());
         assert!(creds.secret_access_key().is_some());
@@ -831,77 +942,78 @@ mod tests {
     #[test]
     fn test_provider_instance_config_podman() {
         let config = ProviderInstanceConfig::podman();
-        assert!(matches!(config, ProviderInstanceConfig::Podman { .. }));
-        assert!(config.podman_socket().is_none());
-        assert!(config.podman_image().is_none());
-        assert!(config.podman_mounts().is_empty());
+        assert!(config.is_podman());
+        assert_eq!(config.provider_type, "podman");
+        assert!(config.socket().is_none());
+        assert!(config.image().is_none());
+        assert!(config.mounts().is_empty());
     }
 
     #[test]
     fn test_provider_instance_config_docker() {
         let config = ProviderInstanceConfig::docker();
-        assert!(matches!(config, ProviderInstanceConfig::Docker { .. }));
-        assert!(config.docker_socket().is_none());
+        assert!(config.is_docker());
+        assert_eq!(config.provider_type, "docker");
+        assert!(config.socket().is_none());
     }
 
     #[test]
     fn test_provider_instance_config_wasm() {
         let config = ProviderInstanceConfig::wasm();
-        assert!(matches!(config, ProviderInstanceConfig::Wasm { .. }));
+        assert!(config.is_wasm());
         assert!(config.wasm_runtime().is_some());
-        assert!(config.wasm_worker_binary().is_none());
+        assert!(config.worker_binary().is_none());
     }
 
     #[test]
     fn test_provider_instance_config_local_valid() {
-        let config = ProviderInstanceConfig::local("/tmp/workspace")
-            .expect("valid workspace dir");
-        assert!(matches!(config, ProviderInstanceConfig::Local { .. }));
+        let config =
+            ProviderInstanceConfig::local("/tmp/workspace").expect("valid workspace dir");
+        assert!(config.is_local());
         assert_eq!(config.local_workspace_dir(), Some("/tmp/workspace"));
         assert!(config.is_valid_local());
     }
 
     #[test]
     fn test_provider_instance_config_local_empty() {
-        let err = ProviderInstanceConfig::local("")
-            .expect_err("empty workspace should fail");
+        let err = ProviderInstanceConfig::local("").expect_err("empty workspace should fail");
         assert!(matches!(err, DomainError::Validation(_)));
     }
 
     #[test]
     fn test_provider_instance_config_lambda_valid() {
-        let config = ProviderInstanceConfig::lambda("us-east-1")
-            .expect("valid region");
-        assert!(matches!(config, ProviderInstanceConfig::Lambda { .. }));
+        let config = ProviderInstanceConfig::lambda("us-east-1").expect("valid region");
+        assert!(config.is_lambda());
         assert_eq!(config.lambda_region(), Some("us-east-1"));
         assert!(config.is_valid_lambda());
     }
 
     #[test]
     fn test_provider_instance_config_lambda_empty() {
-        let err = ProviderInstanceConfig::lambda("")
-            .expect_err("empty region should fail");
+        let err = ProviderInstanceConfig::lambda("").expect_err("empty region should fail");
         assert!(matches!(err, DomainError::Validation(_)));
     }
 
     #[test]
     fn test_provider_instance_config_gvisor() {
         let config = ProviderInstanceConfig::gvisor();
-        assert!(matches!(config, ProviderInstanceConfig::Gvisor { .. }));
-        assert!(config.gvisor_runsc_binary().is_none());
+        assert!(config.is_gvisor());
+        assert!(config.runsc_binary().is_none());
     }
 
     #[test]
     fn test_provider_instance_config_firecracker() {
         let config = ProviderInstanceConfig::firecracker();
-        assert!(matches!(config, ProviderInstanceConfig::Firecracker { .. }));
+        assert!(config.is_firecracker());
+        assert!(config.firecracker_config.is_some());
         assert!(config.firecracker_binary().is_none());
     }
 
     #[test]
     fn test_provider_instance_config_kubernetes() {
         let config = ProviderInstanceConfig::kubernetes();
-        assert!(matches!(config, ProviderInstanceConfig::Kubernetes { .. }));
+        assert!(config.is_kubernetes());
+        assert!(config.kubernetes_config.is_some());
         assert!(config.kubernetes_credentials().is_none());
     }
 
@@ -911,7 +1023,7 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("\"type_id\":\"podman\""));
         let parsed: ProviderInstanceConfig = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, ProviderInstanceConfig::Podman { .. }));
+        assert!(parsed.is_podman());
     }
 
     #[test]
@@ -920,26 +1032,81 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("\"type_id\":\"wasm\""));
         let parsed: ProviderInstanceConfig = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, ProviderInstanceConfig::Wasm { .. }));
+        assert!(parsed.is_wasm());
     }
 
     #[test]
     fn test_provider_instance_config_serde_local() {
-        let config = ProviderInstanceConfig::local("/workspace")
-            .expect("valid workspace");
+        let config =
+            ProviderInstanceConfig::local("/workspace").expect("valid workspace");
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("\"type_id\":\"local\""));
         let parsed: ProviderInstanceConfig = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, ProviderInstanceConfig::Local { .. }));
+        assert!(parsed.is_local());
+        assert_eq!(parsed.local_workspace_dir(), Some("/workspace"));
     }
 
     #[test]
-    fn test_provider_instance_config_wrong_accessors_return_none() {
+    fn test_provider_instance_config_firecracker_serde() {
+        let config = ProviderInstanceConfig::firecracker();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"type_id\":\"firecracker\""));
+        let parsed: ProviderInstanceConfig = serde_json::from_str(&json).unwrap();
+        assert!(parsed.is_firecracker());
+        assert!(parsed.firecracker_config.is_some());
+    }
+
+    #[test]
+    fn test_provider_instance_config_kubernetes_serde() {
+        let config = ProviderInstanceConfig::kubernetes();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"type_id\":\"kubernetes\""));
+        let parsed: ProviderInstanceConfig = serde_json::from_str(&json).unwrap();
+        assert!(parsed.is_kubernetes());
+        assert!(parsed.kubernetes_config.is_some());
+    }
+
+    #[test]
+    fn test_provider_instance_config_lambda_serde() {
+        let config = ProviderInstanceConfig::lambda("us-west-2").expect("valid region");
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"type_id\":\"lambda\""));
+        let parsed: ProviderInstanceConfig = serde_json::from_str(&json).unwrap();
+        assert!(parsed.is_lambda());
+        assert_eq!(parsed.lambda_region(), Some("us-west-2"));
+    }
+
+    #[test]
+    fn test_provider_instance_config_type_checks() {
         let config = ProviderInstanceConfig::podman();
-        // Accessors for other variants should return None
-        assert!(config.docker_socket().is_none());
-        assert!(config.local_workspace_dir().is_none());
-        assert!(config.wasm_runtime().is_none());
-        assert!(config.lambda_region().is_none());
+        assert!(config.is_podman());
+        assert!(!config.is_docker());
+        assert!(!config.is_gvisor());
+        assert!(!config.is_firecracker());
+        assert!(!config.is_wasm());
+        assert!(!config.is_local());
+        assert!(!config.is_kubernetes());
+        assert!(!config.is_lambda());
+    }
+
+    #[test]
+    fn test_provider_instance_config_firecracker_accessors() {
+        let config = ProviderInstanceConfig::firecracker();
+        // All firecracker-specific accessors should work when config is present
+        assert!(config.firecracker_config.is_some());
+        assert!(config.firecracker_binary().is_none());
+        assert!(config.firecracker_kernel().is_none());
+        assert!(config.firecracker_rootfs().is_none());
+        assert!(config.firecracker_boot_args().is_none());
+    }
+
+    #[test]
+    fn test_provider_instance_config_kubernetes_accessors() {
+        let config = ProviderInstanceConfig::kubernetes();
+        assert!(config.kubernetes_config.is_some());
+        assert!(config.kubernetes_cluster_endpoint().is_none());
+        assert!(config.kubernetes_namespace().is_none());
+        assert!(config.kubernetes_credentials().is_none());
+        assert!(config.kubernetes_default_volume_snapshot_class().is_none());
     }
 }

@@ -4,6 +4,7 @@
 
 pub mod capabilities;
 pub mod port;
+pub mod ports;
 pub mod router;
 
 // ── New type modules (Phase 1) ──────────────────────────────────────────────
@@ -14,6 +15,7 @@ pub mod instance;
 pub mod instance_config;
 pub mod instance_constraints;
 pub mod image_reference;
+pub mod location;
 pub mod mount_ref;
 pub mod provider_type;
 pub mod instance_repository;
@@ -47,6 +49,10 @@ pub use instance_config::{
     ProviderInstanceConfig, WasmRuntime, WasmRuntimeKind,
 };
 pub use instance_constraints::InstanceConstraints;
+// Re-export new generic location types
+pub use location::{
+    ArtifactContext, BinaryContext, Location, MountLocation, RawContext, SocketLocation,
+};
 pub use mount_ref::{ContainerNetworkMode, MountRef};
 pub use port::SandboxProvider;
 pub use router::CommandRouter;

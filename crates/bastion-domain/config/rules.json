@@ -1,0 +1,79 @@
+{
+  "rules": [
+    {
+      "keywords": ["mvn", "maven", "mavenw"],
+      "template": "eclipse-temurin:21-jdk-maven",
+      "confidence": 0.95,
+      "alternative": "ubuntu:24.04",
+      "reasoning": "Matched Maven build tool. Template provides pre-installed JDK 21 + Maven 3.11."
+    },
+    {
+      "keywords": ["gradle", "gradlew"],
+      "template": "eclipse-temurin:21-jdk-gradle",
+      "confidence": 0.90,
+      "alternative": "eclipse-temurin:21-jdk-maven",
+      "reasoning": "Matched Gradle build tool. Template provides pre-installed JDK 21 + Gradle 8.6."
+    },
+    {
+      "keywords": ["npm", "node", "nodejs", "yarn", "pnpm", "node-gyp"],
+      "template": "node:20-slim",
+      "confidence": 0.95,
+      "alternative": "ubuntu:24.04",
+      "reasoning": "Matched Node.js ecosystem. Template provides Node 20 + npm/yarn/pnpm."
+    },
+    {
+      "keywords": ["python", "pip", "pip3", "pyenv", "poetry", "uv", "pipenv"],
+      "template": "python:3.12-slim",
+      "confidence": 0.95,
+      "alternative": "ubuntu:24.04",
+      "reasoning": "Matched Python ecosystem. Template provides Python 3.12 + pip + uv."
+    },
+    {
+      "keywords": ["cargo", "rustc", "cargo-watch", "rust-analyzer"],
+      "template": "rust:1.77-slim",
+      "confidence": 0.95,
+      "alternative": "ubuntu:24.04",
+      "reasoning": "Matched Rust toolchain. Template provides Rust 1.77 + Cargo."
+    },
+    {
+      "keywords": ["go", "golang", "go build", "go mod"],
+      "template": "golang:1.22-alpine",
+      "confidence": 0.90,
+      "alternative": "ubuntu:24.04",
+      "reasoning": "Matched Go toolchain. Template provides Go 1.22."
+    },
+    {
+      "keywords": ["bundle", "ruby", "rake", "rbenv"],
+      "template": "ruby:3.3-slim",
+      "confidence": 0.90,
+      "alternative": "ubuntu:24.04",
+      "reasoning": "Matched Ruby ecosystem. Template provides Ruby 3.3 + Bundler."
+    },
+    {
+      "keywords": ["apt", "apt-get", "dpkg", "asdf", "python"],
+      "template": "ubuntu:24.04",
+      "confidence": 0.90,
+      "alternative": "debian:bookworm-slim",
+      "reasoning": "Matched general-purpose template. Supports apt/dpkg/asdf toolchains."
+    },
+    {
+      "keywords": ["dotnet", "msbuild", "nuget"],
+      "template": "mcr.microsoft.com/dotnet/sdk:8.0",
+      "confidence": 0.90,
+      "alternative": "ubuntu:24.04",
+      "reasoning": "Matched .NET SDK. Template provides .NET 8.0 SDK."
+    },
+    {
+      "keywords": ["php", "composer", "laravel", "symfony"],
+      "template": "php:8.3-cli",
+      "confidence": 0.85,
+      "alternative": "ubuntu:24.04",
+      "reasoning": "Matched PHP ecosystem. Template provides PHP 8.3 + Composer."
+    }
+  ],
+  "fallback": {
+    "template": "ubuntu:24.04",
+    "confidence": 0.30,
+    "alternative": "debian:bookworm-slim"
+  }
+}
